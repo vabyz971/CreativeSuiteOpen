@@ -152,7 +152,26 @@ Les contributions sont **très bienvenues** — c'est un projet jeune, chaque ap
 
 ## Licence
 
-Projet open source — la licence définitive est en cours de choix (MIT/Apache-2.0 envisagés).
+CreativeSuiteOpen est un logiciel libre distribué sous licence **GNU GPL v3** — voir le fichier [LICENSE](LICENSE).
+
+- Vous êtes libre d'utiliser, d'étudier, de modifier et de redistribuer ce logiciel
+- Toute version dérivée doit rester open source sous la même licence (copyleft)
+- Chaque fichier source commence par l'en-tête GPL standard
+
+```
+CreativeSuiteOpen — Suite créative professionnelle open source
+Copyright (C) 2025 vabyz971
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+```
 
 ---
 
