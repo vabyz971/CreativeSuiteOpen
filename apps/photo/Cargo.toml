@@ -1,0 +1,20 @@
+[package]
+name = "photo"
+version = "0.3.0"
+authors = ["vabyz971 <vabyz971@gmail.com>"]
+edition = "2024"
+
+[dependencies]
+iced.workspace = true
+iced.features = ["debug", "image", "tokio"]
+ui = { path = "../../ui" }
+suite-core = { path = "../../core/core", package = "suite-core" }
+datatypes = { path = "../../core/datatypes" }
+suite-shell = { path = "../../core/shell" }
+photo-engine = { path = "../../core/photo-engine" }
+rfd = "0.15"
+image.workspace = true
+rayon.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true

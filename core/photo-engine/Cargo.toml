@@ -1,0 +1,14 @@
+[package]
+name = "photo-engine"
+version = "0.3.0"
+edition = "2024"
+
+[dependencies]
+suite-core = { path = "../core", package = "suite-core" }
+datatypes = { path = "../datatypes" }
+image = { workspace = true }
+rayon = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+pollster = { workspace = true }
+iced = { workspace = true, features = ["image"] }

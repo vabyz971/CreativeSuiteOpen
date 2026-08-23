@@ -1,0 +1,9 @@
+[package]
+name = "suite-shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+datatypes = { path = "../datatypes" }
+suite-core = { path = "../core", package = "suite-core" }
+iced = { workspace = true }

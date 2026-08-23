@@ -1,0 +1,8 @@
+[package]
+name = "audio-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+suite-core = { path = "../core", package = "suite-core" }
+datatypes = { path = "../datatypes" }

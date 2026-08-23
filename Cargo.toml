@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "core/core",
+    "core/datatypes",
+    "core/shell",
+    "core/photo-engine",
+    "core/video-engine",
+    "core/audio-engine",
+    "ui/",
+    "apps/photo",
+    "apps/video",
+    "apps/audio",
+]
+
+[workspace.dependencies]
+iced = { version = "0.14", features = ["tokio"] }
+iced_aw = { version = "0.14", default-features = false, features = ["context_menu", "drop_down"] }
+wgpu = "30.0.0"
+image = { version = "0.25", features = ["rayon"] }
+rayon = "1.10"
+pollster = "0.3"
+bytemuck = { version = "1.14", features = ["derive"] }

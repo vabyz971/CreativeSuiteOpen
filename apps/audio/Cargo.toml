@@ -1,0 +1,14 @@
+[package]
+name = "audio"
+version = "0.1.0"
+authors = ["vabyz971 <vabyz971@gmail.com>"]
+edition = "2024"
+
+[dependencies]
+iced.workspace = true
+iced.features = ["debug"]
+ui = { path = "../../ui" }
+suite-core = { path = "../../core/core", package = "suite-core" }
+datatypes = { path = "../../core/datatypes" }
+suite-shell = { path = "../../core/shell" }
+audio-engine = { path = "../../core/audio-engine" }
