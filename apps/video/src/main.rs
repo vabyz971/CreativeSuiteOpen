@@ -1,5 +1,5 @@
 // CreativeSuiteOpen — Suite créative professionnelle open source
-// Copyright (C) 2025 vabyz971
+// Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
