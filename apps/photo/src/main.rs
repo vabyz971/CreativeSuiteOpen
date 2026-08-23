@@ -250,8 +250,11 @@ struct PhotoApp {
     pub tools_visible: bool,
     /// Ancre de déplacement du calque sélectionné (outil Déplacer)
     pub move_anchor: Option<(u64, f32, f32)>,
-    /// Throttle du recomposite fallback pendant un drag (30 fps max)
-    pub last_fallback_refresh: Option<std::time::Instant>,
+    /// Fond composite PRÉ-CALCULÉ au début du drag (sans le calque déplacé).
+    /// Pendant le drag : zéro recomposite — on dessine ce fond + le calque
+    /// par-dessus. Le vrai blend est recalculé au relâchement.
+    pub drag_background: Option<iced_image::Handle>,
+    pub drag_background_size: Option<Size>,
     // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
     pub gen_graph: suite_core::Graph,
     pub gen_selected_node: Option<NodeId>,
@@ -403,7 +406,8 @@ impl Default for PhotoApp {
             canvas_viewport: Size::new(800.0, 600.0),
             tools_visible: true,
             move_anchor: None,
-            last_fallback_refresh: None,
+            drag_background: None,
+            drag_background_size: None,
             gen_graph: components::node_registry::create_empty_graph(),
             gen_selected_node: None,
             gen_previews: Default::default(),
@@ -464,6 +468,34 @@ impl PhotoApp {
         } else {
             self.fallback_size = None;
             self.fallback_handle = None;
+        }
+    }
+
+    /// Pré-calcule le fond composite SANS le calque sur le point d'être
+    /// déplacé — appelé UNE FOIS au début du drag (MoveLayerStart).
+    /// Pendant tout le drag, ce fond est dessiné tel quel + le calque
+    /// déplacé par-dessus : zéro recomposite, drag fluide même en
+    /// fallback (fusion non-Normal) sur de grosses images.
+    fn prepare_drag_background(&mut self, exclude_id: u64) {
+        use photo_engine::document::{LayerData, composite_preview};
+        self.drag_background = None;
+        self.drag_background_size = None;
+        let data: Vec<LayerData> = self
+            .layers
+            .iter()
+            .filter(|l| l.id != exclude_id && l.visible)
+            .map(LayerData::from)
+            .collect();
+        let (doc_w, doc_h) = self.doc_size.unwrap_or((800, 600));
+        if let Some(img) = composite_preview(&data, doc_w, doc_h) {
+            let (w, h) = (img.width() as f32, img.height() as f32);
+            let rgba = img.to_rgba8();
+            self.drag_background_size = Some(Size::new(w, h));
+            self.drag_background = Some(iced_image::Handle::from_rgba(
+                rgba.width(),
+                rgba.height(),
+                rgba.into_raw(),
+            ));
         }
     }
 }
@@ -726,10 +758,20 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 }
             }
             ui::image_canvas::ImageCanvasEvent::MoveLayerStart => {
-                if app.selected_tool == Tool::Move
-                    && let Some(layer) = app.selected_layer_mut()
-                {
-                    app.move_anchor = Some((layer.id, layer.offset_x, layer.offset_y));
+                if app.selected_tool == Tool::Move {
+                    // Lit l'ancre avant toute mutation (règle own-borrow-over-clone)
+                    let anchor = app
+                        .selected_layer_mut()
+                        .map(|l| (l.id, l.offset_x, l.offset_y));
+                    if let Some((id, ox, oy)) = anchor {
+                        app.move_anchor = Some((id, ox, oy));
+                        // Fallback (fusion non-Normal) : pré-calcule UNE FOIS le
+                        // fond sans le calque déplacé — coût unique au début du
+                        // drag, ensuite zéro recomposite pendant tout le geste
+                        if app.needs_fallback() {
+                            app.prepare_drag_background(id);
+                        }
+                    }
                 }
             }
             ui::image_canvas::ImageCanvasEvent::MoveLayer { dx, dy } => {
@@ -739,35 +781,28 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 {
                     let zoom = app.zoom_level as f32 / 100.0;
                     if zoom > 0.001 {
-                        // ZÉRO recomposite : l'offset change et le canvas
-                        // redessine la texture à sa nouvelle position à la
-                        // frame suivante (modèle Affinity — fluide à 60 fps)
+                        // ZÉRO recomposite dans les deux chemins :
+                        // - rapide : le canvas redessine la texture à sa
+                        //   nouvelle position (modèle Affinity)
+                        // - fallback : fond pré-calculé + calque dessiné
+                        //   par-dessus (approximation Normal pendant le geste)
                         let new_x = ax + dx / zoom;
                         let new_y = ay + dy / zoom;
                         if let Some(i) = app.layer_index(id) {
                             app.layers[i].offset_x = new_x;
                             app.layers[i].offset_y = new_y;
                         }
-                        // Fallback fusion non-Normal seulement : recomposite
-                        // throttlé (le chemin rapide n'en a pas besoin)
-                        if app.needs_fallback() {
-                            let now = std::time::Instant::now();
-                            let should = app
-                                .last_fallback_refresh
-                                .map(|t| now.duration_since(t).as_millis() > 33)
-                                .unwrap_or(true);
-                            if should {
-                                app.last_fallback_refresh = Some(now);
-                                app.refresh_fallback();
-                            }
-                        }
                     }
                 }
             }
             ui::image_canvas::ImageCanvasEvent::MoveLayerEnd => {
                 app.move_anchor = None;
-                app.last_fallback_refresh = None;
-                if app.needs_fallback() {
+                // Vrai recomposite : le blend réel du calque à sa position
+                // finale remplace l'approximation du drag
+                let was_fallback = app.needs_fallback();
+                app.drag_background = None;
+                app.drag_background_size = None;
+                if was_fallback {
                     app.refresh_fallback();
                 }
             }
@@ -963,6 +998,9 @@ fn view(app: &PhotoApp) -> Element<'_, Message> {
             doc_size,
             app.fallback_handle.clone(),
             app.fallback_size,
+            app.move_anchor.map(|(id, _, _)| id),
+            app.drag_background.clone(),
+            app.drag_background_size,
             app.image_path.clone(),
             app.image_error.clone(),
             app.selected_tool,

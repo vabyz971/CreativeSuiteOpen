@@ -35,6 +35,11 @@ pub fn render<'a>(
     doc_size: Option<Size>,
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
+    // Calque en cours de déplacement (mode fallback)
+    drag_layer: Option<u64>,
+    // Fond composite pré-calculé sans le calque déplacé
+    drag_background: Option<image::Handle>,
+    drag_background_size: Option<Size>,
     image_path: Option<String>,
     image_error: Option<String>,
     selected_tool: Tool,
@@ -67,6 +72,9 @@ pub fn render<'a>(
                 let preview: Element<'_, Message> = render_canvas_preview(
                     if needs_fallback { fallback_handle.clone() } else { None },
                     if needs_fallback { fallback_size } else { None },
+                    drag_layer,
+                    drag_background.clone(),
+                    drag_background_size,
                     layers,
                     doc_size,
                     image_error.clone(),
@@ -180,6 +188,9 @@ fn build_node_context_menu<'a>(click_pos: iced::Point, world: datatypes::Vec2) -
 fn render_canvas_preview<'a>(
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
+    drag_layer: Option<u64>,
+    drag_background: Option<image::Handle>,
+    drag_background_size: Option<Size>,
     layers: &'a [Layer],
     doc_size: Option<Size>,
     image_error: Option<String>,
@@ -201,9 +212,13 @@ fn render_canvas_preview<'a>(
 
     // Calques canvas : texture + offset + opacité appliqués AU DRAW (GPU)
     // → slider d'opacité = zéro régénération de pixels, zéro clignotement
-    let canvas_layers: Vec<ui::image_canvas::CanvasLayer> = layers
+    let dragging = drag_layer.is_some();
+    let mut canvas_layers: Vec<ui::image_canvas::CanvasLayer> = layers
         .iter()
         .filter(|l| l.visible && l.opacity > 0.01)
+        // En drag fallback : le calque déplacé est exclu du fond (il est
+        // dessiné par-dessus le fond pré-calculé, voir plus bas)
+        .filter(|l| !(dragging && drag_background.is_some() && Some(l.id) == drag_layer))
         .map(|l| {
             let (w, h) = l.dimensions();
             ui::image_canvas::CanvasLayer {
@@ -217,12 +232,51 @@ fn render_canvas_preview<'a>(
         })
         .collect();
 
-    // Fallback fusion non-Normal : une seule image composite.
+    // Drag en fallback : fond pré-calculé (sans le calque déplacé) inséré
+    // en bas de pile, puis le calque déplacé dessiné par-dessus à sa
+    // position live. ZÉRO recomposite pendant le geste — le blend réel
+    // (Multiply/Screen/…) est recalculé une seule fois au relâchement.
+    if dragging
+        && let (Some(bg), Some(bgsz)) = (drag_background, drag_background_size)
+    {
+        let (bg_off_x, bg_off_y) = doc_size
+            .map(|d| ((d.width - bgsz.width) / 2.0, (d.height - bgsz.height) / 2.0))
+            .unwrap_or((0.0, 0.0));
+        canvas_layers.insert(
+            0,
+            ui::image_canvas::CanvasLayer {
+                handle: bg,
+                width: bgsz.width,
+                height: bgsz.height,
+                offset_x: bg_off_x,
+                offset_y: bg_off_y,
+                opacity: 1.0,
+            },
+        );
+    }
+    if dragging
+        && let Some(l) = drag_layer.and_then(|id| layers.iter().find(|l| l.id == id))
+        && l.visible
+    {
+        let (w, h) = l.dimensions();
+        canvas_layers.push(ui::image_canvas::CanvasLayer {
+            handle: l.handle.clone(),
+            width: w as f32,
+            height: h as f32,
+            offset_x: l.offset_x,
+            offset_y: l.offset_y,
+            opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
+        });
+    }
+
+    // Fallback fusion non-Normal (HORS drag) : une seule image composite.
+    // Pendant un drag, on utilise le chemin par calque ci-dessus
+    // (fond pré-calculé + calque déplacé).
     // Le buffer composite est symétrique autour du centre document →
     // offset = (doc - buffer)/2 pour respecter la convention
     // « offset (0,0) = coin haut-gauche du document ».
-    let content: Element<'_, Message> = if let (Some(handle), Some(sz)) =
-        (fallback_handle, fallback_size)
+    let content: Element<'_, Message> = if !dragging
+        && let (Some(handle), Some(sz)) = (fallback_handle, fallback_size)
     {
         let (fb_off_x, fb_off_y) = doc_size
             .map(|d| ((d.width - sz.width) / 2.0, (d.height - sz.height) / 2.0))
