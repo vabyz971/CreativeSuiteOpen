@@ -56,14 +56,18 @@ pub struct Layer {
     pub visible: bool,
     pub offset_x: f32,
     pub offset_y: f32,
+    /// Rotation en degrés (sens horaire), appliquée au draw autour du centre
+    pub rotation: f32,
+    /// Échelle uniforme (1.0 = 100 %)
+    pub scale: f32,
 }
 
 impl Layer {
     pub fn new(id: u64, name: String, image: Arc<DynamicImage>) -> Self {
         let thumb = thumb_handle(&image);
-        let rgba = image.to_rgba8();
-        let (w, h) = (rgba.width(), rgba.height());
-        let handle = iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw());
+        // Pour les très grandes images, on crée une texture d'aperçu downscalée
+        // pour garder la rotation fluide (GPU) — l'original est conservé pour l'export.
+        let handle = Self::make_preview_handle(&image);
         Self {
             id,
             name,
@@ -75,12 +79,56 @@ impl Layer {
             visible: true,
             offset_x: 0.0,
             offset_y: 0.0,
+            rotation: 0.0,
+            scale: 1.0,
+        }
+    }
+
+    fn make_preview_handle(image: &DynamicImage) -> iced::widget::image::Handle {
+        const MAX_PREVIEW: u32 = 2048;
+        let (w, h) = image.dimensions();
+        if w.max(h) <= MAX_PREVIEW {
+            let rgba = image.to_rgba8();
+            let (w, h) = (rgba.width(), rgba.height());
+            iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw())
+        } else {
+            // Downscale pour l'affichage interactif — garde l'original pour l'export
+            let preview = image.resize(
+                MAX_PREVIEW,
+                MAX_PREVIEW,
+                ::image::imageops::FilterType::Triangle,
+            );
+            let rgba = preview.to_rgba8();
+            let (w, h) = (rgba.width(), rgba.height());
+            iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw())
         }
     }
 
     /// Dimensions du calque
     pub fn dimensions(&self) -> (u32, u32) {
         self.image.dimensions()
+    }
+
+    /// Rogne le calque au rect (coordonnées CALQUE, pixels).
+    /// Destructif : régénère texture + miniature. Le contenu reste en place
+    /// dans le monde (l'offset compense l'origine du crop).
+    /// Retourne une erreur descriptive si le rect est invalide.
+    pub fn crop(&mut self, x: i32, y: i32, w: u32, h: u32) -> Result<(), String> {
+        let (iw, ih) = self.dimensions();
+        if w == 0 || h == 0 {
+            return Err("rogner : dimensions nulles".into());
+        }
+        if x < 0 || y < 0 || x + w as i32 > iw as i32 || y + h as i32 > ih as i32 {
+            return Err("rogner : la sélection dépasse les bords du calque".into());
+        }
+        let cropped = self.image.crop_imm(x as u32, y as u32, w, h);
+        self.handle = Self::make_preview_handle(&cropped);
+        self.thumb = thumb_handle(&cropped);
+        self.image = Arc::new(cropped);
+        // Compense l'origine : le pixel (x,y) d'origine reste à sa place monde
+        self.offset_x += x as f32;
+        self.offset_y += y as f32;
+        Ok(())
     }
 }
 
@@ -101,6 +149,8 @@ pub struct LayerData {
     pub blend_mode: String,
     pub offset_x: f32,
     pub offset_y: f32,
+    pub rotation: f32,
+    pub scale: f32,
     pub visible: bool,
 }
 
@@ -113,6 +163,8 @@ impl From<&Layer> for LayerData {
             blend_mode: l.blend_mode.clone(),
             offset_x: l.offset_x,
             offset_y: l.offset_y,
+            rotation: l.rotation,
+            scale: l.scale,
             visible: l.visible,
         }
     }
@@ -225,6 +277,106 @@ pub fn blend_into(
         });
 }
 
+fn prepare_top(l: &LayerData) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, f32) {
+    // Retourne (buffer transformé, offset_x ajusté, offset_y ajusté)
+    // Gère échelle + rotation (autour du centre, comme le canvas) sans rognage.
+    let (w0, h0) = l.image.dimensions();
+    let scale = l.scale.clamp(0.05, 8.0);
+    let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = match l.image.as_ref() {
+        DynamicImage::ImageRgba8(b) => {
+            if (scale - 1.0).abs() > 0.001 {
+                let nw = ((w0 as f32 * scale).round() as u32).max(1);
+                let nh = ((h0 as f32 * scale).round() as u32).max(1);
+                image::imageops::resize(b, nw, nh, image::imageops::FilterType::Triangle)
+            } else {
+                b.clone()
+            }
+        }
+        other => {
+            let rgba = other.to_rgba8();
+            if (scale - 1.0).abs() > 0.001 {
+                let nw = ((w0 as f32 * scale).round() as u32).max(1);
+                let nh = ((h0 as f32 * scale).round() as u32).max(1);
+                image::imageops::resize(&rgba, nw, nh, image::imageops::FilterType::Triangle)
+            } else {
+                rgba
+            }
+        }
+    };
+    let (mut tw, mut th) = (buf.width() as f32, buf.height() as f32);
+    let mut ox = l.offset_x;
+    let mut oy = l.offset_y;
+    let rot = l.rotation.rem_euclid(360.0);
+    let rot_i = rot.round() as i32;
+    if rot_i % 90 == 0 && rot_i % 180 != 0 {
+        // 90° / 270° — swap via imageops (rapide, sans interpolation)
+        let rotated = if rot_i == 90 || rot_i == -270 {
+            image::imageops::rotate90(&buf)
+        } else {
+            image::imageops::rotate270(&buf)
+        };
+        let (nw, nh) = (rotated.width() as f32, rotated.height() as f32);
+        ox += (tw - nw) / 2.0;
+        oy += (th - nh) / 2.0;
+        buf = rotated;
+        tw = nw;
+        th = nh;
+    } else if rot_i == 180 || rot_i == -180 {
+        buf = image::imageops::rotate180(&buf);
+    } else if rot.abs() > 0.01 {
+        // Rotation arbitraire : bounding box + échantillonnage bilinéaire
+        let rad = rot.to_radians();
+        let cos = rad.cos().abs();
+        let sin = rad.sin().abs();
+        let bbox_w = (tw * cos + th * sin).ceil().max(1.0) as u32;
+        let bbox_h = (tw * sin + th * cos).ceil().max(1.0) as u32;
+        let mut out = ImageBuffer::from_pixel(bbox_w, bbox_h, Rgba([0, 0, 0, 0]));
+        let cx0 = tw / 2.0;
+        let cy0 = th / 2.0;
+        let cx1 = bbox_w as f32 / 2.0;
+        let cy1 = bbox_h as f32 / 2.0;
+        let cos_r = rad.cos();
+        let sin_r = rad.sin();
+        // Remplissage en parallèle (rayon)
+        out.enumerate_pixels_mut()
+            .par_bridge()
+            .for_each(|(x, y, px)| {
+                // Destination -> source (rotation inverse)
+                let dx = x as f32 - cx1;
+                let dy = y as f32 - cy1;
+                let sx = dx * cos_r + dy * sin_r + cx0;
+                let sy = -dx * sin_r + dy * cos_r + cy0;
+                if sx >= 0.0 && sy >= 0.0 && sx < tw - 1.0 && sy < th - 1.0 {
+                    // Bilinéaire
+                    let x0 = sx.floor() as u32;
+                    let y0 = sy.floor() as u32;
+                    let fx = sx - x0 as f32;
+                    let fy = sy - y0 as f32;
+                    let p00 = buf.get_pixel(x0, y0);
+                    let p10 = buf.get_pixel((x0 + 1).min(buf.width() - 1), y0);
+                    let p01 = buf.get_pixel(x0, (y0 + 1).min(buf.height() - 1));
+                    let p11 = buf.get_pixel(
+                        (x0 + 1).min(buf.width() - 1),
+                        (y0 + 1).min(buf.height() - 1),
+                    );
+                    for c in 0..4 {
+                        let v = (p00[c] as f32 * (1.0 - fx) * (1.0 - fy)
+                            + p10[c] as f32 * fx * (1.0 - fy)
+                            + p01[c] as f32 * (1.0 - fx) * fy
+                            + p11[c] as f32 * fx * fy)
+                            .round() as u8;
+                        px[c] = v;
+                    }
+                }
+            });
+        ox += (tw - bbox_w as f32) / 2.0;
+        oy += (th - bbox_h as f32) / 2.0;
+        buf = out;
+    }
+    let _ = (tw, th);
+    (buf, ox, oy)
+}
+
 /// Composite la pile (index 0 = bas) sur un document `doc_w × doc_h`.
 /// CROP au document — utilisé pour l'export. Voir `composite_preview` pour
 /// le plan de travail infini (sans crop).
@@ -235,15 +387,8 @@ pub fn composite(layers: &[LayerData], doc_w: u32, doc_h: u32) -> Option<Dynamic
         let acc_buf = acc.get_or_insert_with(|| {
             ImageBuffer::from_pixel(doc_w.max(1), doc_h.max(1), Rgba([0, 0, 0, 0]))
         });
-        let converted;
-        let top: &ImageBuffer<Rgba<u8>, Vec<u8>> = match l.image.as_ref() {
-            DynamicImage::ImageRgba8(buf) => buf,
-            other => {
-                converted = other.to_rgba8();
-                &converted
-            }
-        };
-        blend_into(acc_buf, top, l.opacity, &l.blend_mode, l.offset_x, l.offset_y);
+        let (top, ox, oy) = prepare_top(l);
+        blend_into(acc_buf, &top, l.opacity, &l.blend_mode, ox, oy);
     }
 
     acc.map(DynamicImage::ImageRgba8)
@@ -268,12 +413,32 @@ pub fn composite_preview(layers: &[LayerData], doc_w: u32, doc_h: u32) -> Option
     let mut half_w = doc_w as f32 / 2.0;
     let mut half_h = doc_h as f32 / 2.0;
     for l in &visible {
-        let (tw, th) = {
-            let (w, h) = l.image.dimensions();
-            (w as f32, h as f32)
-        };
-        let cx = l.offset_x + tw / 2.0;
-        let cy = l.offset_y + th / 2.0;
+        let (w0, h0) = l.image.dimensions();
+        let scale = l.scale.clamp(0.05, 8.0);
+        let mut tw = w0 as f32 * scale;
+        let mut th = h0 as f32 * scale;
+        let rot = l.rotation.rem_euclid(360.0);
+        let rot_i = rot.round() as i32;
+        if rot_i % 90 == 0 && rot_i % 180 != 0 {
+            std::mem::swap(&mut tw, &mut th);
+        } else if rot.abs() > 0.01 {
+            let rad = rot.to_radians();
+            let cos = rad.cos().abs();
+            let sin = rad.sin().abs();
+            let bbox_w = tw * cos + th * sin;
+            let bbox_h = tw * sin + th * cos;
+            tw = bbox_w;
+            th = bbox_h;
+        }
+        // Centre du calque après rotation autour de son centre
+        let mut cx = l.offset_x + w0 as f32 * scale / 2.0;
+        let mut cy = l.offset_y + h0 as f32 * scale / 2.0;
+        if rot_i == 90 || rot_i == 270 || rot_i == 180 || rot.abs() > 0.01 {
+            let adj_x = (w0 as f32 * scale - tw) / 2.0;
+            let adj_y = (h0 as f32 * scale - th) / 2.0;
+            cx = l.offset_x + adj_x + tw / 2.0;
+            cy = l.offset_y + adj_y + th / 2.0;
+        }
         half_w = half_w.max((cx - doc_cx).abs() + tw / 2.0);
         half_h = half_h.max((cy - doc_cy).abs() + th / 2.0);
     }
@@ -286,17 +451,10 @@ pub fn composite_preview(layers: &[LayerData], doc_w: u32, doc_h: u32) -> Option
     let origin_x = half_w - doc_cx;
     let origin_y = half_h - doc_cy;
     for l in visible {
-        let converted;
-        let top: &ImageBuffer<Rgba<u8>, Vec<u8>> = match l.image.as_ref() {
-            DynamicImage::ImageRgba8(buf) => buf,
-            other => {
-                converted = other.to_rgba8();
-                &converted
-            }
-        };
-        let ox = l.offset_x + origin_x;
-        let oy = l.offset_y + origin_y;
-        blend_into(&mut acc, top, l.opacity, &l.blend_mode, ox, oy);
+        let (top, ox0, oy0) = prepare_top(l);
+        let ox = ox0 + origin_x;
+        let oy = oy0 + origin_y;
+        blend_into(&mut acc, &top, l.opacity, &l.blend_mode, ox, oy);
     }
 
     Some(DynamicImage::ImageRgba8(acc))

@@ -15,17 +15,12 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Système de menus générique partagé par toutes les apps.
-//! Utilise le widget natif [`iced_aw::DropDown`] : positionnement, ancrage
-//! sous le bouton et fermeture au clic extérieur gérés automatiquement.
-//!
-//! Tous les types sont POSSÉDÉS (String) : l'app peut reconstruire ses menus
-//! à chaque vue (labels dynamiques, coches d'état) sans souci de durées de vie.
+//! Utilise le widget natif `iced_aw::menu::MenuBar` : sous-menus au survol,
+//! comme Photoshop/Affinity. Inspiré de `iced_aw/examples/menu.rs`.
 
 use crate::theme::{colors, metrics};
-use iced::widget::{Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, container, text};
 use iced::{Alignment, Element, Length};
-use iced_aw::DropDown;
-use iced_aw::drop_down;
 
 /// Largeur d'un slot de bouton menu
 pub const SLOT_WIDTH: f32 = 64.0;
@@ -44,6 +39,10 @@ pub enum Item<Message> {
         message: Message,
     },
     Separator,
+    SubMenu {
+        label: String,
+        items: Vec<Item<Message>>,
+    },
 }
 
 impl<Message> Item<Message> {
@@ -73,134 +72,176 @@ impl<Message> Menu<Message> {
     }
 }
 
-/// Rangée de boutons menus avec dropdowns natifs ancrés sous chaque bouton.
-/// `open` = index du menu actuellement déplié (None = tous fermés).
-/// L'élément retourné ne dépend PAS des données d'entrée (tout est possédé).
+/// Rangée de boutons menus avec le `MenuBar` natif iced_aw.
+/// Les sous-menus s'ouvrent au survol, comme dans Photoshop/Affinity.
+/// Les paramètres `open`/`submenu_open`/`on_toggle` sont conservés pour
+/// compatibilité mais ignorés : `MenuBar` gère son état en interne.
 pub fn bar<'a, Message: Clone + 'a>(
     menus: &[Menu<Message>],
-    open: Option<usize>,
-    on_toggle: impl Fn(Option<usize>) -> Message + Copy,
+    _open: Option<usize>,
+    _submenu_open: Option<(usize, usize)>,
+    _on_toggle: impl Fn(Option<usize>) -> Message + Copy,
+    _on_submenu_toggle: impl Fn(Option<(usize, usize)>) -> Message + Copy,
 ) -> Element<'a, Message> {
-    let btns: Vec<Element<'a, Message>> = menus
+    use iced_aw::menu::{Item as AwItem, Menu as AwMenu};
+
+    let aw_items: Vec<AwItem<'a, Message, iced::Theme, iced::Renderer>> = menus
         .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let is_open = open == Some(i);
-            let label = m.label.clone();
-
-            let underlay = button(text(label).size(12).center())
-                .width(Length::Fixed(SLOT_WIDTH))
-                .height(Length::Fixed(BAR_HEIGHT))
-                .style(move |_theme, status| {
-                    let mut st = button::Style::default();
-                    if is_open || status == button::Status::Hovered {
-                        st.background = Some(colors::HOVER_OVERLAY.into());
-                        st.text_color = colors::TEXT_PRIMARY;
-                    } else {
-                        st.background = Some(iced::Color::TRANSPARENT.into());
-                        st.text_color = colors::ON_SURFACE;
-                    }
-                    st.border.radius = metrics::RADIUS_BUTTON.into();
-                    st
-                })
-                .on_press(on_toggle(if is_open { None } else { Some(i) }));
-
-            let items: Vec<Element<'a, Message>> = m
+        .map(|m| {
+            let aw_sub_items: Vec<AwItem<'a, Message, iced::Theme, iced::Renderer>> = m
                 .items
                 .iter()
                 .map(|item| match item {
-                    Item::Action {
-                        label,
-                        shortcut,
-                        checked,
-                        message,
-                    } => action_row(label.clone(), *checked, shortcut.clone(), message.clone()),
-                    Item::Separator => separator(),
+                    Item::Action { label, shortcut, checked, message } => {
+                        let content = if shortcut.is_empty() {
+                            if *checked {
+                                format!("✓ {}", label)
+                            } else {
+                                format!("   {}", label)
+                            }
+                        } else if *checked {
+                            format!("✓ {}  {}", label, shortcut)
+                        } else {
+                            format!("   {}  {}", label, shortcut)
+                        };
+                        AwItem::new(
+                            button(text(content).size(13))
+                                .width(Length::Fill)
+                                .padding(iced::Padding::new(6.0).left(10.0).right(8.0))
+                                .style(|_, s| {
+                                    let mut st = button::Style::default();
+                                    let hovered = s == iced::widget::button::Status::Hovered;
+                                    st.background = Some(if hovered {
+                                        colors::ACCENT.into()
+                                    } else {
+                                        iced::Color::TRANSPARENT.into()
+                                    });
+                                    st.text_color = if hovered {
+                                        colors::TEXT_ON_ACCENT
+                                    } else {
+                                        colors::ON_SURFACE
+                                    };
+                                    st.border.radius = metrics::RADIUS_BUTTON.into();
+                                    st
+                                })
+                                .on_press(message.clone()),
+                        )
+                    }
+                    Item::Separator => AwItem::new(
+                        container(Space::new().height(Length::Fixed(1.0)))
+                            .padding(iced::Padding::new(1.0).left(6.0).right(6.0))
+                            .style(|_| container::Style {
+                                background: Some(colors::BORDER_PANEL.into()),
+                                ..Default::default()
+                            }),
+                    ),
+                    Item::SubMenu { label, items } => {
+                        let sub_items: Vec<AwItem<'a, Message, iced::Theme, iced::Renderer>> = items
+                            .iter()
+                            .map(|sub| match sub {
+                                Item::Action { label, shortcut, checked, message } => {
+                                    let content = if shortcut.is_empty() {
+                                        if *checked {
+                                            format!("✓ {}", label)
+                                        } else {
+                                            format!("   {}", label)
+                                        }
+                                    } else if *checked {
+                                        format!("✓ {}  {}", label, shortcut)
+                                    } else {
+                                        format!("   {}  {}", label, shortcut)
+                                    };
+                                    AwItem::new(
+                                        button(text(content).size(13))
+                                            .width(Length::Fill)
+                                            .padding(iced::Padding::new(6.0).left(10.0).right(8.0))
+                                            .style(|_, s| {
+                                                let mut st = button::Style::default();
+                                                let hovered = s == iced::widget::button::Status::Hovered;
+                                                st.background = Some(if hovered {
+                                                    colors::ACCENT.into()
+                                                } else {
+                                                    iced::Color::TRANSPARENT.into()
+                                                });
+                                                st.text_color = if hovered {
+                                                    colors::TEXT_ON_ACCENT
+                                                } else {
+                                                    colors::ON_SURFACE
+                                                };
+                                                st.border.radius = metrics::RADIUS_BUTTON.into();
+                                                st
+                                            })
+                                            .on_press(message.clone()),
+                                    )
+                                }
+                                Item::Separator => AwItem::new(
+                                    container(Space::new().height(Length::Fixed(1.0)))
+                                        .padding(iced::Padding::new(1.0).left(6.0).right(6.0))
+                                        .style(|_| container::Style {
+                                            background: Some(colors::BORDER_PANEL.into()),
+                                            ..Default::default()
+                                        }),
+                                ),
+                                Item::SubMenu { .. } => unreachable!("sous-menu imbriqué non supporté"),
+                            })
+                            .collect();
+                        let sub_menu = AwMenu::new(sub_items).width(200.0).offset(4.0).spacing(2.0);
+                        AwItem::with_menu(
+                            button(
+                                iced::widget::row![
+                                    text(label.clone()).size(13),
+                                    Space::new().width(Length::Fill),
+                                    text("▶").size(10).color(colors::TEXT_MUTED),
+                                ]
+                                .align_y(Alignment::Center),
+                            )
+                            .width(Length::Fill)
+                            .padding(iced::Padding::new(6.0).left(10.0).right(8.0))
+                            .style(|_, s| {
+                                let mut st = button::Style::default();
+                                let hovered = s == iced::widget::button::Status::Hovered;
+                                st.background = Some(if hovered {
+                                    colors::ACCENT.into()
+                                } else {
+                                    iced::Color::TRANSPARENT.into()
+                                });
+                                st.text_color = if hovered {
+                                    colors::TEXT_ON_ACCENT
+                                } else {
+                                    colors::ON_SURFACE
+                                };
+                                st.border.radius = metrics::RADIUS_BUTTON.into();
+                                st
+                            }),
+                            sub_menu,
+                        )
+                    }
                 })
                 .collect();
 
-            let overlay = scrollable(
-                container(column(items).spacing(1).padding(4))
-                    .width(Length::Fixed(240.0))
-                    .style(|_theme| container::Style {
-                        background: Some(colors::BG_DROPDOWN.into()),
-                        border: iced::Border {
-                            width: 1.0,
-                            color: colors::BORDER_SUBTLE,
-                            radius: metrics::RADIUS_DROPDOWN.into(),
-                            ..Default::default()
-                        },
-                        shadow: crate::theme::shadows::dropdown(),
-                        ..Default::default()
+            let aw_menu = AwMenu::new(aw_sub_items).width(240.0).offset(6.0).spacing(2.0);
+            AwItem::with_menu(
+                button(text(m.label.clone()).size(12).center())
+                    .width(Length::Fixed(SLOT_WIDTH))
+                    .height(Length::Fixed(BAR_HEIGHT))
+                    .style(|_, s| {
+                        let mut st = button::Style::default();
+                        let hovered = s == iced::widget::button::Status::Hovered;
+                        st.background = Some(if hovered {
+                            colors::HOVER_OVERLAY.into()
+                        } else {
+                            iced::Color::TRANSPARENT.into()
+                        });
+                        st.text_color = colors::TEXT_PRIMARY;
+                        st.border.radius = metrics::RADIUS_BUTTON.into();
+                        st
                     }),
-            );
-
-            DropDown::new(underlay, overlay, is_open)
-                .width(Length::Fixed(240.0))
-                .alignment(drop_down::Alignment::Bottom)
-                .on_dismiss(on_toggle(None))
-                .into()
+                aw_menu,
+            )
         })
         .collect();
 
-    container(row(btns).spacing(SLOT_GAP))
-        .height(Length::Fixed(BAR_HEIGHT))
-        .align_y(Alignment::Center)
-        .into()
-}
-
-fn action_row<'a, Message: Clone + 'a>(
-    mut label: String,
-    checked: bool,
-    shortcut: String,
-    message: Message,
-) -> Element<'a, Message> {
-    // Coche d'état : préfixe ✓ aligné par espaces
-    if checked {
-        label.insert_str(0, "✓ ");
-    } else {
-        label.insert_str(0, "   ");
-    }
-
-    let content = row![
-        text(label).size(13).color(colors::ON_SURFACE),
-        Space::new().width(Length::Fill),
-        text(shortcut)
-            .size(11)
-            .font(iced::Font::MONOSPACE)
-            .color(colors::TEXT_MUTED),
-    ]
-    .align_y(Alignment::Center);
-
-    button(content)
-        .width(Length::Fill)
-        .padding(iced::Padding::new(6.0).left(10.0).right(8.0))
-        .style(move |_theme: &_, status| {
-            let mut st = button::Style::default();
-            let hovered = status == button::Status::Hovered;
-            st.background = Some(if hovered {
-                colors::ACCENT.into()
-            } else {
-                iced::Color::TRANSPARENT.into()
-            });
-            st.text_color = if hovered {
-                colors::TEXT_ON_ACCENT
-            } else {
-                colors::ON_SURFACE
-            };
-            st.border.radius = metrics::RADIUS_BUTTON.into();
-            st
-        })
-        .on_press(message)
-        .into()
-}
-
-fn separator<'a, Message: 'a>() -> Element<'a, Message> {
-    container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
-        .padding(iced::Padding::new(1.0).left(6.0).right(6.0))
-        .style(|_| container::Style {
-            background: Some(colors::BORDER_PANEL.into()),
-            ..Default::default()
-        })
+    iced_aw::menu::MenuBar::new(aw_items)
+        .spacing(SLOT_GAP)
         .into()
 }

@@ -110,6 +110,10 @@ pub fn render<'a>(layer: Option<&'a Layer>) -> Element<'a, Message> {
             axis: crate::OffsetAxis::Y,
             value: v
         }),
+        // Échelle uniforme — appliquée au draw (GPU), zéro régénération
+        param_slider("Échelle (%)", layer.scale * 100.0, 5.0..=800.0, 1.0, move |v| {
+            Message::SetLayerScale { id, scale: v / 100.0 }
+        }),
         Space::new().height(Length::Fixed(10.0)),
         info,
     ]

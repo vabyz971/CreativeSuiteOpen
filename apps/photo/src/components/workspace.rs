@@ -79,6 +79,7 @@ pub fn render<'a>(
                     doc_size,
                     image_error.clone(),
                     selected_tool,
+                    selected_layer,
                     tools_visible,
                     canvas_pan,
                     zoom_level,
@@ -195,6 +196,7 @@ fn render_canvas_preview<'a>(
     doc_size: Option<Size>,
     image_error: Option<String>,
     selected_tool: Tool,
+    selected_layer: Option<u64>,
     tools_visible: bool,
     canvas_pan: Vector,
     zoom_level: u32,
@@ -228,6 +230,8 @@ fn render_canvas_preview<'a>(
                 offset_x: l.offset_x,
                 offset_y: l.offset_y,
                 opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
+                rotation_deg: l.rotation,
+                scale: l.scale,
             }
         })
         .collect();
@@ -251,6 +255,8 @@ fn render_canvas_preview<'a>(
                 offset_x: bg_off_x,
                 offset_y: bg_off_y,
                 opacity: 1.0,
+                rotation_deg: 0.0,
+                scale: 1.0,
             },
         );
     }
@@ -266,6 +272,8 @@ fn render_canvas_preview<'a>(
             offset_x: l.offset_x,
             offset_y: l.offset_y,
             opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
+            rotation_deg: l.rotation,
+            scale: l.scale,
         });
     }
 
@@ -288,6 +296,8 @@ fn render_canvas_preview<'a>(
             offset_x: fb_off_x,
             offset_y: fb_off_y,
             opacity: 1.0, // opacité déjà appliquée dans le composite
+            rotation_deg: 0.0,
+            scale: 1.0,
         }];
         let canvas = ui::image_canvas::view_with_tool(
             doc_size, canvas_pan, zoom, canvas_tool, canvas_selection, ls,
@@ -398,7 +408,11 @@ fn render_canvas_preview<'a>(
 
     // Barre d'outils FLOTTANTE verticale en HAUT à gauche du canvas
     let floating_tools: Element<'_, Message> = if tools_visible {
-        let tools_pill = container(toolpanel::render(selected_tool))
+        let tools_pill = container(toolpanel::render(
+            selected_tool,
+            selected_layer,
+            canvas_selection.is_some(),
+        ))
             .padding(iced::Padding::new(4.0).top(4.0).bottom(4.0))
             .style(|_| container::Style {
                 background: Some(colors::SURFACE_CONTAINER.into()),

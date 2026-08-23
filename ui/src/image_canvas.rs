@@ -56,7 +56,8 @@ pub enum ImageCanvasEvent {
 
 /// Un calque affichable sur le canvas — dessiné à SA position monde.
 /// Déplacer = changer offset → simple redraw, zéro recomposite.
-/// L'opacité est appliquée AU DRAW (GPU) — zéro régénération de texture.
+/// L'opacité/rotation/scale sont appliqués AU DRAW (GPU) — zéro
+/// régénération de pixels.
 pub struct CanvasLayer {
     pub handle: image::Handle,
     pub width: f32,
@@ -66,6 +67,10 @@ pub struct CanvasLayer {
     pub offset_y: f32,
     /// Opacité 0..1 appliquée au draw (sans toucher aux pixels)
     pub opacity: f32,
+    /// Rotation en degrés (autour du centre du calque)
+    pub rotation_deg: f32,
+    /// Échelle uniforme (1.0 = 100 %)
+    pub scale: f32,
 }
 
 pub struct ImageCanvas {
@@ -307,15 +312,20 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             .map(|s| (s.width / 2.0, s.height / 2.0))
             .unwrap_or((0.0, 0.0));
         for l in &self.layers {
-            let w = l.width * self.zoom;
-            let h = l.height * self.zoom;
+            // Rotation appliquée autour du centre du rect par iced —
+            // le rect garde la taille d'origine (w_s×h_s), les coins
+            // tournés dépassent naturellement sans être rognés.
+            let w = l.width * l.scale * self.zoom;
+            let h = l.height * l.scale * self.zoom;
             let top_left = Point::new(
                 center.x + (l.offset_x - doc_half_w) * self.zoom,
                 center.y + (l.offset_y - doc_half_h) * self.zoom,
             );
             frame.draw_image(
                 Rectangle::new(top_left, Size::new(w, h)),
-                iced_core::Image::new(l.handle.clone()).opacity(l.opacity),
+                iced_core::Image::new(l.handle.clone())
+                    .opacity(l.opacity)
+                    .rotation(iced::Radians(l.rotation_deg.to_radians())),
             );
         }
 

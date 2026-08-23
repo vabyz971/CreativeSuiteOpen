@@ -245,7 +245,7 @@ fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
         .padding(Padding::new(4.0).top(2.0).bottom(2.0))
         .on_input(move |s| Message::RenameLayer { id, name: s });
 
-    let mut row_btn = button(
+    let row_btn = button(
         row![
             eye,
             thumb_bg,
@@ -274,7 +274,6 @@ fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
         st
     })
     .on_press(Message::SelectLayer(id));
-    let _ = &mut row_btn;
 
     container(row_btn)
         .width(Length::Fill)

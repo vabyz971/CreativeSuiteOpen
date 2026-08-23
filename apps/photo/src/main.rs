@@ -140,6 +140,43 @@ fn app_menus(tools_visible: bool) -> Vec<ui::menu::Menu<Message>> {
                     checked: false,
                     message: Message::DeleteLayer(0),
                 },
+                ui::menu::Item::Separator,
+                ui::menu::Item::SubMenu {
+                    label: "Transformation".into(),
+                    items: vec![
+                        ui::menu::Item::Action {
+                            label: "Rotation 90°".into(),
+                            shortcut: "".to_string(),
+                            checked: false,
+                            message: Message::RotateLayer { id: 0, delta: 90.0 },
+                        },
+                        ui::menu::Item::Action {
+                            label: "Rotation 180°".into(),
+                            shortcut: "".to_string(),
+                            checked: false,
+                            message: Message::RotateLayer { id: 0, delta: 180.0 },
+                        },
+                        ui::menu::Item::Action {
+                            label: "Rotation -90°".into(),
+                            shortcut: "".to_string(),
+                            checked: false,
+                            message: Message::RotateLayer { id: 0, delta: -90.0 },
+                        },
+                        ui::menu::Item::Action {
+                            label: "Rotation -180°".into(),
+                            shortcut: "".to_string(),
+                            checked: false,
+                            message: Message::RotateLayer { id: 0, delta: -180.0 },
+                        },
+                        ui::menu::Item::Separator,
+                        ui::menu::Item::Action {
+                            label: "Réinitialiser transformation".into(),
+                            shortcut: "".to_string(),
+                            checked: false,
+                            message: Message::ResetLayerTransform(0),
+                        },
+                    ],
+                },
             ],
         ),
         ui::menu::Menu::new(
@@ -224,6 +261,7 @@ pub enum Tool {
 struct PhotoApp {
     pub zoom_level: u32,
     pub active_menu: Option<usize>,
+    pub active_submenu: Option<(usize, usize)>,
     pub panes: pane_grid::State<PanelType>,
     pub focus: Option<pane_grid::Pane>,
     // ---- Pile de calques (index 0 = bas de la pile) ----
@@ -298,6 +336,7 @@ pub enum Message {
 
     // UI Toolbar
     ToggleMenu(Option<usize>),
+    ToggleSubMenu(Option<(usize, usize)>),
     NewProject,
     OpenProject,
     Quit,
@@ -337,6 +376,18 @@ pub enum Message {
         axis: OffsetAxis,
         value: f32,
     },
+    /// Rotation du calque (degrés, absolu)
+    SetLayerRotation { id: u64, degrees: f32 },
+    /// Rotation rapide ±90° (true = horaire)
+    RotateLayer90 { id: u64, clockwise: bool },
+    /// Rotation relative (delta en degrés, ex: 90, -90, 180)
+    RotateLayer { id: u64, delta: f32 },
+    /// Échelle uniforme du calque (1.0 = 100 %)
+    SetLayerScale { id: u64, scale: f32 },
+    /// Réinitialise rotation + échelle du calque
+    ResetLayerTransform(u64),
+    /// Rogne le calque sélectionné à la sélection rectangulaire active
+    CropLayerToSelection,
     AddEmptyLayer,
     DuplicateLayer(u64),
     DeleteLayer(u64),
@@ -388,6 +439,7 @@ impl Default for PhotoApp {
 
         Self {
             active_menu: None,
+            active_submenu: None,
             zoom_level: 100,
             panes,
             focus: Some(canvas_pane),
@@ -505,9 +557,14 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
         Message::ToggleMenu(menu) => {
             if app.active_menu == menu {
                 app.active_menu = None;
+                app.active_submenu = None;
             } else {
                 app.active_menu = menu;
+                app.active_submenu = None;
             }
+        }
+        Message::ToggleSubMenu(sub) => {
+            app.active_submenu = sub;
         }
         Message::NewProject => {
             app.layers.clear();
@@ -618,6 +675,107 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 app.refresh_fallback();
             }
         }
+        Message::SetLayerRotation { id, degrees } => {
+            // Rotation au draw (GPU) — zéro travail sur les pixels
+            if let Some(i) = app.layer_index(id) {
+                app.layers[i].rotation = degrees.clamp(-360.0, 360.0);
+            }
+        }
+        Message::RotateLayer90 { id, clockwise } => {
+            app.active_menu = None;
+            let target = if app.layer_index(id).is_some() {
+                Some(id)
+            } else {
+                app.selected_layer
+            };
+            if let Some(tid) = target
+                && let Some(i) = app.layer_index(tid)
+            {
+                let delta = if clockwise { 90.0 } else { -90.0 };
+                // Normalise dans [-180, 180[ pour garder des valeurs lisibles
+                let r = (app.layers[i].rotation + delta + 180.0).rem_euclid(360.0) - 180.0;
+                app.layers[i].rotation = r;
+            }
+        }
+        Message::RotateLayer { id, delta } => {
+            app.active_menu = None;
+            let target = if app.layer_index(id).is_some() {
+                Some(id)
+            } else {
+                app.selected_layer
+            };
+            if let Some(tid) = target
+                && let Some(i) = app.layer_index(tid)
+            {
+                let r = (app.layers[i].rotation + delta + 180.0).rem_euclid(360.0) - 180.0;
+                // -180 et 180 sont équivalents, on garde 180 pour lisibilité
+                app.layers[i].rotation = if r == -180.0 { 180.0 } else { r };
+            }
+        }
+        Message::SetLayerScale { id, scale } => {
+            if let Some(i) = app.layer_index(id) {
+                app.layers[i].scale = scale.clamp(0.05, 8.0);
+            }
+        }
+        Message::ResetLayerTransform(id) => {
+            app.active_menu = None;
+            let target = if app.layer_index(id).is_some() {
+                Some(id)
+            } else {
+                app.selected_layer
+            };
+            if let Some(tid) = target
+                && let Some(i) = app.layer_index(tid)
+            {
+                app.layers[i].rotation = 0.0;
+                app.layers[i].scale = 1.0;
+            }
+        }
+        Message::CropLayerToSelection => {
+            app.active_menu = None;
+            // Garde-fous explicites (démarche incrémentale) : un calque
+            // sélectionné, une sélection rectangulaire, transform neutre
+            let Some(id) = app.selected_layer else {
+                app.image_error = Some("Rogner : aucun calque sélectionné".into());
+                return Task::none();
+            };
+            let Some(sel) = app.canvas_selection else {
+                app.image_error =
+                    Some("Rogner : faites d'abord une sélection rectangulaire (outil Sélect)".into());
+                return Task::none();
+            };
+            let Some(i) = app.layer_index(id) else {
+                return Task::none();
+            };
+            if app.layers[i].rotation.abs() > 0.01 || (app.layers[i].scale - 1.0).abs() > 0.01 {
+                app.image_error =
+                    Some("Rogner : réinitialisez d'abord rotation/échelle du calque".into());
+                return Task::none();
+            }
+            // Écran → monde → coordonnées calque
+            let zoom = (app.zoom_level as f32 / 100.0).max(0.001);
+            let (doc_w, doc_h) = app.doc_size.unwrap_or((800, 600));
+            let to_layer = |sx: f32, sy: f32| {
+                let wx = (sx - app.canvas_viewport.width / 2.0 - app.canvas_pan.x) / zoom
+                    + doc_w as f32 / 2.0;
+                let wy = (sy - app.canvas_viewport.height / 2.0 - app.canvas_pan.y) / zoom
+                    + doc_h as f32 / 2.0;
+                (wx - app.layers[i].offset_x, wy - app.layers[i].offset_y)
+            };
+            let (x0, y0) = to_layer(sel.x, sel.y);
+            let (x1, y1) = to_layer(sel.x + sel.width, sel.y + sel.height);
+            let cx0 = x0.min(x1).round() as i32;
+            let cy0 = y0.min(y1).round() as i32;
+            let cw = ((x1 - x0).abs().round() as u32).max(1);
+            let ch = ((y1 - y0).abs().round() as u32).max(1);
+            match app.layers[i].crop(cx0, cy0, cw, ch) {
+                Ok(()) => {
+                    app.image_error = None;
+                    app.refresh_fallback();
+                }
+                Err(e) => app.image_error = Some(e),
+            }
+        }
         Message::AddEmptyLayer => {
             app.active_menu = None;
             let (w, h) = app.doc_size.unwrap_or((800, 600));
@@ -656,6 +814,8 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 copy.visible = app.layers[i].visible;
                 copy.offset_x = app.layers[i].offset_x;
                 copy.offset_y = app.layers[i].offset_y;
+                copy.rotation = app.layers[i].rotation;
+                copy.scale = app.layers[i].scale;
                 app.layers.insert(i + 1, copy);
                 app.selected_layer = Some(app.layers[i + 1].id);
                 app.refresh_fallback();
@@ -986,7 +1146,13 @@ fn view(app: &PhotoApp) -> Element<'_, Message> {
     let doc_size = app.doc_size.map(|(w, h)| Size::new(w as f32, h as f32));
     // Contenu central : barre contextuelle (projet/zoom/export) + workspace
     let menus = app_menus(app.tools_visible);
-    let menu_buttons = ui::menu::bar(&menus, app.active_menu, Message::ToggleMenu);
+    let menu_buttons = ui::menu::bar(
+        &menus,
+        app.active_menu,
+        app.active_submenu,
+        Message::ToggleMenu,
+        Message::ToggleSubMenu,
+    );
 
     let central = iced::widget::column![
         components::toolbar::context_bar(app.image_path.as_deref()),
