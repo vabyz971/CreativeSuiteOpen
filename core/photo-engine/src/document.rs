@@ -306,11 +306,16 @@ fn prepare_top(l: &LayerData) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, f32) {
     let (mut tw, mut th) = (buf.width() as f32, buf.height() as f32);
     let mut ox = l.offset_x;
     let mut oy = l.offset_y;
-    let rot = l.rotation.rem_euclid(360.0);
-    let rot_i = rot.round() as i32;
-    if rot_i % 90 == 0 && rot_i % 180 != 0 {
+    let rot = l.rotation.rem_euclid(360.0); // ∈ [0, 360)
+    // Multiples de 90° avec epsilon (les rotations libres arrondies
+    // silencieusement seraient une erreur visuelle)
+    let is_0 = rot < 0.01 || rot > 359.99;
+    let is_90 = (rot - 90.0).abs() < 0.01;
+    let is_180 = (rot - 180.0).abs() < 0.01;
+    let is_270 = (rot - 270.0).abs() < 0.01;
+    if is_90 || is_270 {
         // 90° / 270° — swap via imageops (rapide, sans interpolation)
-        let rotated = if rot_i == 90 || rot_i == -270 {
+        let rotated = if is_90 {
             image::imageops::rotate90(&buf)
         } else {
             image::imageops::rotate270(&buf)
@@ -321,9 +326,9 @@ fn prepare_top(l: &LayerData) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, f32) {
         buf = rotated;
         tw = nw;
         th = nh;
-    } else if rot_i == 180 || rot_i == -180 {
+    } else if is_180 {
         buf = image::imageops::rotate180(&buf);
-    } else if rot.abs() > 0.01 {
+    } else if !is_0 {
         // Rotation arbitraire : bounding box + échantillonnage bilinéaire
         let rad = rot.to_radians();
         let cos = rad.cos().abs();
@@ -417,11 +422,14 @@ pub fn composite_preview(layers: &[LayerData], doc_w: u32, doc_h: u32) -> Option
         let scale = l.scale.clamp(0.05, 8.0);
         let mut tw = w0 as f32 * scale;
         let mut th = h0 as f32 * scale;
-        let rot = l.rotation.rem_euclid(360.0);
-        let rot_i = rot.round() as i32;
-        if rot_i % 90 == 0 && rot_i % 180 != 0 {
+        let rot = l.rotation.rem_euclid(360.0); // ∈ [0, 360)
+        let is_0 = rot < 0.01 || rot > 359.99;
+        let is_90 = (rot - 90.0).abs() < 0.01;
+        let is_180 = (rot - 180.0).abs() < 0.01;
+        let is_270 = (rot - 270.0).abs() < 0.01;
+        if is_90 || is_270 {
             std::mem::swap(&mut tw, &mut th);
-        } else if rot.abs() > 0.01 {
+        } else if !is_0 && !is_180 {
             let rad = rot.to_radians();
             let cos = rad.cos().abs();
             let sin = rad.sin().abs();
@@ -433,7 +441,7 @@ pub fn composite_preview(layers: &[LayerData], doc_w: u32, doc_h: u32) -> Option
         // Centre du calque après rotation autour de son centre
         let mut cx = l.offset_x + w0 as f32 * scale / 2.0;
         let mut cy = l.offset_y + h0 as f32 * scale / 2.0;
-        if rot_i == 90 || rot_i == 270 || rot_i == 180 || rot.abs() > 0.01 {
+        if !is_0 {
             let adj_x = (w0 as f32 * scale - tw) / 2.0;
             let adj_y = (h0 as f32 * scale - th) / 2.0;
             cx = l.offset_x + adj_x + tw / 2.0;

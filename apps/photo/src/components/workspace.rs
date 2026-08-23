@@ -240,8 +240,10 @@ fn render_canvas_preview<'a>(
     // en bas de pile, puis le calque déplacé dessiné par-dessus à sa
     // position live. ZÉRO recomposite pendant le geste — le blend réel
     // (Multiply/Screen/…) est recalculé une seule fois au relâchement.
+    let has_drag_bg = drag_background.is_some() && drag_background_size.is_some();
     if dragging
-        && let (Some(bg), Some(bgsz)) = (drag_background, drag_background_size)
+        && let Some(bg) = drag_background
+        && let Some(bgsz) = drag_background_size
     {
         let (bg_off_x, bg_off_y) = doc_size
             .map(|d| ((d.width - bgsz.width) / 2.0, (d.height - bgsz.height) / 2.0))
@@ -260,10 +262,13 @@ fn render_canvas_preview<'a>(
             },
         );
     }
-    if dragging
+    if dragging && has_drag_bg
         && let Some(l) = drag_layer.and_then(|id| layers.iter().find(|l| l.id == id))
         && l.visible
     {
+        // Uniquement en fallback : le fond pré-calculé exclut ce calque,
+        // on le dessine par-dessus. En chemin rapide il est DÉJÀ dans
+        // canvas_layers — le push ici le dessinerait deux fois.
         let (w, h) = l.dimensions();
         canvas_layers.push(ui::image_canvas::CanvasLayer {
             handle: l.handle.clone(),

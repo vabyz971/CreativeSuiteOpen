@@ -74,15 +74,8 @@ impl<Message> Menu<Message> {
 
 /// Rangée de boutons menus avec le `MenuBar` natif iced_aw.
 /// Les sous-menus s'ouvrent au survol, comme dans Photoshop/Affinity.
-/// Les paramètres `open`/`submenu_open`/`on_toggle` sont conservés pour
-/// compatibilité mais ignorés : `MenuBar` gère son état en interne.
-pub fn bar<'a, Message: Clone + 'a>(
-    menus: &[Menu<Message>],
-    _open: Option<usize>,
-    _submenu_open: Option<(usize, usize)>,
-    _on_toggle: impl Fn(Option<usize>) -> Message + Copy,
-    _on_submenu_toggle: impl Fn(Option<(usize, usize)>) -> Message + Copy,
-) -> Element<'a, Message> {
+/// L'état d'ouverture est géré en interne par le widget.
+pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Message> {
     use iced_aw::menu::{Item as AwItem, Menu as AwMenu};
 
     let aw_items: Vec<AwItem<'a, Message, iced::Theme, iced::Renderer>> = menus
