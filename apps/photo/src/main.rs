@@ -106,16 +106,10 @@ fn app_menus(tools_visible: bool, selected_layer: Option<u64>) -> Vec<ui::menu::
                 },
                 ui::menu::Item::Separator,
                 ui::menu::Item::Action {
-                    label: "Raccourcis clavier…".into(),
-                    shortcut: "".to_string(),
-                    checked: false,
-                    message: Message::OpenShortcuts,
-                },
-                ui::menu::Item::Action {
                     label: "Préférences...".into(),
                     shortcut: "".to_string(),
                     checked: false,
-                    message: Message::OpenOptions,
+                    message: Message::OpenPreferences,
                 },
             ],
         ),
@@ -240,7 +234,9 @@ pub fn main() -> iced::Result {
     });
     // Daemon : multi-fenêtres (principale + Préférences), cf. examples/multi_window
     iced::daemon(PhotoApp::new, update, view)
-        .title(title)
+        .title(|_app: &PhotoApp, _window: iced::window::Id| {
+            "Creative Suite Open Photo".to_string()
+        })
         .subscription(subscription)
         .font(include_bytes!(
             "../../../assets/fonts/MaterialIcons-Regular.ttf"
@@ -258,22 +254,22 @@ pub fn main() -> iced::Result {
         .run()
 }
 
-/// Titre par fenêtre
-fn title(app: &PhotoApp, window: iced::window::Id) -> String {
-    if app.prefs_window == Some(window) {
-        "Préférences — Creative Suite Open".into()
-    } else {
-        "Creative Suite Open Photo".into()
-    }
-}
-
 /// Tick d'animation uniquement pendant un chargement (spinner + barre)
 fn subscription(app: &PhotoApp) -> Subscription<Message> {
-    if !app.background_tasks.is_empty() {
+    let tick = if !app.background_tasks.is_empty() {
         iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::TickFrame)
     } else {
         Subscription::none()
-    }
+    };
+    Subscription::batch([
+        tick,
+        ui::shortcuts::subscription(
+            &app.shortcuts,
+            app.capturing.is_some(),
+            PhotoApp::message_for,
+            Message::ShortcutCaptured,
+        ),
+    ])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,10 +324,10 @@ struct PhotoApp {
     pub shortcuts: ui::shortcuts::Shortcuts,
     /// Fenêtre principale — son Id (ouverte au boot)
     pub main_window: Option<iced::window::Id>,
-    /// Fenêtre Préférences (vraie fenêtre OS) — son Id quand ouverte
-    pub prefs_window: Option<iced::window::Id>,
+    /// Modal Préférences ouverte
+    pub show_prefs: bool,
     /// Section active dans la fenêtre Préférences
-    pub prefs_section: components::shortcuts_prefs::PrefsSection,
+    pub prefs_section: components::preferences::PrefsSection,
     /// Capture de touche en cours (action en attente d'un nouveau raccourci)
     pub capturing: Option<ui::shortcuts::Action>,
     // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
@@ -342,7 +338,6 @@ struct PhotoApp {
     pub node_context_world: Option<datatypes::Vec2>,
     pub pending_connect: Option<(NodeId, String, datatypes::SocketType, bool)>,
     // Options / Hardware
-    pub show_options: bool,
     pub gpu_info: Option<String>,
     pub gpu_available: bool,
 }
@@ -394,8 +389,6 @@ pub enum Message {
     Quit,
     Undo,
     Redo,
-    OpenOptions,
-    CloseOptions,
 
     // Mouse & Context Menu Actions
     /// Ajuste le zoom/pan pour voir toute l'image dans le viewport
@@ -460,8 +453,8 @@ pub enum Message {
 
     // Raccourcis clavier (préférences)
     /// Ouvre la fenêtre Préférences → Raccourcis
-    OpenShortcuts,
-    CloseShortcuts,
+    OpenPreferences,
+    ClosePreferences,
     /// Démarre la capture d'une nouvelle combinaison pour l'action
     ShortcutCapture(ui::shortcuts::Action),
     /// Touche capturée (None = Échap → annule)
@@ -474,10 +467,8 @@ pub enum Message {
     ShortcutResetAll,
     /// Raccourci clavier résolu → action sémantique
     ShortcutAction(ui::shortcuts::Action),
-    /// Fenêtre OS fermée (préférences…)
-    WindowClosed(iced::window::Id),
     /// Section active dans la fenêtre Préférences
-    PrefsSection(components::shortcuts_prefs::PrefsSection),
+    PrefsSection(components::preferences::PrefsSection),
 
     // Générateur de textures (graphe nodal)
     NodeGraphEvent(ui::node_graph::NodeGraphEvent),
@@ -559,8 +550,8 @@ impl Default for PhotoApp {
             spinner_angle: 0.0,
             shortcuts: ui::shortcuts::Shortcuts::load(),
             main_window: None,
-            prefs_window: None,
-            prefs_section: components::shortcuts_prefs::PrefsSection::Shortcuts,
+            show_prefs: false,
+            prefs_section: components::preferences::PrefsSection::Shortcuts,
             capturing: None,
             gen_graph: components::node_registry::create_empty_graph(),
             gen_selected_node: None,
@@ -568,7 +559,6 @@ impl Default for PhotoApp {
             node_context_menu: None,
             node_context_world: None,
             pending_connect: None,
-            show_options: false,
             gpu_info: None,
             gpu_available: components::gpu::GpuContext::is_available(),
         }
@@ -594,9 +584,9 @@ impl PhotoApp {
     /// Raccourci clavier → Message applicatif.
     /// SEULE correspondance action ↔ logique : ajouter une action ici la
     /// branche au clavier partout.
-    fn message_for(&self, action: ui::shortcuts::Action) -> Option<Message> {
+    fn message_for(action: ui::shortcuts::Action) -> Option<Message> {
         use ui::shortcuts::Action;
-        let sel = self.selected_layer;
+        let sel = None; // sélection courante indisponible hors update (abonnement statique)
         match action {
             Action::NewProject => Some(Message::NewProject),
             Action::Open => Some(Message::OpenProject),
@@ -604,7 +594,7 @@ impl PhotoApp {
             Action::Quit => Some(Message::Quit),
             Action::Undo => Some(Message::Undo),
             Action::Redo => Some(Message::Redo),
-            Action::Preferences => Some(Message::OpenShortcuts),
+            Action::Preferences => Some(Message::OpenPreferences),
             Action::ToggleTools => Some(Message::ToggleToolsPanel),
             Action::ToggleLayersPanel => Some(Message::TogglePanel(PanelType::Layers)),
             Action::TogglePropertiesPanel => {
@@ -613,7 +603,7 @@ impl PhotoApp {
             Action::LayerNew => Some(Message::AddEmptyLayer),
             Action::LayerDuplicate => sel.map(Message::DuplicateLayer),
             Action::LayerDelete => {
-                if sel.is_some() && self.layers.len() > 1 {
+                if sel.is_some() { // duplication : au moins un calque sélectionné
                     sel.map(Message::DeleteLayer)
                 } else {
                     None
@@ -793,29 +783,20 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
 
         // ---- Raccourcis clavier ----
-        Message::OpenShortcuts => {
+        Message::OpenPreferences => {
+            app.show_prefs = true;
+            app.prefs_section =
+                components::preferences::PrefsSection::General;
             app.capturing = None;
-            if app.prefs_window.is_none() {
-                let (id, open) = iced::window::open(iced::window::Settings {
-                    size: iced::Size::new(860.0, 600.0),
-                    min_size: Some(iced::Size::new(680.0, 480.0)),
-                    ..iced::window::Settings::default()
-                });
-                app.prefs_window = Some(id);
-                return open.map(Message::WindowClosed);
-            }
+            // Détection GPU async pour la section Général
+            return Task::perform(
+                async { components::gpu::detect_gpu_info().await },
+                Message::GpuDetected,
+            );
         }
-        Message::CloseShortcuts => {
+        Message::ClosePreferences => {
+            app.show_prefs = false;
             app.capturing = None;
-            if let Some(id) = app.prefs_window.take() {
-                return iced::window::close(id);
-            }
-        }
-        Message::WindowClosed(id) => {
-            if app.prefs_window == Some(id) {
-                app.prefs_window = None;
-                app.capturing = None;
-            }
         }
         Message::PrefsSection(section) => {
             app.prefs_section = section;
@@ -845,7 +826,7 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::ShortcutAction(action) => {
             // Résolution action → Message (déléguée, une seule place)
-            if let Some(msg) = app.message_for(action) {
+            if let Some(msg) = PhotoApp::message_for(action) {
                 // Re-dispatch récursif : réutilise tous les handlers existants
                 return update(app, msg);
             }
@@ -1316,17 +1297,6 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
             }
         }
 
-        Message::OpenOptions => {
-            app.show_options = true;
-            // Détection matériel async
-            return Task::perform(
-                async { components::gpu::detect_gpu_info().await },
-                Message::GpuDetected,
-            );
-        }
-        Message::CloseOptions => {
-            app.show_options = false;
-        }
         Message::DetectGpu => {
             return Task::perform(
                 async { components::gpu::detect_gpu_info().await },
@@ -1358,17 +1328,7 @@ fn pick_image_task(map: fn(Option<std::path::PathBuf>) -> Message) -> Task<Messa
     )
 }
 
-fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
-    // Fenêtre Préférences : contenu dédié (sidebar + raccourcis)
-    if app.prefs_window == Some(window) {
-        return components::shortcuts_prefs::view(
-            &app.shortcuts,
-            app.capturing,
-            app.prefs_section,
-        );
-    }
-
-    // Fenêtre principale
+fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     let doc_size = app.doc_size.map(|(w, h)| Size::new(w as f32, h as f32));
     // Contenu central : barre contextuelle (projet/zoom/export) + workspace
     let menus = app_menus(app.tools_visible, app.selected_layer);
@@ -1487,43 +1447,33 @@ fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     );
 
 
-    // Overlay Options (comme GIMP → Préférences)
-    if app.show_options {
-        let options_overlay = iced::widget::stack![
-            // Fond semi-transparent
-            iced::widget::container(
-                iced::widget::Space::new()
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-            )
-            .style(|_| iced::widget::container::Style {
-                background: Some(ui::theme::colors::CABLE_SHADOW.into()),
-                ..Default::default()
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-            // Clic hors panel ferme
+    // Modal Préférences unifiée (Général / Raccourcis clavier / À propos)
+    if app.show_prefs {
+        let prefs_overlay = iced::widget::stack![
+            // Scrim : clic hors modal ferme
             iced::widget::mouse_area(
-                iced::widget::Space::new()
-                    .width(Length::Fill)
-                    .height(Length::Fill)
+                iced::widget::container(
+                    iced::widget::Space::new().width(Length::Fill).height(Length::Fill)
+                )
+                .style(|_| iced::widget::container::Style {
+                    background: Some(ui::theme::colors::CABLE_SHADOW.into()),
+                    ..Default::default()
+                })
+                .width(Length::Fill)
+                .height(Length::Fill)
             )
-            .on_press(Message::CloseOptions),
-            // Panel centré
-            iced::widget::container(components::options::view(
+            .on_press(Message::ClosePreferences),
+            components::preferences::view(
+                &app.shortcuts,
+                app.capturing,
+                app.prefs_section,
                 app.gpu_info.clone(),
                 app.gpu_available,
-                app.zoom_level
-            ))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(24),
+            ),
         ];
-
-        return iced::widget::stack![base_layout, options_overlay].into();
+        return iced::widget::stack![base_layout, prefs_overlay].into();
     }
 
+    // Les dropdowns des menus sont gérés nativement par iced_aw::DropDown
     base_layout
 }

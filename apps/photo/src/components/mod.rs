@@ -23,9 +23,8 @@ pub mod node_registry {
     pub use photo_engine::registry::*;
 }
 pub mod layers_panel;
-pub mod options;
 pub mod properties;
-pub mod shortcuts_prefs;
+pub mod preferences;
 pub mod toolpanel;
 pub mod toolbar;
 pub mod workspace;

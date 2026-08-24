@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Fenêtre Préférences (vraie fenêtre OS, cf. iced examples/multi_window).
-//! Sidebar gauche listant les sections d'options, contenu à droite.
-//! Section active : Raccourcis clavier (capture, reset, défauts).
+//! Modal Préférences unifiée (comme Photoshop → Préférences).
+//! Sidebar gauche des sections d'options, contenu à droite :
+//! Général (matériel, épuré), Raccourcis clavier, À propos.
 //! Design : tokens DESIGN.md via ui::theme.
 
 use ui::shortcuts::{Action, Shortcuts};
@@ -26,20 +26,55 @@ use crate::Message;
 use iced::widget::{button, column, container, row, scrollable, Space, text};
 use iced::{Alignment, Element, Length, Padding};
 
-/// Sections de la sidebar
+/// Sections de la sidebar Préférences
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PrefsSection {
+    General,
     Shortcuts,
-    Interface,
     About,
 }
 
+/// Modal centrée prenant la majorité de la vue de l'application.
+/// Le scrim et l'empilement sont gérés par l'appelant.
 pub fn view<'a>(
     shortcuts: &'a Shortcuts,
     capturing: Option<Action>,
     section: PrefsSection,
+    gpu_info: Option<String>,
+    gpu_available: bool,
 ) -> Element<'a, Message> {
-    // --- Sidebar gauche (liste des options de l'application) ---
+    // --- En-tête : titre + fermeture ---
+    let header = container(
+        row![
+            text("Préférences")
+                .size(16)
+                .font(fonts::SANS_SEMIBOLD)
+                .color(colors::TEXT_PRIMARY),
+            Space::new().width(Length::Fill),
+            button(text("✕").size(13).color(colors::TEXT_PRIMARY))
+                .padding(5)
+                .style(|_, s| {
+                    let mut st = button::Style::default();
+                    st.background = Some(if s == button::Status::Hovered {
+                        colors::ERROR_CONTAINER.into()
+                    } else {
+                        iced::Color::TRANSPARENT.into()
+                    });
+                    st.text_color = colors::TEXT_PRIMARY;
+                    st.border.radius = metrics::RADIUS_BUTTON.into();
+                    st
+                })
+                .on_press(Message::ClosePreferences),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::new(12.0).left(16.0).right(12.0))
+    .style(|_| container::Style {
+        background: Some(colors::BG_NODE_HEADER.into()),
+        ..Default::default()
+    });
+
+    // --- Sidebar gauche ---
     let sidebar_entry = |label: &'a str, section_kind: PrefsSection| {
         let is_active = section == section_kind;
         button(
@@ -71,36 +106,15 @@ pub fn view<'a>(
 
     let sidebar = container(
         column![
-            text("Préférences")
-                .size(15)
-                .font(fonts::SANS_SEMIBOLD)
-                .color(colors::TEXT_PRIMARY),
-            Space::new().height(Length::Fixed(14.0)),
+            sidebar_entry("Général", PrefsSection::General),
             sidebar_entry("Raccourcis clavier", PrefsSection::Shortcuts),
-            sidebar_entry("Interface", PrefsSection::Interface),
             sidebar_entry("À propos", PrefsSection::About),
             Space::new().height(Length::Fill),
-            button(
-                text("Fermer la fenêtre").size(12).color(colors::TEXT_SECONDARY)
-            )
-            .width(Length::Fill)
-            .padding(Padding::new(8.0).left(12.0).right(8.0))
-            .style(|_t, s| {
-                let mut st = button::Style::default();
-                st.background = Some(if s == button::Status::Hovered {
-                    colors::HOVER_OVERLAY.into()
-                } else {
-                    iced::Color::TRANSPARENT.into()
-                });
-                st.border.radius = metrics::RADIUS_BUTTON.into();
-                st
-            })
-            .on_press(Message::CloseShortcuts),
         ]
         .spacing(4)
         .padding(10),
     )
-    .width(Length::Fixed(200.0))
+    .width(Length::Fixed(190.0))
     .height(Length::Fill)
     .style(|_| container::Style {
         background: Some(colors::SURFACE_CONTAINER_LOW.into()),
@@ -114,24 +128,114 @@ pub fn view<'a>(
 
     // --- Contenu droit selon la section ---
     let content: Element<'a, Message> = match section {
+        PrefsSection::General => general_view(gpu_info, gpu_available),
         PrefsSection::Shortcuts => shortcuts_view(shortcuts, capturing),
-        PrefsSection::Interface => centered_note(
-            "Options d'interface",
-            "Affichage des panneaux, thème et disposition — à venir.",
-        ),
         PrefsSection::About => centered_note(
             "Creative Suite Open — Photo",
             "Suite créative professionnelle open source pour Linux, Windows et macOS.\nLicence GPL-3.0-or-later — voir LICENSE.",
         ),
     };
 
-    container(row![sidebar, content])
+    // --- Panneau : occupe la majeure partie de la vue (marges 40 px) ---
+    container(
+        container(column![header, row![sidebar, content].height(Length::Fill)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(colors::BG_PANEL.into()),
+                border: iced::Border {
+                    width: 1.0,
+                    color: colors::BORDER_PANEL,
+                    radius: 8.0.into(),
+                    ..Default::default()
+                },
+                shadow: iced::Shadow {
+                    color: colors::CABLE_SHADOW,
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            }),
+    )
+    .padding(40)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Section Général (épurée : état du rendu matériel, rien d'autre)
+// ---------------------------------------------------------------------------
+
+fn general_view<'a>(gpu_info: Option<String>, gpu_available: bool) -> Element<'a, Message> {
+    let status = if gpu_available { "WGPU Direct" } else { "CPU Fallback" };
+    let status_color = if gpu_available {
+        colors::SUCCESS
+    } else {
+        colors::ERROR
+    };
+
+    let card = container(
+        column![
+            row![
+                text("Rendu").size(13).color(colors::ON_SURFACE),
+                Space::new().width(Length::Fill),
+                text(status).size(12).color(status_color),
+            ]
+            .align_y(Alignment::Center),
+            Space::new().height(Length::Fixed(10.0)),
+            container(
+                text(gpu_info.unwrap_or_else(|| "Détection en cours...".into()))
+                    .size(11)
+                    .color(colors::TEXT_SECONDARY)
+            )
+            .padding(10)
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
+                border: iced::Border {
+                    width: 1.0,
+                    color: colors::BORDER_PANEL,
+                    radius: metrics::RADIUS_DROPDOWN.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            Space::new().height(Length::Fixed(10.0)),
+            button(text("Relancer la détection").size(12).color(colors::TEXT_ON_ACCENT))
+                .padding(Padding::new(6.0).left(10.0).right(10.0))
+                .style(|_, s| {
+                    let mut st = button::Style::default();
+                    st.background = Some(if s == button::Status::Hovered {
+                        colors::ACCENT_HOVER.into()
+                    } else {
+                        colors::ACCENT.into()
+                    });
+                    st.text_color = colors::TEXT_ON_ACCENT;
+                    st.border.radius = metrics::RADIUS_BUTTON.into();
+                    st
+                })
+                .on_press(Message::DetectGpu),
+        ]
+        .spacing(4),
+    )
+    .padding(14)
+    .width(Length::Fixed(520.0))
+    .style(|_| container::Style {
+        background: Some(colors::SURFACE_CONTAINER.into()),
+        border: iced::Border {
+            width: 1.0,
+            color: colors::BORDER_PANEL,
+            radius: metrics::RADIUS_DROPDOWN.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    container(column![card])
+        .padding(20)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(colors::BG_APP.into()),
-            ..Default::default()
-        })
         .into()
 }
 
@@ -246,7 +350,7 @@ fn shortcuts_view<'a>(
             .into()
         };
 
-    let mut list = column![].spacing(6).padding(16);
+    let mut list = column![].spacing(6);
     let mut last_cat = "";
     for action in Action::all() {
         let cat = action.category();
@@ -261,15 +365,16 @@ fn shortcuts_view<'a>(
         }
         list = list.push(action_row(action));
     }
+    let list = list.padding(16);
 
     let header = container(
         row![
             text("Raccourcis clavier")
-                .size(18)
+                .size(15)
                 .font(fonts::SANS_SEMIBOLD)
                 .color(colors::TEXT_PRIMARY),
             Space::new().width(Length::Fill),
-            button(text("Tout réinitialiser").size(12))
+            button(text("Tout réinitialiser").size(11))
                 .padding(Padding::new(4.0).left(10.0).right(10.0))
                 .on_press(Message::ShortcutResetAll)
                 .style(|_, s| {
@@ -299,17 +404,13 @@ fn shortcuts_view<'a>(
             .color(colors::TEXT_MUTED),
     )
     .width(Length::Fill)
-    .padding(Padding::new(12.0).left(16.0).right(16.0));
+    .padding(Padding::new(10.0).left(16.0).right(16.0));
 
     column![
         header,
-        container(scrollable(list).height(Length::Fill))
+        container(scrollable(list))
             .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(colors::SURFACE.into()),
-                ..Default::default()
-            }),
+            .height(Length::Fill),
         footer,
     ]
     .width(Length::Fill)

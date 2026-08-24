@@ -9,6 +9,7 @@ license = "GPL-3.0-or-later"
 iced = { workspace = true, features = ["svg", "canvas", "image"] }
 iced_aw.workspace = true
 iced_core = "0.14"
+iced_futures = "0.14"
 bytemuck = { workspace = true }
 pollster = { workspace = true }
 serde = { workspace = true }

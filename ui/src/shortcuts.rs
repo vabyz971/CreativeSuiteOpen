@@ -491,35 +491,56 @@ pub fn key_string(key: &iced::keyboard::Key) -> Option<String> {
 /// - mode capture (`capturing == true`) : la prochaine touche devient le
 ///   nouveau raccourci → `on_captured(Option<binding>)` (None = Échap/annule)
 /// - sinon : résout l'action et appelle `on_action`
+///
+/// Utilise la fonction libre `subscription::filter_map(id, f)` (et non la
+/// méthode équivalente) car la closure capture l'état (table + mode capture) ;
+/// l'id inclut `capturing` pour redémarrer le flux quand il bascule.
 pub fn subscription<Message: Clone + Send + 'static>(
     shortcuts: &Shortcuts,
     capturing: bool,
-    on_action: impl Fn(Action) -> Option<Message> + Copy + Send + 'static,
-    on_captured: impl Fn(Option<Binding>) -> Message + Copy + Send + 'static,
+    on_action: impl Fn(Action) -> Option<Message> + Clone + Send + 'static,
+    on_captured: impl Fn(Option<Binding>) -> Message + Clone + Send + 'static,
 ) -> iced::Subscription<Message> {
+    #[derive(Hash)]
+    struct KeyboardShortcuts(bool);
+
     let table = shortcuts.clone();
-    iced::keyboard::listen().filter_map(move |event| {
-        let iced::keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-            return None;
-        };
-        let Some(key_str) = key_string(&key) else {
-            return None;
-        };
-        // Ignore les touches modificateurs seules pendant la capture
-        if matches!(
-            key_str.as_str(),
-            "control" | "shift" | "alt" | "meta" | "super"
-        ) {
-            return None;
-        }
-        let (ctrl, shift, alt) = (modifiers.control(), modifiers.shift(), modifiers.alt());
-        if capturing {
-            // Échap annule la capture
-            if key_str == "escape" && !ctrl && !shift && !alt {
-                return Some(on_captured(None));
+    iced_futures::subscription::filter_map(
+        KeyboardShortcuts(capturing),
+        move |event| {
+            let iced_futures::subscription::Event::Interaction {
+                event:
+                    iced::event::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key, modifiers, ..
+                    }),
+                status: iced::event::Status::Ignored,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            let Some(key_str) = key_string(&key) else {
+                return None;
+            };
+            // Ignore les touches modificateurs seules pendant la capture
+            if matches!(
+                key_str.as_str(),
+                "control" | "shift" | "alt" | "meta" | "super"
+            ) {
+                return None;
             }
-            return Some(on_captured(Some(Binding::new(&key_str, ctrl, shift, alt))));
-        }
-        table.find(&key_str, ctrl, shift, alt).and_then(on_action)
-    })
+            let (ctrl, shift, alt) =
+                (modifiers.control(), modifiers.shift(), modifiers.alt());
+            if capturing {
+                // Échap annule la capture
+                if key_str == "escape" && !ctrl && !shift && !alt {
+                    return Some(on_captured(None));
+                }
+                return Some(on_captured(Some(Binding::new(
+                    &key_str, ctrl, shift, alt,
+                ))));
+            }
+            table.find(&key_str, ctrl, shift, alt).and_then(&on_action)
+        },
+    )
 }
