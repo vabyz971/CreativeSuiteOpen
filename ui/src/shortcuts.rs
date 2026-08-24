@@ -26,7 +26,6 @@
 //! Utilisable par les 3 apps : `shortcuts::subscription(&app.shortcuts, ...)`
 //! puis un simple `match action -> Message` dans l'app.
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -227,7 +226,7 @@ impl Action {
 // Binding — une combinaison de touches
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Binding {
     /// Touche normalisée minuscule : "n", "s", "+", "arrowup", "f7", "space"…
     pub key: String,
@@ -388,42 +387,13 @@ impl Shortcuts {
             .map(|(a, _)| *a)
     }
 
-    // -- Persistance JSON (~/.config/creativesuite-open/shortcuts.json) --
-
-    fn config_path() -> Option<std::path::PathBuf> {
-        let base = std::env::var("XDG_CONFIG_HOME")
-            .ok()
-            .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.config")))?;
-        Some(
-            std::path::PathBuf::from(base)
-                .join("creativesuite-open")
-                .join("shortcuts.json"),
-        )
-    }
+    // -- Persistance (via ui::settings::AppSettings, settings.json) --
 
     /// Charge la table utilisateur, complétée par les défauts
     pub fn load() -> Self {
         let mut table = Self::defaults();
-        let Some(path) = Self::config_path() else {
-            return table;
-        };
-        let Ok(json) = std::fs::read_to_string(path) else {
-            return table;
-        };
-        #[derive(Deserialize)]
-        struct FileBinding {
-            key: String,
-            #[serde(default)]
-            ctrl: bool,
-            #[serde(default)]
-            shift: bool,
-            #[serde(default)]
-            alt: bool,
-        }
-        let Ok(entries) = serde_json::from_str::<HashMap<String, FileBinding>>(&json) else {
-            return table;
-        };
-        for (name, fb) in entries {
+        let settings = crate::settings::AppSettings::load();
+        for (name, fb) in settings.shortcuts {
             if let Some(action) = Action::from_str(&name) {
                 table.map.insert(
                     action,
@@ -439,25 +409,16 @@ impl Shortcuts {
         table
     }
 
-    /// Sauvegarde la table utilisateur (silencieux en cas d'échec disque)
+    /// Sauvegarde la table dans settings.json (préserve les autres options)
     pub fn save(&self) {
-        let Some(path) = Self::config_path() else {
-            return;
-        };
-        #[derive(Serialize)]
-        struct FileBinding {
-            key: String,
-            ctrl: bool,
-            shift: bool,
-            alt: bool,
-        }
-        let entries: HashMap<String, FileBinding> = self
+        let mut settings = crate::settings::AppSettings::load();
+        settings.shortcuts = self
             .map
             .iter()
             .map(|(a, b)| {
                 (
                     a.as_str().to_string(),
-                    FileBinding {
+                    crate::settings::ShortcutJson {
                         key: b.key.clone(),
                         ctrl: b.ctrl,
                         shift: b.shift,
@@ -466,12 +427,7 @@ impl Shortcuts {
                 )
             })
             .collect();
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_ok()
-            && let Ok(json) = serde_json::to_string_pretty(&entries)
-        {
-            let _ = std::fs::write(path, json);
-        }
+        settings.save();
     }
 }
 
@@ -483,7 +439,18 @@ impl Shortcuts {
 pub fn key_string(key: &iced::keyboard::Key) -> Option<String> {
     use iced::keyboard::{Key, key::Named};
     match key {
-        Key::Character(c) => c.chars().next().map(|ch| ch.to_lowercase().to_string()),
+        Key::Character(c) => {
+            let ch = c.chars().next()?;
+            // Linux/X11 : Ctrl+N livre le caractère de contrôle \x0e (1+'n'-'a').
+            // On le reconvertit en lettre — sinon AUCUN raccourci Ctrl+lettre
+            // ne fonctionne sur X11.
+            let code = ch as u32;
+            if (1..=26).contains(&code) {
+                Some(((b'a' + code as u8 - 1) as char).to_string())
+            } else {
+                Some(ch.to_lowercase().to_string())
+            }
+        }
         Key::Named(n) => {
             let s = match n {
                 Named::Space => "space",

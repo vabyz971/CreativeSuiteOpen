@@ -238,8 +238,10 @@ pub fn main() -> iced::Result {
     std::thread::spawn(|| {
         let _ = crate::components::gpu::GpuContext::get();
     });
-    iced::application(PhotoApp::default, update, view)
-        .title("Creative Suite Open Photo")
+    // Daemon : multi-fenêtres (principale + Préférences), cf. examples/multi_window
+    iced::daemon(PhotoApp::default, update, view)
+        .title(title)
+        .subscription(subscription)
         .font(include_bytes!(
             "../../../assets/fonts/MaterialIcons-Regular.ttf"
         ))
@@ -253,8 +255,16 @@ pub fn main() -> iced::Result {
             "../../../assets/fonts/HankenGrotesk-Bold.ttf"
         ))
         .default_font(ui::theme::fonts::SANS)
-        .subscription(subscription)
         .run()
+}
+
+/// Titre par fenêtre
+fn title(app: &PhotoApp, window: iced::window::Id) -> String {
+    if app.prefs_window == Some(window) {
+        "Préférences — Creative Suite Open".into()
+    } else {
+        "Creative Suite Open Photo".into()
+    }
 }
 
 /// Tick d'animation uniquement pendant un chargement (spinner + barre)
@@ -316,8 +326,10 @@ struct PhotoApp {
     pub spinner_angle: f32,
     /// Table de raccourcis clavier (persistée en JSON)
     pub shortcuts: ui::shortcuts::Shortcuts,
-    /// Fenêtre Préférences ouverte
-    pub show_shortcuts: bool,
+    /// Fenêtre Préférences (vraie fenêtre OS) — son Id quand ouverte
+    pub prefs_window: Option<iced::window::Id>,
+    /// Section active dans la fenêtre Préférences
+    pub prefs_section: components::shortcuts_prefs::PrefsSection,
     /// Capture de touche en cours (action en attente d'un nouveau raccourci)
     pub capturing: Option<ui::shortcuts::Action>,
     // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
@@ -460,6 +472,10 @@ pub enum Message {
     ShortcutResetAll,
     /// Raccourci clavier résolu → action sémantique
     ShortcutAction(ui::shortcuts::Action),
+    /// Fenêtre OS fermée (préférences…)
+    WindowClosed(iced::window::Id),
+    /// Section active dans la fenêtre Préférences
+    PrefsSection(components::shortcuts_prefs::PrefsSection),
 
     // Générateur de textures (graphe nodal)
     NodeGraphEvent(ui::node_graph::NodeGraphEvent),
@@ -524,7 +540,8 @@ impl Default for PhotoApp {
             task_menu_open: false,
             spinner_angle: 0.0,
             shortcuts: ui::shortcuts::Shortcuts::load(),
-            show_shortcuts: false,
+            prefs_window: None,
+            prefs_section: components::shortcuts_prefs::PrefsSection::Shortcuts,
             capturing: None,
             gen_graph: components::node_registry::create_empty_graph(),
             gen_selected_node: None,
@@ -758,12 +775,31 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
 
         // ---- Raccourcis clavier ----
         Message::OpenShortcuts => {
-            app.show_shortcuts = true;
             app.capturing = None;
+            if app.prefs_window.is_none() {
+                let (id, open) = iced::window::open(iced::window::Settings {
+                    size: iced::Size::new(860.0, 600.0),
+                    min_size: Some(iced::Size::new(680.0, 480.0)),
+                    ..iced::window::Settings::default()
+                });
+                app.prefs_window = Some(id);
+                return open.map(Message::WindowClosed);
+            }
         }
         Message::CloseShortcuts => {
-            app.show_shortcuts = false;
             app.capturing = None;
+            if let Some(id) = app.prefs_window.take() {
+                return iced::window::close(id);
+            }
+        }
+        Message::WindowClosed(id) => {
+            if app.prefs_window == Some(id) {
+                app.prefs_window = None;
+                app.capturing = None;
+            }
+        }
+        Message::PrefsSection(section) => {
+            app.prefs_section = section;
         }
         Message::ShortcutCapture(action) => {
             app.capturing = Some(action);
@@ -1303,7 +1339,17 @@ fn pick_image_task(map: fn(Option<std::path::PathBuf>) -> Message) -> Task<Messa
     )
 }
 
-fn view(app: &PhotoApp) -> Element<'_, Message> {
+fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
+    // Fenêtre Préférences : contenu dédié (sidebar + raccourcis)
+    if app.prefs_window == Some(window) {
+        return components::shortcuts_prefs::view(
+            &app.shortcuts,
+            app.capturing,
+            app.prefs_section,
+        );
+    }
+
+    // Fenêtre principale
     let doc_size = app.doc_size.map(|(w, h)| Size::new(w as f32, h as f32));
     // Contenu central : barre contextuelle (projet/zoom/export) + workspace
     let menus = app_menus(app.tools_visible, app.selected_layer);
@@ -1460,27 +1506,5 @@ fn view(app: &PhotoApp) -> Element<'_, Message> {
         return iced::widget::stack![base_layout, options_overlay].into();
     }
 
-    // Fenêtre Préférences → Raccourcis clavier (modale, façon Affinity)
-    if app.show_shortcuts {
-        let prefs_overlay = iced::widget::stack![
-            // Scrim : clic hors panel ferme
-            iced::widget::mouse_area(
-                iced::widget::container(
-                    iced::widget::Space::new().width(Length::Fill).height(Length::Fill)
-                )
-                .style(|_| iced::widget::container::Style {
-                    background: Some(ui::theme::colors::CABLE_SHADOW.into()),
-                    ..Default::default()
-                })
-                .width(Length::Fill)
-                .height(Length::Fill)
-            )
-            .on_press(Message::CloseShortcuts),
-            components::shortcuts_prefs::view(&app.shortcuts, app.capturing),
-        ];
-        return iced::widget::stack![base_layout, prefs_overlay].into();
-    }
-
-    // Les dropdowns des menus sont gérés nativement par iced_aw::DropDown
     base_layout
 }
