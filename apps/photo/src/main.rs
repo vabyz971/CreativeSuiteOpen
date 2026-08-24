@@ -239,7 +239,7 @@ pub fn main() -> iced::Result {
         let _ = crate::components::gpu::GpuContext::get();
     });
     // Daemon : multi-fenêtres (principale + Préférences), cf. examples/multi_window
-    iced::daemon(PhotoApp::default, update, view)
+    iced::daemon(PhotoApp::new, update, view)
         .title(title)
         .subscription(subscription)
         .font(include_bytes!(
@@ -326,6 +326,8 @@ struct PhotoApp {
     pub spinner_angle: f32,
     /// Table de raccourcis clavier (persistée en JSON)
     pub shortcuts: ui::shortcuts::Shortcuts,
+    /// Fenêtre principale — son Id (ouverte au boot)
+    pub main_window: Option<iced::window::Id>,
     /// Fenêtre Préférences (vraie fenêtre OS) — son Id quand ouverte
     pub prefs_window: Option<iced::window::Id>,
     /// Section active dans la fenêtre Préférences
@@ -495,6 +497,22 @@ pub enum Message {
     GpuDetected(String),
 }
 
+impl PhotoApp {
+    /// Boot daemon : le daemon n'ouvre AUCUNE fenêtre automatiquement —
+    /// la fenêtre principale doit être créée ici via `window::open`
+    /// (cf. iced examples/multi_window).
+    fn new() -> (Self, Task<Message>) {
+        let (main_id, open) = iced::window::open(iced::window::Settings {
+            size: iced::Size::new(1280.0, 820.0),
+            min_size: Some(iced::Size::new(960.0, 600.0)),
+            ..iced::window::Settings::default()
+        });
+        let mut app = Self::default();
+        app.main_window = Some(main_id);
+        (app, open.map(|_| Message::MockAction))
+    }
+}
+
 impl Default for PhotoApp {
     fn default() -> Self {
         // Layout : Canvas à gauche, à droite Propriétés (haut) + Calques (bas)
@@ -540,6 +558,7 @@ impl Default for PhotoApp {
             task_menu_open: false,
             spinner_angle: 0.0,
             shortcuts: ui::shortcuts::Shortcuts::load(),
+            main_window: None,
             prefs_window: None,
             prefs_section: components::shortcuts_prefs::PrefsSection::Shortcuts,
             capturing: None,
