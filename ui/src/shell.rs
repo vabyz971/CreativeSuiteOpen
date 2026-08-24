@@ -156,8 +156,12 @@ where
     .into()
 }
 
-/// Actions globales de droite (notifications uniquement)
-pub fn global_actions<'a, Message>() -> Element<'a, Message>
+/// Actions globales de droite : spinner d'activité (traitements en
+/// arrière-plan) puis notifications. `spinner` = `Some(élément animé)`
+/// produit par l'app (`ui::spinner::circle`) quand un traitement tourne.
+pub fn global_actions<'a, Message>(
+    spinner: Option<Element<'a, Message>>,
+) -> Element<'a, Message>
 where
     Message: 'a,
 {
@@ -180,10 +184,19 @@ where
             })
     };
 
-    row![icon_btn("\u{e7f4}")] // notifications
-        .align_y(Alignment::Center)
-        .spacing(10)
-        .into()
+    let mut actions = row![].align_y(Alignment::Center).spacing(10);
+    if let Some(sp) = spinner {
+        // Conteneur carré aligné sur les icônes, spinner centré dedans
+        actions = actions.push(
+            container(sp)
+                .width(Length::Fixed(28.0))
+                .height(Length::Fixed(28.0))
+                .center_x(Length::Fixed(28.0))
+                .center_y(Length::Fixed(28.0)),
+        );
+    }
+    actions = actions.push(icon_btn("\u{e7f4}")); // notifications
+    actions.into()
 }
 
 /// Rail gauche icon-only 48px (outils), collapsible
@@ -222,7 +235,7 @@ where
     let top = top_bar_with_menus(
         title,
         menu_buttons,
-        global_actions(),
+        global_actions(None),
     );
     let left = left_rail(left_rail_content);
     let center = container(central.into())
@@ -249,11 +262,12 @@ pub fn minimalist_layout_menus_only<'a, Message>(
     title: &'a str,
     menu_buttons: impl Into<Element<'a, Message>>,
     central: impl Into<Element<'a, Message>>,
+    spinner: Option<Element<'a, Message>>,
 ) -> Element<'a, Message>
 where
     Message: 'a,
 {
-    let top = top_bar_with_menus(title, menu_buttons, global_actions());
+    let top = top_bar_with_menus(title, menu_buttons, global_actions(spinner));
     let center = container(central.into())
         .width(Length::Fill)
         .height(Length::Fill)

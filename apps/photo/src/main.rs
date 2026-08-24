@@ -17,7 +17,8 @@
 use crate::layers::Layer;
 use datatypes::{NodeId, ParamValue};
 use iced::widget::{image as iced_image, pane_grid};
-use iced::{Element, Length, Point, Rectangle, Size, Task, Vector};
+
+use iced::{Alignment, Element, Length, Point, Rectangle, Size, Subscription, Task, Vector};
 use std::sync::Arc;
 
 mod components;
@@ -246,7 +247,17 @@ pub fn main() -> iced::Result {
             "../../../assets/fonts/HankenGrotesk-Bold.ttf"
         ))
         .default_font(ui::theme::fonts::SANS)
+        .subscription(subscription)
         .run()
+}
+
+/// Tick d'animation uniquement pendant un chargement (spinner + barre)
+fn subscription(app: &PhotoApp) -> Subscription<Message> {
+    if !app.background_tasks.is_empty() {
+        iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::TickFrame)
+    } else {
+        Subscription::none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,6 +302,12 @@ struct PhotoApp {
     /// par-dessus. Le vrai blend est recalculé au relâchement.
     pub drag_background: Option<iced_image::Handle>,
     pub drag_background_size: Option<Size>,
+    /// Traitements en arrière-plan (libellés affichés dans le menu du spinner)
+    pub background_tasks: Vec<String>,
+    /// Menu des tâches ouvert (clic sur le spinner)
+    pub task_menu_open: bool,
+    /// Angle du spinner d'activité (animé par TickFrame)
+    pub spinner_angle: f32,
     // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
     pub gen_graph: suite_core::Graph,
     pub gen_selected_node: Option<NodeId>,
@@ -316,6 +333,19 @@ pub enum PanelType {
 pub enum OffsetAxis {
     X,
     Y,
+}
+
+/// Layer décodé (thread async) — Debug manuel car la texture n'est pas formattable
+#[derive(Clone)]
+pub struct DecodedLayer(pub Layer);
+impl std::fmt::Debug for DecodedLayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (w, h) = self.0.dimensions();
+        f.debug_struct("DecodedLayer")
+            .field("id", &self.0.id)
+            .field("dims", &(w, h))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -393,7 +423,14 @@ pub enum Message {
     // Image - utilise le picker natif via rfd
     OpenImage,
     ImagePicked(Option<std::path::PathBuf>),
-    ImageLoaded(Result<(Vec<u8>, String), String>),
+    /// Fichier lu (async) — le décodage démarre ensuite
+    ImageRead(Result<(Vec<u8>, String), String>),
+    /// Image décodée + texture construite (async) — ajout à la pile
+    ImageDecoded(Result<DecodedLayer, String>),
+    /// Tick d'animation (spinner / barre de progression)
+    TickFrame,
+    /// Ouvre/ferme le menu des traitements en arrière-plan
+    ToggleTaskMenu,
 
     // Générateur de textures (graphe nodal)
     NodeGraphEvent(ui::node_graph::NodeGraphEvent),
@@ -454,6 +491,9 @@ impl Default for PhotoApp {
             move_anchor: None,
             drag_background: None,
             drag_background_size: None,
+            background_tasks: Vec::new(),
+            task_menu_open: false,
+            spinner_angle: 0.0,
             gen_graph: components::node_registry::create_empty_graph(),
             gen_selected_node: None,
             gen_previews: Default::default(),
@@ -563,13 +603,25 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.move_anchor = None;
         }
         Message::OpenProject => {
-            return pick_image_task(Message::ImagePicked);
+            if app.background_tasks.is_empty() {
+                return pick_image_task(Message::ImagePicked);
+            }
         }
         Message::OpenImage => {
-            return pick_image_task(Message::ImagePicked);
+            if app.background_tasks.is_empty() {
+                return pick_image_task(Message::ImagePicked);
+            }
         }
         Message::ImagePicked(path_opt) => {
-            if let Some(path) = path_opt {
+            if let Some(path) = path_opt
+                && app.background_tasks.is_empty()
+            {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("image")
+                    .to_string();
+                app.background_tasks.push(format!("Lecture de {name}"));
                 return Task::perform(
                     async move {
                         let bytes =
@@ -581,34 +633,57 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                             .to_string();
                         Ok::<(Vec<u8>, String), String>((bytes, name))
                     },
-                    Message::ImageLoaded,
+                    Message::ImageRead,
                 );
             }
         }
-        Message::ImageLoaded(Ok((bytes, name))) => {
+        Message::ImageRead(Ok((bytes, name))) => {
             app.image_path = Some(name.clone());
             app.image_error = None;
-            match ::image::load_from_memory(&bytes) {
-                Ok(dyn_img) => {
-                    // Le document prend les dimensions de la première image
-                    if app.doc_size.is_none() {
-                        app.doc_size = Some((dyn_img.width(), dyn_img.height()));
-                        app.canvas_pan = Vector::new(0.0, 0.0);
-                        app.canvas_selection = None;
-                        app.zoom_level = 100;
+            app.background_tasks.clear();
+            app.background_tasks.push(format!("Décodage de {name}"));
+            // Le décodage + la construction de la texture tournent hors UI
+            // (Task::perform) — le spinner continue d'animer pendant ce temps
+            let id = app.alloc_layer_id();
+            return Task::perform(
+                async move {
+                    match ::image::load_from_memory(&bytes) {
+                        Ok(dyn_img) => Ok(DecodedLayer(Layer::new(id, name, Arc::new(dyn_img)))),
+                        Err(e) => Err(format!("Décodage échoué: {e}")),
                     }
-                    let id = app.alloc_layer_id();
-                    app.layers.push(Layer::new(id, name, Arc::new(dyn_img)));
-                    app.selected_layer = Some(id);
-                    app.refresh_fallback();
-                }
-                Err(e) => {
-                    app.image_error = Some(format!("Décodage échoué: {e}"));
-                }
-            }
+                },
+                Message::ImageDecoded,
+            );
         }
-        Message::ImageLoaded(Err(e)) => {
+        Message::ImageRead(Err(e)) => {
+            app.background_tasks.clear();
             app.image_error = Some(e);
+        }
+        Message::ImageDecoded(Ok(decoded)) => {
+            app.background_tasks.clear();
+            let layer = decoded.0;
+            // Le document prend les dimensions de la première image
+            if app.doc_size.is_none() {
+                let (w, h) = layer.dimensions();
+                app.doc_size = Some((w, h));
+                app.canvas_pan = Vector::new(0.0, 0.0);
+                app.canvas_selection = None;
+                app.zoom_level = 100;
+            }
+            app.layers.push(layer);
+            app.selected_layer = app.layers.last().map(|l| l.id);
+            app.refresh_fallback();
+        }
+        Message::ImageDecoded(Err(e)) => {
+            app.background_tasks.clear();
+            app.image_error = Some(e);
+        }
+        Message::ToggleTaskMenu => {
+            app.task_menu_open = !app.task_menu_open;
+        }
+        Message::TickFrame => {
+            // Animation du spinner (~30 fps)
+            app.spinner_angle = (app.spinner_angle + 24.0) % 360.0;
         }
 
         // ---- Calques ----
@@ -1120,6 +1195,81 @@ fn view(app: &PhotoApp) -> Element<'_, Message> {
     let menus = app_menus(app.tools_visible, app.selected_layer);
     let menu_buttons = ui::menu::bar(&menus);
 
+    // Bouton spinner façon Final Cut Pro : toujours visible, tourne pendant
+    // un traitement en arrière-plan, clic → menu des tâches en cours
+    let spinning = !app.background_tasks.is_empty();
+    let spinner_btn = iced::widget::button(
+        // Canvas 20 px centré dans un bouton 30 px sans padding → pas de crop
+        iced::widget::container(ui::spinner::circle(
+            if spinning { app.spinner_angle } else { 0.0 },
+            20.0,
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(30.0))
+    .height(Length::Fixed(30.0))
+    .padding(0)
+    .style(|_, s| {
+        let mut st = iced::widget::button::Style::default();
+        st.background = Some(if s == iced::widget::button::Status::Hovered {
+            ui::theme::colors::HOVER_OVERLAY.into()
+        } else {
+            iced::Color::TRANSPARENT.into()
+        });
+        st.border.radius = ui::theme::metrics::RADIUS_DROPDOWN.into();
+        st
+    })
+    .on_press(Message::ToggleTaskMenu);
+
+    let task_menu = {
+        let items: Vec<iced::Element<'_, Message>> = if app.background_tasks.is_empty() {
+            vec![iced::widget::container(iced::widget::text("Aucun traitement en cours")
+                    .size(12)
+                    .color(ui::theme::colors::TEXT_MUTED))
+                .padding(iced::Padding::new(8.0).left(10.0).right(10.0))
+                .into()]
+        } else {
+            app.background_tasks
+                .iter()
+                .map(|label| {
+                    iced::widget::row![
+                        iced::widget::text(label)
+                            .size(12)
+                            .color(ui::theme::colors::TEXT_PRIMARY),
+                        iced::widget::Space::new().width(Length::Fill),
+                        ui::spinner::circle(app.spinner_angle, 12.0),
+                    ]
+                    .align_y(Alignment::Center)
+                    .into()
+                })
+                .collect()
+        };
+        iced::widget::container(iced::widget::column(items).spacing(2).padding(4))
+            .width(Length::Fixed(240.0))
+            .style(|_| iced::widget::container::Style {
+                background: Some(ui::theme::colors::BG_DROPDOWN.into()),
+                border: iced::Border {
+                    width: 1.0,
+                    color: ui::theme::colors::BORDER_SUBTLE,
+                    radius: ui::theme::metrics::RADIUS_DROPDOWN.into(),
+                    ..Default::default()
+                },
+                shadow: ui::theme::shadows::dropdown(),
+                ..Default::default()
+            })
+    };
+
+    let spinner = Some(
+        iced_aw::DropDown::new(spinner_btn, task_menu, app.task_menu_open)
+            .width(Length::Fixed(240.0))
+            .alignment(iced_aw::drop_down::Alignment::BottomEnd)
+            .on_dismiss(Message::ToggleTaskMenu)
+            .into(),
+    );
+
     let central = iced::widget::column![
         components::toolbar::context_bar(app.image_path.as_deref()),
         components::workspace::render(
@@ -1150,8 +1300,13 @@ fn view(app: &PhotoApp) -> Element<'_, Message> {
         )
     ];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
-    let base_layout =
-        ui::shell::minimalist_layout_menus_only("Creative Suite Open Photo", menu_buttons, central);
+    let base_layout = ui::shell::minimalist_layout_menus_only(
+        "Creative Suite Open Photo",
+        menu_buttons,
+        central,
+        spinner,
+    );
+
 
     // Overlay Options (comme GIMP → Préférences)
     if app.show_options {
