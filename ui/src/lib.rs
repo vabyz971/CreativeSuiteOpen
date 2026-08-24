@@ -22,6 +22,7 @@ pub mod layer_canvas;
 pub mod menu;
 pub mod node_graph;
 pub mod shell;
+pub mod shortcuts;
 pub mod spinner;
 pub mod theme;
 pub mod timeline;

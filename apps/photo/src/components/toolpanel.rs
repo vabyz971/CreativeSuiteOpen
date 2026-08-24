@@ -15,8 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{Message, Tool};
-use iced::widget::{column, container};
-use iced::{Alignment, Element, Length};
+use iced::widget::column;
+use iced::{Alignment, Element};
 use ui::icon_button;
 use ui::theme::colors;
 
@@ -27,10 +27,6 @@ const ICON_ZOOM_IN: &str = "\u{e8ff}"; // zoom_in - Zoom
 const ICON_SELECT: &str = "\u{e86e}"; // select_all - Sélection
 const ICON_COLORIZE: &str = "\u{e3b7}"; // colorize - Pipette
 const ICON_MOVE: &str = "\u{e89f}"; // open_with - Déplacer
-const ICON_ROTATE_LEFT: &str = "\u{e419}"; // rotate_left
-const ICON_ROTATE_RIGHT: &str = "\u{e41a}"; // rotate_right
-const ICON_CROP: &str = "\u{e3be}"; // crop
-const ICON_RESET: &str = "\u{e166}"; // restart_alt
 
 // Barre d'outils verticale unifiée - Material Design Icons natifs
 pub fn render<'a>(
@@ -38,10 +34,6 @@ pub fn render<'a>(
     selected_layer: Option<u64>,
     has_selection: bool,
 ) -> Element<'a, Message> {
-    // Actions transform : nécessitent un calque sélectionné
-    let layer_id = selected_layer.unwrap_or(0);
-    let has_layer = selected_layer.is_some();
-
     let action_btn =
         |codepoint: &'a str, _tip: &'a str, msg: Message, enabled: bool| -> Element<'a, Message> {
             let b = iced::widget::button(
@@ -72,55 +64,41 @@ pub fn render<'a>(
             b.into()
         };
 
-    let mut col = column![
-        icon_button::render(ICON_PAN_TOOL, "Main", selected == Tool::Hand, Message::SelectTool(Tool::Hand)),
-        icon_button::render(ICON_ZOOM_IN, "Zoom", selected == Tool::Zoom, Message::SelectTool(Tool::Zoom)),
-        icon_button::render(ICON_SELECT, "Sélect", selected == Tool::Select, Message::SelectTool(Tool::Select)),
-        icon_button::render(ICON_MOVE, "Déplacer", selected == Tool::Move, Message::SelectTool(Tool::Move)),
-        separator(),
-        icon_button::render(ICON_COLORIZE, "Pipette", selected == Tool::Eyedropper, Message::SelectTool(Tool::Eyedropper)),
-        separator(),
+    let col = column![
+        icon_button::render(
+            ICON_PAN_TOOL,
+            "Main",
+            selected == Tool::Hand,
+            Message::SelectTool(Tool::Hand)
+        ),
+        icon_button::render(
+            ICON_ZOOM_IN,
+            "Zoom",
+            selected == Tool::Zoom,
+            Message::SelectTool(Tool::Zoom)
+        ),
+        icon_button::render(
+            ICON_SELECT,
+            "Sélect",
+            selected == Tool::Select,
+            Message::SelectTool(Tool::Select)
+        ),
+        icon_button::render(
+            ICON_MOVE,
+            "Déplacer",
+            selected == Tool::Move,
+            Message::SelectTool(Tool::Move)
+        ),
+        icon_button::render(
+            ICON_COLORIZE,
+            "Pipette",
+            selected == Tool::Eyedropper,
+            Message::SelectTool(Tool::Eyedropper)
+        ),
     ]
     .spacing(6)
     .align_x(Alignment::Center)
     .padding(8);
 
-    // Transformations du calque sélectionné
-    col = col.push(action_btn(
-        ICON_ROTATE_LEFT,
-        "Rotation -90°",
-        Message::RotateLayer90 { id: layer_id, clockwise: false },
-        has_layer,
-    ));
-    col = col.push(action_btn(
-        ICON_ROTATE_RIGHT,
-        "Rotation +90°",
-        Message::RotateLayer90 { id: layer_id, clockwise: true },
-        has_layer,
-    ));
-    col = col.push(action_btn(
-        ICON_RESET,
-        "Réinitialiser transform",
-        Message::ResetLayerTransform(layer_id),
-        has_layer,
-    ));
-    col = col.push(action_btn(
-        ICON_CROP,
-        "Rogner à la sélection",
-        Message::CropLayerToSelection,
-        has_layer && has_selection,
-    ));
-
     col.into()
-}
-
-fn separator<'a>() -> Element<'a, Message> {
-    // Largeur FIXE : un Fill étirerait toute la pastille flottante
-    container(iced::widget::Space::new().height(Length::Fixed(1.0)).width(Length::Fixed(20.0)))
-        .padding(iced::Padding::new(4.0))
-        .style(|_| container::Style {
-            background: Some(colors::BORDER_PANEL.into()),
-            ..Default::default()
-        })
-        .into()
 }

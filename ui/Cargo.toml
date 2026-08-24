@@ -11,6 +11,8 @@ iced_aw.workspace = true
 iced_core = "0.14"
 bytemuck = { workspace = true }
 pollster = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 datatypes = { path = "../core/datatypes" }
 suite-core = { path = "../core/core", package = "suite-core" }
 suite-shell = { path = "../core/shell" }

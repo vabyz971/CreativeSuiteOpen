@@ -25,6 +25,7 @@ pub mod node_registry {
 pub mod layers_panel;
 pub mod options;
 pub mod properties;
+pub mod shortcuts_prefs;
 pub mod toolpanel;
 pub mod toolbar;
 pub mod workspace;

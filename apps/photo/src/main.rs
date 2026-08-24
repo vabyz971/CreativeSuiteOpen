@@ -106,6 +106,12 @@ fn app_menus(tools_visible: bool, selected_layer: Option<u64>) -> Vec<ui::menu::
                 },
                 ui::menu::Item::Separator,
                 ui::menu::Item::Action {
+                    label: "Raccourcis clavier…".into(),
+                    shortcut: "".to_string(),
+                    checked: false,
+                    message: Message::OpenShortcuts,
+                },
+                ui::menu::Item::Action {
                     label: "Préférences...".into(),
                     shortcut: "".to_string(),
                     checked: false,
@@ -308,6 +314,12 @@ struct PhotoApp {
     pub task_menu_open: bool,
     /// Angle du spinner d'activité (animé par TickFrame)
     pub spinner_angle: f32,
+    /// Table de raccourcis clavier (persistée en JSON)
+    pub shortcuts: ui::shortcuts::Shortcuts,
+    /// Fenêtre Préférences ouverte
+    pub show_shortcuts: bool,
+    /// Capture de touche en cours (action en attente d'un nouveau raccourci)
+    pub capturing: Option<ui::shortcuts::Action>,
     // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
     pub gen_graph: suite_core::Graph,
     pub gen_selected_node: Option<NodeId>,
@@ -432,6 +444,23 @@ pub enum Message {
     /// Ouvre/ferme le menu des traitements en arrière-plan
     ToggleTaskMenu,
 
+    // Raccourcis clavier (préférences)
+    /// Ouvre la fenêtre Préférences → Raccourcis
+    OpenShortcuts,
+    CloseShortcuts,
+    /// Démarre la capture d'une nouvelle combinaison pour l'action
+    ShortcutCapture(ui::shortcuts::Action),
+    /// Touche capturée (None = Échap → annule)
+    ShortcutCaptured(Option<ui::shortcuts::Binding>),
+    /// Annule la capture en cours
+    ShortcutCancelCapture,
+    /// Remet le raccourci par défaut d'une action
+    ShortcutReset(ui::shortcuts::Action),
+    /// Remet toute la table par défaut
+    ShortcutResetAll,
+    /// Raccourci clavier résolu → action sémantique
+    ShortcutAction(ui::shortcuts::Action),
+
     // Générateur de textures (graphe nodal)
     NodeGraphEvent(ui::node_graph::NodeGraphEvent),
     UpdateParam {
@@ -494,6 +523,9 @@ impl Default for PhotoApp {
             background_tasks: Vec::new(),
             task_menu_open: false,
             spinner_angle: 0.0,
+            shortcuts: ui::shortcuts::Shortcuts::load(),
+            show_shortcuts: false,
+            capturing: None,
             gen_graph: components::node_registry::create_empty_graph(),
             gen_selected_node: None,
             gen_previews: Default::default(),
@@ -521,6 +553,48 @@ impl PhotoApp {
     fn selected_layer_mut(&mut self) -> Option<&mut Layer> {
         let sel = self.selected_layer?;
         self.layer_index(sel).map(|i| &mut self.layers[i])
+    }
+
+    /// Raccourci clavier → Message applicatif.
+    /// SEULE correspondance action ↔ logique : ajouter une action ici la
+    /// branche au clavier partout.
+    fn message_for(&self, action: ui::shortcuts::Action) -> Option<Message> {
+        use ui::shortcuts::Action;
+        let sel = self.selected_layer;
+        match action {
+            Action::NewProject => Some(Message::NewProject),
+            Action::Open => Some(Message::OpenProject),
+            Action::Save | Action::SaveAs => Some(Message::MockAction),
+            Action::Quit => Some(Message::Quit),
+            Action::Undo => Some(Message::Undo),
+            Action::Redo => Some(Message::Redo),
+            Action::Preferences => Some(Message::OpenShortcuts),
+            Action::ToggleTools => Some(Message::ToggleToolsPanel),
+            Action::ToggleLayersPanel => Some(Message::TogglePanel(PanelType::Layers)),
+            Action::TogglePropertiesPanel => {
+                Some(Message::TogglePanel(PanelType::Properties))
+            }
+            Action::LayerNew => Some(Message::AddEmptyLayer),
+            Action::LayerDuplicate => sel.map(Message::DuplicateLayer),
+            Action::LayerDelete => {
+                if sel.is_some() && self.layers.len() > 1 {
+                    sel.map(Message::DeleteLayer)
+                } else {
+                    None
+                }
+            }
+            Action::LayerMoveUp => sel.map(Message::MoveLayerUp),
+            Action::LayerMoveDown => sel.map(Message::MoveLayerDown),
+            Action::Rotate90 => sel.map(|id| Message::RotateLayer { id, delta: 90.0 }),
+            Action::Rotate180 => sel.map(|id| Message::RotateLayer { id, delta: 180.0 }),
+            Action::RotateN90 => sel.map(|id| Message::RotateLayer { id, delta: -90.0 }),
+            Action::RotateN180 => sel.map(|id| Message::RotateLayer { id, delta: -180.0 }),
+            Action::ResetTransform => sel.map(Message::ResetLayerTransform),
+            Action::CropToSelection => Some(Message::CropLayerToSelection),
+            Action::ZoomIn => Some(Message::ZoomInPressed),
+            Action::ZoomOut => Some(Message::ZoomOutPressed),
+            Action::FitToScreen => Some(Message::CanvasFit),
+        }
     }
 
     /// Un calque visible a-t-il un mode de fusion non-Normal ?
@@ -680,6 +754,46 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::ToggleTaskMenu => {
             app.task_menu_open = !app.task_menu_open;
+        }
+
+        // ---- Raccourcis clavier ----
+        Message::OpenShortcuts => {
+            app.show_shortcuts = true;
+            app.capturing = None;
+        }
+        Message::CloseShortcuts => {
+            app.show_shortcuts = false;
+            app.capturing = None;
+        }
+        Message::ShortcutCapture(action) => {
+            app.capturing = Some(action);
+        }
+        Message::ShortcutCaptured(binding) => {
+            if let Some(action) = app.capturing {
+                if let Some(b) = binding {
+                    app.shortcuts.set(action, b);
+                    app.shortcuts.save();
+                }
+                app.capturing = None;
+            }
+        }
+        Message::ShortcutCancelCapture => {
+            app.capturing = None;
+        }
+        Message::ShortcutReset(action) => {
+            app.shortcuts.reset(action);
+            app.shortcuts.save();
+        }
+        Message::ShortcutResetAll => {
+            app.shortcuts.reset_all();
+            app.shortcuts.save();
+        }
+        Message::ShortcutAction(action) => {
+            // Résolution action → Message (déléguée, une seule place)
+            if let Some(msg) = app.message_for(action) {
+                // Re-dispatch récursif : réutilise tous les handlers existants
+                return update(app, msg);
+            }
         }
         Message::TickFrame => {
             // Animation du spinner (~30 fps)
@@ -1344,6 +1458,27 @@ fn view(app: &PhotoApp) -> Element<'_, Message> {
         ];
 
         return iced::widget::stack![base_layout, options_overlay].into();
+    }
+
+    // Fenêtre Préférences → Raccourcis clavier (modale, façon Affinity)
+    if app.show_shortcuts {
+        let prefs_overlay = iced::widget::stack![
+            // Scrim : clic hors panel ferme
+            iced::widget::mouse_area(
+                iced::widget::container(
+                    iced::widget::Space::new().width(Length::Fill).height(Length::Fill)
+                )
+                .style(|_| iced::widget::container::Style {
+                    background: Some(ui::theme::colors::CABLE_SHADOW.into()),
+                    ..Default::default()
+                })
+                .width(Length::Fill)
+                .height(Length::Fill)
+            )
+            .on_press(Message::CloseShortcuts),
+            components::shortcuts_prefs::view(&app.shortcuts, app.capturing),
+        ];
+        return iced::widget::stack![base_layout, prefs_overlay].into();
     }
 
     // Les dropdowns des menus sont gérés nativement par iced_aw::DropDown
