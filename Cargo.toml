@@ -15,7 +15,7 @@ members = [
 
 [workspace.dependencies]
 iced = { version = "0.14", features = ["tokio"] }
-iced_aw = { version = "0.14", default-features = false, features = ["context_menu", "drop_down", "menu"] }
+iced_aw = { version = "0.14", default-features = false, features = ["context_menu", "drop_down", "menu", "color_picker"] }
 wgpu = "30.0.0"
 image = { version = "0.25", features = ["rayon"] }
 rayon = "1.10"

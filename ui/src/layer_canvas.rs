@@ -228,6 +228,8 @@ where
                     state.selecting = Some((cursor_pos, cursor_pos));
                     Some(shader::Action::capture())
                 }
+                // Pinceau non supporté par le chemin GPU expérimental
+                CanvasTool::Brush => Some(shader::Action::capture()),
             },
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some((start, orig_pan)) = state.dragging {
@@ -317,6 +319,7 @@ where
                 CanvasTool::Move => Interaction::Move,
                 CanvasTool::Zoom => Interaction::ZoomIn,
                 CanvasTool::Select => Interaction::Crosshair,
+                CanvasTool::Brush => Interaction::Crosshair,
             };
         }
         Interaction::default()

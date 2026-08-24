@@ -109,6 +109,14 @@ impl Layer {
         self.image.dimensions()
     }
 
+    /// Remplace le contenu pixels du calque (peinture…) et régénère
+    /// texture d'affichage + miniature.
+    pub fn apply_edit(&mut self, new_image: ::image::DynamicImage) {
+        self.handle = Self::make_preview_handle(&new_image);
+        self.thumb = thumb_handle(&new_image);
+        self.image = Arc::new(new_image);
+    }
+
     /// Rogne le calque au rect (coordonnées CALQUE, pixels).
     /// Destructif : régénère texture + miniature. Le contenu reste en place
     /// dans le monde (l'offset compense l'origine du crop).

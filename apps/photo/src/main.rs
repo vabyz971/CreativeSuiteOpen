@@ -279,6 +279,8 @@ pub enum Tool {
     Select,
     Eyedropper,
     Move,
+    /// Pinceau : peint sur le calque sélectionné
+    Brush,
 }
 
 struct PhotoApp {
@@ -324,6 +326,17 @@ struct PhotoApp {
     pub shortcuts: ui::shortcuts::Shortcuts,
     /// Fenêtre principale — son Id (ouverte au boot)
     pub main_window: Option<iced::window::Id>,
+    // ---- Pinceau ----
+    pub brush_color: iced::Color,
+    /// Diamètre du pinceau en pixels DOCUMENT
+    pub brush_size: f32,
+    /// Opacité globale du trait [0.05..1]
+    pub brush_opacity: f32,
+    pub color_picker_open: bool,
+    /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
+    pub stroke_layer: Option<u64>,
+    pub stroke_points: Vec<(f32, f32)>,
+
     /// Modal Préférences ouverte
     pub show_prefs: bool,
     /// Section active dans la fenêtre Préférences
@@ -467,6 +480,18 @@ pub enum Message {
     ShortcutResetAll,
     /// Raccourci clavier résolu → action sémantique
     ShortcutAction(ui::shortcuts::Action),
+
+    // ---- Pinceau ----
+    /// Début d'un trait (coordonnées document)
+    BrushStart { x: f32, y: f32 },
+    /// Prolongement du trait (coordonnées document)
+    BrushExtend { x: f32, y: f32 },
+    /// Relâchement : commit des pixels dans le calque
+    BrushEnd,
+    SetBrushColor(iced::Color),
+    SetBrushSize(f32),
+    SetBrushOpacity(f32),
+    ToggleColorPicker,
     /// Section active dans la fenêtre Préférences
     PrefsSection(components::preferences::PrefsSection),
 
@@ -550,6 +575,12 @@ impl Default for PhotoApp {
             spinner_angle: 0.0,
             shortcuts: ui::shortcuts::Shortcuts::load(),
             main_window: None,
+            brush_color: iced::Color::WHITE,
+            brush_size: 12.0,
+            brush_opacity: 1.0,
+            color_picker_open: false,
+            stroke_layer: None,
+            stroke_points: Vec::new(),
             show_prefs: false,
             prefs_section: components::preferences::PrefsSection::Shortcuts,
             capturing: None,
@@ -783,6 +814,79 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
 
         // ---- Raccourcis clavier ----
+        Message::BrushStart { x, y } => {
+            if let Some(id) = app.selected_layer {
+                app.stroke_layer = Some(id);
+                app.stroke_points = vec![(x, y)];
+            }
+        }
+        Message::BrushExtend { x, y } => {
+            if app.stroke_layer.is_some() {
+                app.stroke_points.push((x, y));
+            }
+        }
+        Message::BrushEnd => {
+            if let Some(id) = app.stroke_layer.take()
+                && app.stroke_points.len() > 1
+            {
+                let pts = std::mem::take(&mut app.stroke_points);
+                let color = [
+                    (app.brush_color.r * 255.0) as u8,
+                    (app.brush_color.g * 255.0) as u8,
+                    (app.brush_color.b * 255.0) as u8,
+                ];
+                if let Some(layer) = app.layers.iter_mut().find(|l| l.id == id) {
+                    // Espace DOCUMENT → espace CALQUE (offset, échelle et
+                    // rotation inversées autour du centre du calque)
+                    let (lw, lh) = layer.dimensions();
+                    let sc = layer.scale;
+                    let theta = -layer.rotation.to_radians();
+                    let (cos, sin) = (theta.cos(), theta.sin());
+                    let cx = layer.offset_x + lw as f32 * sc / 2.0;
+                    let cy = layer.offset_y + lh as f32 * sc / 2.0;
+                    let layer_pts: Vec<(f32, f32)> = pts
+                        .iter()
+                        .map(|&(dx, dy)| {
+                            let (rx, ry) = (
+                                (dx - cx) * cos - (dy - cy) * sin,
+                                (dx - cx) * sin + (dy - cy) * cos,
+                            );
+                            (rx / sc + lw as f32 / 2.0, ry / sc + lh as f32 / 2.0)
+                        })
+                        .collect();
+
+                    let mut rgba = layer.image.to_rgba8().into_raw();
+                    photo_engine::paint::paint_stroke_rgba(
+                        &mut rgba,
+                        lw,
+                        lh,
+                        &layer_pts,
+                        app.brush_size / 2.0,
+                        color,
+                        app.brush_opacity,
+                    );
+                    layer.apply_edit(::image::DynamicImage::ImageRgba8(
+                        ::image::RgbaImage::from_raw(lw, lh, rgba)
+                            .expect("taille inchangée"),
+                    ));
+                }
+            }
+            app.stroke_points.clear();
+        }
+        Message::SetBrushColor(color) => {
+            app.brush_color = color;
+            app.color_picker_open = false;
+        }
+        Message::SetBrushSize(size) => {
+            app.brush_size = size;
+        }
+        Message::SetBrushOpacity(opacity) => {
+            app.brush_opacity = opacity;
+        }
+        Message::ToggleColorPicker => {
+            app.color_picker_open = !app.color_picker_open;
+        }
+
         Message::OpenPreferences => {
             app.show_prefs = true;
             app.prefs_section =
@@ -1077,6 +1181,15 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
             }
         }
         Message::ImageCanvasEvent(evt) => match evt {
+            ui::image_canvas::ImageCanvasEvent::BrushStart { x, y } => {
+                return update(app, Message::BrushStart { x, y });
+            }
+            ui::image_canvas::ImageCanvasEvent::BrushExtend { x, y } => {
+                return update(app, Message::BrushExtend { x, y });
+            }
+            ui::image_canvas::ImageCanvasEvent::BrushEnd => {
+                return update(app, Message::BrushEnd);
+            }
             ui::image_canvas::ImageCanvasEvent::Viewport(size) => {
                 app.canvas_viewport = size;
             }
@@ -1436,6 +1549,15 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             &app.gen_previews,
             app.node_context_menu,
             app.node_context_world,
+            app.brush_color,
+            app.brush_size,
+            app.brush_opacity,
+            app.color_picker_open,
+            if app.stroke_layer.is_some() && !app.stroke_points.is_empty() {
+                Some(&app.stroke_points[..])
+            } else {
+                None
+            },
         )
     ];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas

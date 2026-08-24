@@ -27,6 +27,7 @@ const ICON_ZOOM_IN: &str = "\u{e8ff}"; // zoom_in - Zoom
 const ICON_SELECT: &str = "\u{e86e}"; // select_all - Sélection
 const ICON_COLORIZE: &str = "\u{e3b7}"; // colorize - Pipette
 const ICON_MOVE: &str = "\u{e89f}"; // open_with - Déplacer
+const ICON_BRUSH: &str = "\u{e3ae}"; // brush - Pinceau
 const ICON_ROTATE_LEFT: &str = "\u{e419}"; // rotate_left
 const ICON_ROTATE_RIGHT: &str = "\u{e41a}"; // rotate_right
 const ICON_CROP: &str = "\u{e3be}"; // crop
@@ -95,6 +96,12 @@ pub fn render<'a>(
             "Déplacer",
             selected == Tool::Move,
             Message::SelectTool(Tool::Move)
+        ),
+        icon_button::render(
+            ICON_BRUSH,
+            "Pinceau",
+            selected == Tool::Brush,
+            Message::SelectTool(Tool::Brush)
         ),
         icon_button::render(
             ICON_COLORIZE,

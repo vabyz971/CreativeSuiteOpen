@@ -30,6 +30,8 @@ pub enum CanvasTool {
     Zoom,
     Select,
     Move,
+    /// Pinceau : peint sur le calque sélectionné
+    Brush,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +54,23 @@ pub enum ImageCanvasEvent {
     MoveLayer { dx: f32, dy: f32 },
     /// Fin du déplacement — valide le décalage
     MoveLayerEnd,
+    /// Début d'un trait de pinceau (coordonnées document)
+    BrushStart { x: f32, y: f32 },
+    /// Prolongement du trait pendant le drag (coordonnées document)
+    BrushExtend { x: f32, y: f32 },
+    /// Fin du trait (relâchement) — commit pixels côté app
+    BrushEnd,
+}
+
+/// Aperçu live d'un trait de pinceau dessiné par-dessus les calques.
+/// Les points sont en coordonnées DOCUMENT ; le commit transformera
+/// vers l'espace calque (rotation/échelle inversées).
+pub struct StrokeOverlay {
+    pub points: Vec<(f32, f32)>,
+    pub color: iced::Color,
+    /// Rayon du pinceau en pixels DOCUMENT (= taille / 2)
+    pub radius: f32,
+    pub opacity: f32,
 }
 
 /// Un calque affichable sur le canvas — dessiné à SA position monde.
@@ -81,6 +100,8 @@ pub struct ImageCanvas {
     pub zoom: f32,
     pub tool: CanvasTool,
     pub selection: Option<Rectangle>,
+    /// Trait de pinceau en cours (aperçu)
+    pub stroke: Option<StrokeOverlay>,
 }
 
 impl ImageCanvas {
@@ -96,7 +117,26 @@ impl ImageCanvas {
             zoom: zoom.clamp(0.08, 6.0),
             tool: CanvasTool::Hand,
             selection: None,
+            stroke: None,
         }
+    }
+    pub fn with_stroke(mut self, stroke: Option<StrokeOverlay>) -> Self {
+        self.stroke = stroke;
+        self
+    }
+
+    /// Convertit une position écran canvas en coordonnées DOCUMENT
+    /// (inverse exact du transform de draw : centre + pan + zoom).
+    fn screen_to_doc(&self, p: Point, bounds: Rectangle) -> Point {
+        let center = Point::new(bounds.width / 2.0 + self.pan.x, bounds.height / 2.0 + self.pan.y);
+        let (hw, hh) = self
+            .doc_size
+            .map(|s| (s.width / 2.0, s.height / 2.0))
+            .unwrap_or((0.0, 0.0));
+        Point::new(
+            (p.x - center.x) / self.zoom + hw,
+            (p.y - center.y) / self.zoom + hh,
+        )
     }
     pub fn with_layers(mut self, layers: Vec<CanvasLayer>) -> Self {
         self.layers = layers;
@@ -204,6 +244,11 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         canvas::Action::publish(ImageCanvasEvent::MoveLayerEnd).and_capture(),
                     );
                 }
+                if self.tool == CanvasTool::Brush {
+                    return Some(
+                        canvas::Action::publish(ImageCanvasEvent::BrushEnd).and_capture(),
+                    );
+                }
                 return Some(canvas::Action::capture());
             }
             return None;
@@ -224,6 +269,17 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         Some(
                             canvas::Action::publish(ImageCanvasEvent::MoveLayerStart)
                                 .and_capture(),
+                        )
+                    }
+                    CanvasTool::Brush => {
+                        let doc = self.screen_to_doc(cursor_pos, bounds);
+                        state.dragging = Some((cursor_pos, self.pan));
+                        Some(
+                            canvas::Action::publish(ImageCanvasEvent::BrushStart {
+                                x: doc.x,
+                                y: doc.y,
+                            })
+                            .and_capture(),
                         )
                     }
                     CanvasTool::Zoom | CanvasTool::Select => {
@@ -250,6 +306,15 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         let dx = cursor_pos.x - start.x;
                         let dy = cursor_pos.y - start.y;
                         return Some(canvas::Action::publish(ImageCanvasEvent::MoveLayer { dx, dy }));
+                    } else if self.tool == CanvasTool::Brush {
+                        let doc = self.screen_to_doc(cursor_pos, bounds);
+                        return Some(
+                            canvas::Action::publish(ImageCanvasEvent::BrushExtend {
+                                x: doc.x,
+                                y: doc.y,
+                            })
+                            .and_capture(),
+                        );
                     }
                 }
                 None
@@ -327,6 +392,47 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     .opacity(l.opacity)
                     .rotation(iced::Radians(l.rotation_deg.to_radians())),
             );
+        }
+
+        // Aperçu live du trait de pinceau : disques le long des segments
+        // (espace document → écran), sous le curseur quoi qu'il arrive.
+        if let Some(st) = &self.stroke {
+            if !st.points.is_empty() {
+                let r = (st.radius * self.zoom).max(0.75);
+                let to_screen = |&(dx, dy): &(f32, f32)| {
+                    Point::new(
+                        center.x + (dx - doc_half_w) * self.zoom,
+                        center.y + (dy - doc_half_h) * self.zoom,
+                    )
+                };
+                let alpha = st.opacity.clamp(0.15, 1.0);
+                let col = iced::Color {
+                    a: alpha,
+                    ..st.color
+                };
+                let step = (r * 0.35).max(0.75);
+                let mut prev = to_screen(&st.points[0]);
+                let path = Path::circle(prev, r);
+                frame.fill(&path, col);
+                for p in &st.points[1..] {
+                    let cur = to_screen(p);
+                    let dx = cur.x - prev.x;
+                    let dy = cur.y - prev.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist > f32::EPSILON {
+                        let n = (dist / step).ceil() as usize;
+                        for i in 1..=n {
+                            let t = i as f32 / n as f32;
+                            let path = Path::circle(
+                                Point::new(prev.x + dx * t, prev.y + dy * t),
+                                r,
+                            );
+                            frame.fill(&path, col);
+                        }
+                    }
+                    prev = cur;
+                }
+            }
         }
 
         // Repère document dessiné DANS l'espace monde → insensible au zoom,
@@ -421,6 +527,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             return match self.tool {
                 CanvasTool::Hand => mouse::Interaction::Grab,
                 CanvasTool::Move => mouse::Interaction::Move,
+                CanvasTool::Brush => mouse::Interaction::Crosshair,
                 CanvasTool::Zoom => mouse::Interaction::ZoomIn,
                 CanvasTool::Select => mouse::Interaction::Crosshair,
             };
@@ -436,11 +543,13 @@ pub fn view_with_tool<'a>(
     tool: CanvasTool,
     selection: Option<Rectangle>,
     layers: Vec<CanvasLayer>,
+    stroke: Option<StrokeOverlay>,
 ) -> iced::Element<'a, ImageCanvasEvent> {
     let program = ImageCanvas::new(doc_size, pan, zoom)
         .with_layers(layers)
         .with_tool(tool)
-        .with_selection(selection);
+        .with_selection(selection)
+        .with_stroke(stroke);
     iced::widget::canvas(program)
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)

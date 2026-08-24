@@ -20,6 +20,7 @@
 pub mod document;
 pub mod gpu;
 pub mod nodes;
+pub mod paint;
 pub mod processor;
 pub mod registry;
 

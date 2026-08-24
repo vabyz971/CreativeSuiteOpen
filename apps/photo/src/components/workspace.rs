@@ -55,6 +55,12 @@ pub fn render<'a>(
     gen_previews: &std::collections::HashMap<NodeId, image::Handle>,
     node_context_menu: Option<iced::Point>,
     node_context_world: Option<datatypes::Vec2>,
+    // Pinceau : réglages (barre du bas) + trait en cours (aperçu canvas)
+    brush_color: iced::Color,
+    brush_size: f32,
+    brush_opacity: f32,
+    color_picker_open: bool,
+    stroke_points: Option<&'a [(f32, f32)]>,
 ) -> Element<'a, Message> {
     let total_panes = panes.len();
 
@@ -85,6 +91,11 @@ pub fn render<'a>(
                     zoom_level,
                     canvas_selection,
                     canvas_viewport,
+                    brush_color,
+                    brush_size,
+                    brush_opacity,
+                    color_picker_open,
+                    stroke_points,
                 );
                 // Titre dynamique : nom du fichier + dimensions + profil
                 let title = match (image_path.as_deref(), doc_size) {
@@ -202,6 +213,11 @@ fn render_canvas_preview<'a>(
     zoom_level: u32,
     canvas_selection: Option<iced::Rectangle>,
     _viewport: Size,
+    brush_color: iced::Color,
+    brush_size: f32,
+    brush_opacity: f32,
+    color_picker_open: bool,
+    stroke_points: Option<&'a [(f32, f32)]>,
 ) -> Element<'a, Message> {
     let zoom = zoom_level as f32 / 100.0;
     let canvas_tool = match selected_tool {
@@ -210,7 +226,14 @@ fn render_canvas_preview<'a>(
         Tool::Zoom => ui::image_canvas::CanvasTool::Zoom,
         Tool::Select => ui::image_canvas::CanvasTool::Select,
         Tool::Eyedropper => ui::image_canvas::CanvasTool::Select,
+        Tool::Brush => ui::image_canvas::CanvasTool::Brush,
     };
+    let stroke_overlay = stroke_points.map(|points| ui::image_canvas::StrokeOverlay {
+        points: points.to_vec(),
+        color: brush_color,
+        radius: brush_size / 2.0,
+        opacity: brush_opacity,
+    });
 
     // Calques canvas : texture + offset + opacité appliqués AU DRAW (GPU)
     // → slider d'opacité = zéro régénération de pixels, zéro clignotement
@@ -305,13 +328,14 @@ fn render_canvas_preview<'a>(
             scale: 1.0,
         }];
         let canvas = ui::image_canvas::view_with_tool(
-            doc_size, canvas_pan, zoom, canvas_tool, canvas_selection, ls,
+            doc_size, canvas_pan, zoom, canvas_tool, canvas_selection, ls, None,
         )
         .map(Message::ImageCanvasEvent);
         container(canvas).width(Length::Fill).height(Length::Fill).clip(true).into()
     } else {
         let canvas = ui::image_canvas::view_with_tool(
             doc_size, canvas_pan, zoom, canvas_tool, canvas_selection, canvas_layers,
+            stroke_overlay,
         )
         .map(Message::ImageCanvasEvent);
         if layers.is_empty() && doc_size.is_none() {
@@ -382,12 +406,79 @@ fn render_canvas_preview<'a>(
             .on_press(msg)
     };
 
-    // Pastille flottante : un seul bouton "ajuster à l'image" (fit)
+    // --- Réglages pinceau dans la barre du bas ---
+    // Cercle couleur (ouvre le ColorPicker iced_aw)
+    let swatch = button(
+        container(Space::new().width(Length::Fixed(14.0)).height(Length::Fixed(14.0)))
+            .style(move |_| container::Style {
+                background: Some(brush_color.into()),
+                border: iced::Border {
+                    width: 1.0,
+                    color: colors::BORDER_SUBTLE,
+                    radius: iced::border::Radius::new(7.0),
+                },
+                ..Default::default()
+            }),
+    )
+    .padding(5)
+    .style(|_t, s| {
+        let mut st = button::Style::default();
+        st.background = Some(if s == button::Status::Hovered {
+            colors::HOVER_OVERLAY.into()
+        } else {
+            iced::Color::TRANSPARENT.into()
+        });
+        st.border.radius = metrics::RADIUS_BUTTON.into();
+        st
+    })
+    .on_press(Message::ToggleColorPicker);
+
+    let color_circle = iced_aw::widget::ColorPicker::new(
+        color_picker_open,
+        brush_color,
+        swatch,
+        Message::ToggleColorPicker,
+        Message::SetBrushColor,
+    );
+
+    // Taille (1..200 px) et opacité (5..100 %) — sliders compacts
+    let size_slider = row![
+        text("Taille").size(10).color(colors::TEXT_MUTED),
+        iced::widget::slider(1.0..=200.0, brush_size, Message::SetBrushSize)
+            .width(Length::Fixed(90.0)),
+        text(format!("{:.0}", brush_size)).size(10).color(colors::TEXT_SECONDARY),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let opacity_slider = row![
+        text("Opacité").size(10).color(colors::TEXT_MUTED),
+        iced::widget::slider(0.05..=1.0, brush_opacity, Message::SetBrushOpacity)
+            .width(Length::Fixed(70.0)),
+        text(format!("{:.0}%", brush_opacity * 100.0))
+            .size(10)
+            .color(colors::TEXT_SECONDARY),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let pill_separator = || container(Space::new().width(Length::Fixed(1.0)).height(Length::Fixed(16.0)))
+        .style(|_| container::Style {
+            background: Some(colors::BORDER_PANEL.into()),
+            ..Default::default()
+        });
+
+    // Pastille flottante : ajuster à l'image + pinceau (couleur/taille/opacité)
     let pill = container(
         row![
             pill_btn("\u{e5d0}", Message::CanvasFit), // fullscreen → ajuster à l'image
+            pill_separator(),
+            color_circle,
+            pill_separator(),
+            size_slider,
+            opacity_slider,
         ]
-        .spacing(6)
+        .spacing(8)
         .align_y(Alignment::Center),
     )
     .padding(iced::Padding::new(2.0).left(6.0).right(6.0))
