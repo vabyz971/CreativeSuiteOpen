@@ -438,6 +438,8 @@ pub enum Message {
     SetLayerRotation { id: u64, degrees: f32 },
     /// Rotation rapide ±90° (true = horaire)
     RotateLayer90 { id: u64, clockwise: bool },
+    /// Retourne le calque (miroir horizontal/vertical)
+    FlipLayer { id: u64, horizontal: bool },
     /// Rotation relative (delta en degrés, ex: 90, -90, 180)
     RotateLayer { id: u64, delta: f32 },
     /// Échelle uniforme du calque (1.0 = 100 %)
@@ -1005,6 +1007,18 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 app.layers[i].rotation = r;
             }
         }
+        Message::FlipLayer { id, horizontal } => {
+            let target = if app.layer_index(id).is_some() {
+                Some(id)
+            } else {
+                app.selected_layer
+            };
+            if let Some(tid) = target
+                && let Some(i) = app.layer_index(tid)
+            {
+                app.layers[i].flip(horizontal);
+            }
+        }
         Message::RotateLayer { id, delta } => {
             let target = if app.layer_index(id).is_some() {
                 Some(id)
@@ -1522,8 +1536,24 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             .into(),
     );
 
+    // Barre d'options contextuelle : contenu selon l'outil sélectionné
+    let selected_scale_percent = app.selected_layer.and_then(|id| {
+        app.layers.iter().find(|l| l.id == id).map(|l| l.scale * 100.0)
+    });
+    let options_bar = components::options_bar::render(
+        app.selected_tool,
+        app.selected_layer,
+        selected_scale_percent,
+        app.canvas_selection.is_some(),
+        app.brush_color,
+        app.brush_size,
+        app.brush_opacity,
+        app.color_picker_open,
+    );
+
     let central = iced::widget::column![
         components::toolbar::context_bar(app.image_path.as_deref()),
+        options_bar,
         components::workspace::render(
             &app.panes,
             app.focus,
@@ -1549,12 +1579,13 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             &app.gen_previews,
             app.node_context_menu,
             app.node_context_world,
-            app.brush_color,
-            app.brush_size,
-            app.brush_opacity,
-            app.color_picker_open,
             if app.stroke_layer.is_some() && !app.stroke_points.is_empty() {
-                Some(&app.stroke_points[..])
+                Some(ui::image_canvas::StrokeOverlay {
+                    points: app.stroke_points.clone(),
+                    color: app.brush_color,
+                    radius: app.brush_size / 2.0,
+                    opacity: app.brush_opacity,
+                })
             } else {
                 None
             },

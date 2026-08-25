@@ -109,6 +109,16 @@ impl Layer {
         self.image.dimensions()
     }
 
+    /// Retourne le calque horizontalement/verticalement (destructif).
+    pub fn flip(&mut self, horizontal: bool) {
+        let flipped = if horizontal {
+            self.image.fliph()
+        } else {
+            self.image.flipv()
+        };
+        self.apply_edit(flipped);
+    }
+
     /// Remplace le contenu pixels du calque (peinture…) et régénère
     /// texture d'affichage + miniature.
     pub fn apply_edit(&mut self, new_image: ::image::DynamicImage) {

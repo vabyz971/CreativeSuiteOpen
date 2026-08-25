@@ -65,6 +65,7 @@ pub enum ImageCanvasEvent {
 /// Aperçu live d'un trait de pinceau dessiné par-dessus les calques.
 /// Les points sont en coordonnées DOCUMENT ; le commit transformera
 /// vers l'espace calque (rotation/échelle inversées).
+#[derive(Clone)]
 pub struct StrokeOverlay {
     pub points: Vec<(f32, f32)>,
     pub color: iced::Color,

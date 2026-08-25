@@ -23,6 +23,7 @@ pub mod node_registry {
     pub use photo_engine::registry::*;
 }
 pub mod layers_panel;
+pub mod options_bar;
 pub mod properties;
 pub mod preferences;
 pub mod toolpanel;

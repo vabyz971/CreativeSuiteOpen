@@ -20,11 +20,11 @@ use crate::{Message, PanelType, Tool};
 use suite_core::Graph;
 use datatypes::NodeId;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{button, column, container, image, row, text, Space};
+use iced::widget::{button, column, container, image, text, Space};
 use iced::{Alignment, Element, Length, Size, Vector};
 use ui::base_panel;
 use ui::dropdown::{dropdown_box, menu_item, menu_separator};
-use ui::theme::{colors, metrics};
+use ui::theme::colors;
 
 #[allow(clippy::too_many_arguments)]
 pub fn render<'a>(
@@ -55,15 +55,12 @@ pub fn render<'a>(
     gen_previews: &std::collections::HashMap<NodeId, image::Handle>,
     node_context_menu: Option<iced::Point>,
     node_context_world: Option<datatypes::Vec2>,
-    // Pinceau : réglages (barre du bas) + trait en cours (aperçu canvas)
-    brush_color: iced::Color,
-    brush_size: f32,
-    brush_opacity: f32,
-    color_picker_open: bool,
-    stroke_points: Option<&'a [(f32, f32)]>,
+    // Trait de pinceau en cours (aperçu canvas, style inclus)
+    stroke_overlay: Option<ui::image_canvas::StrokeOverlay>,
 ) -> Element<'a, Message> {
     let total_panes = panes.len();
 
+    let stroke_src = &stroke_overlay;
     let pane_grid = PaneGrid::new(panes, |id, panel_type, _is_maximized| {
         let is_focused = focus == Some(id);
 
@@ -91,11 +88,7 @@ pub fn render<'a>(
                     zoom_level,
                     canvas_selection,
                     canvas_viewport,
-                    brush_color,
-                    brush_size,
-                    brush_opacity,
-                    color_picker_open,
-                    stroke_points,
+                    stroke_src.clone(),
                 );
                 // Titre dynamique : nom du fichier + dimensions + profil
                 let title = match (image_path.as_deref(), doc_size) {
@@ -213,12 +206,9 @@ fn render_canvas_preview<'a>(
     zoom_level: u32,
     canvas_selection: Option<iced::Rectangle>,
     _viewport: Size,
-    brush_color: iced::Color,
-    brush_size: f32,
-    brush_opacity: f32,
-    color_picker_open: bool,
-    stroke_points: Option<&'a [(f32, f32)]>,
+    stroke_overlay: Option<ui::image_canvas::StrokeOverlay>,
 ) -> Element<'a, Message> {
+    let _ = selected_layer; // conservé pour futurs réglages contextuels
     let zoom = zoom_level as f32 / 100.0;
     let canvas_tool = match selected_tool {
         Tool::Hand => ui::image_canvas::CanvasTool::Hand,
@@ -228,13 +218,6 @@ fn render_canvas_preview<'a>(
         Tool::Eyedropper => ui::image_canvas::CanvasTool::Select,
         Tool::Brush => ui::image_canvas::CanvasTool::Brush,
     };
-    let stroke_overlay = stroke_points.map(|points| ui::image_canvas::StrokeOverlay {
-        points: points.to_vec(),
-        color: brush_color,
-        radius: brush_size / 2.0,
-        opacity: brush_opacity,
-    });
-
     // Calques canvas : texture + offset + opacité appliqués AU DRAW (GPU)
     // → slider d'opacité = zéro régénération de pixels, zéro clignotement
     let dragging = drag_layer.is_some();
@@ -387,128 +370,9 @@ fn render_canvas_preview<'a>(
         }
     };
 
-    // Footer flottant façon Lumina : pastille d'outils centrée en bas
-    let material = ui::icon_button::MATERIAL_ICONS;
-
-    let pill_btn = |codepoint: &'a str, msg: Message| {
-        button(text(codepoint).font(material).size(16).color(colors::TEXT_SECONDARY))
-            .padding(6)
-            .style(move |_theme, status| {
-                let mut st = button::Style::default();
-                st.background = Some(if status == button::Status::Hovered {
-                    colors::HOVER_OVERLAY.into()
-                } else {
-                    iced::Color::TRANSPARENT.into()
-                });
-                st.border.radius = metrics::RADIUS_BUTTON.into();
-                st
-            })
-            .on_press(msg)
-    };
-
-    // --- Réglages pinceau dans la barre du bas ---
-    // Cercle couleur (ouvre le ColorPicker iced_aw)
-    let swatch = button(
-        container(Space::new().width(Length::Fixed(14.0)).height(Length::Fixed(14.0)))
-            .style(move |_| container::Style {
-                background: Some(brush_color.into()),
-                border: iced::Border {
-                    width: 1.0,
-                    color: colors::BORDER_SUBTLE,
-                    radius: iced::border::Radius::new(7.0),
-                },
-                ..Default::default()
-            }),
-    )
-    .padding(5)
-    .style(|_t, s| {
-        let mut st = button::Style::default();
-        st.background = Some(if s == button::Status::Hovered {
-            colors::HOVER_OVERLAY.into()
-        } else {
-            iced::Color::TRANSPARENT.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st
-    })
-    .on_press(Message::ToggleColorPicker);
-
-    let color_circle = iced_aw::widget::ColorPicker::new(
-        color_picker_open,
-        brush_color,
-        swatch,
-        Message::ToggleColorPicker,
-        Message::SetBrushColor,
-    );
-
-    // Taille (1..200 px) et opacité (5..100 %) — sliders compacts
-    let size_slider = row![
-        text("Taille").size(10).color(colors::TEXT_MUTED),
-        iced::widget::slider(1.0..=200.0, brush_size, Message::SetBrushSize)
-            .width(Length::Fixed(90.0)),
-        text(format!("{:.0}", brush_size)).size(10).color(colors::TEXT_SECONDARY),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
-
-    let opacity_slider = row![
-        text("Opacité").size(10).color(colors::TEXT_MUTED),
-        iced::widget::slider(0.05..=1.0, brush_opacity, Message::SetBrushOpacity)
-            .width(Length::Fixed(70.0)),
-        text(format!("{:.0}%", brush_opacity * 100.0))
-            .size(10)
-            .color(colors::TEXT_SECONDARY),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
-
-    let pill_separator = || container(Space::new().width(Length::Fixed(1.0)).height(Length::Fixed(16.0)))
-        .style(|_| container::Style {
-            background: Some(colors::BORDER_PANEL.into()),
-            ..Default::default()
-        });
-
-    // Pastille flottante : ajuster à l'image + pinceau (couleur/taille/opacité)
-    let pill = container(
-        row![
-            pill_btn("\u{e5d0}", Message::CanvasFit), // fullscreen → ajuster à l'image
-            pill_separator(),
-            color_circle,
-            pill_separator(),
-            size_slider,
-            opacity_slider,
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .padding(iced::Padding::new(2.0).left(6.0).right(6.0))
-    .style(|_| container::Style {
-        background: Some(colors::SURFACE_CONTAINER.into()),
-        border: iced::Border {
-            width: 1.0,
-            color: colors::BORDER_PANEL,
-            radius: 10.0.into(),
-        },
-        shadow: ui::theme::shadows::panel(),
-        ..Default::default()
-    });
-
-    let floating_footer = container(
-        row![pill].align_y(Alignment::Center)
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .align_y(iced::alignment::Vertical::Bottom)
-    .align_x(iced::alignment::Horizontal::Center)
-    .padding(iced::Padding::default().bottom(14.0));
-
     // Barre d'outils FLOTTANTE verticale en HAUT à gauche du canvas
     let floating_tools: Element<'_, Message> = if tools_visible {
-        let tools_pill = container(toolpanel::render(
-            selected_tool,
-            selected_layer,
-            canvas_selection.is_some(),
-        ))
+        let tools_pill = container(toolpanel::render(selected_tool))
             .padding(iced::Padding::new(4.0).top(4.0).bottom(4.0))
             .style(|_| container::Style {
                 background: Some(colors::SURFACE_CONTAINER.into()),
@@ -535,7 +399,6 @@ fn render_canvas_preview<'a>(
         iced::widget::stack![
             container(content).width(Length::Fill).height(Length::Fill),
             floating_tools,
-            floating_footer,
         ]
     )
     .width(Length::Fill)
