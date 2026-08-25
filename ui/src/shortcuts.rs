@@ -64,6 +64,9 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     FitToScreen,
+    // Outils
+    ToolHand,
+    ToolBrush,
 }
 
 impl Action {
@@ -95,6 +98,8 @@ impl Action {
             Action::ZoomIn => "zoom_in",
             Action::ZoomOut => "zoom_out",
             Action::FitToScreen => "fit_to_screen",
+            Action::ToolHand => "tool_hand",
+            Action::ToolBrush => "tool_brush",
         }
     }
 
@@ -125,6 +130,8 @@ impl Action {
             "zoom_in" => Action::ZoomIn,
             "zoom_out" => Action::ZoomOut,
             "fit_to_screen" => Action::FitToScreen,
+            "tool_hand" => Action::ToolHand,
+            "tool_brush" => Action::ToolBrush,
             _ => return None,
         })
     }
@@ -157,6 +164,8 @@ impl Action {
             Action::ZoomIn => "Zoom avant",
             Action::ZoomOut => "Zoom arrière",
             Action::FitToScreen => "Ajuster à l'écran",
+            Action::ToolHand => "Outil Main",
+            Action::ToolBrush => "Outil Pinceau",
         }
     }
 
@@ -184,6 +193,7 @@ impl Action {
             | Action::ResetTransform
             | Action::CropToSelection => "Calque",
             Action::ZoomIn | Action::ZoomOut | Action::FitToScreen => "Vue",
+            Action::ToolHand | Action::ToolBrush => "Outils",
         }
     }
 
@@ -215,6 +225,8 @@ impl Action {
             Action::ZoomIn,
             Action::ZoomOut,
             Action::FitToScreen,
+            Action::ToolHand,
+            Action::ToolBrush,
         ]
         .into();
         all.sort_by_key(|a| (a.category(), a.label()));
@@ -318,6 +330,9 @@ fn default_bindings() -> Vec<(Action, Binding)> {
         (ZoomIn, Binding::new("+", true, false, false)),
         (ZoomOut, Binding::new("-", true, false, false)),
         (FitToScreen, Binding::new("0", true, false, false)),
+        // Outils
+        (ToolHand, Binding::new("space", false, false, false)),
+        (ToolBrush, Binding::new("b", false, false, false)),
         // Sans raccourci par défaut (dangereux ou rare) :
         // LayerDelete, LayerMoveUp/Down, Rotate*, ResetTransform,
         // CropToSelection, Preferences — assignables dans les préférences.

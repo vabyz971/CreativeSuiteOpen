@@ -342,7 +342,6 @@ struct PhotoApp {
     pub color_picker_open: bool,
     /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
     pub stroke_layer: Option<u64>,
-    pub stroke_points: Vec<(f32, f32)>,
     /// Commit lourd EN COURS hors thread UI — l'aperçu reste figé à l'écran
     /// jusqu'à l'application (aucun gel de l'interface).
     pub pending_paint: Option<PendingPaint>,
@@ -502,9 +501,8 @@ pub enum Message {
     /// Début d'un trait (coordonnées document)
     BrushStart { x: f32, y: f32 },
     /// Prolongement du trait (coordonnées document)
-    BrushExtend { x: f32, y: f32 },
     /// Relâchement : lance le commit des pixels HORS thread UI
-    BrushEnd,
+    BrushEnd { points: Vec<(f32, f32)> },
     /// Résultat du calcul lourd — applique pixels + textures au calque
     PaintApplied {
         layer_id: u64,
@@ -609,12 +607,11 @@ impl Default for PhotoApp {
             spinner_angle: 0.0,
             shortcuts: ui::shortcuts::Shortcuts::load(),
             main_window: None,
-            brush_color: iced::Color::WHITE,
+            brush_color: iced::Color::from_rgb8(0x1E, 0x1E, 0x22),
             brush_size: 12.0,
             brush_opacity: 1.0,
             color_picker_open: false,
             stroke_layer: None,
-            stroke_points: Vec::new(),
             pending_paint: None,
             new_doc_w: "1920".to_string(),
             new_doc_h: "1080".to_string(),
@@ -686,6 +683,8 @@ impl PhotoApp {
             Action::RotateN180 => sel.map(|id| Message::RotateLayer { id, delta: -180.0 }),
             Action::ResetTransform => sel.map(Message::ResetLayerTransform),
             Action::CropToSelection => Some(Message::CropLayerToSelection),
+            Action::ToolBrush => Some(Message::SelectTool(Tool::Brush)),
+            Action::ToolHand => Some(Message::SelectTool(Tool::Hand)),
             Action::ZoomIn => Some(Message::ZoomInPressed),
             Action::ZoomOut => Some(Message::ZoomOutPressed),
             Action::FitToScreen => Some(Message::CanvasFit),
@@ -855,29 +854,25 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
 
         // ---- Raccourcis clavier ----
-        Message::BrushStart { x, y } => {
+        Message::BrushStart { .. } => {
+            // Cible le calque sélectionné ; l'aperçu live est géré par le
+            // canvas (State local). On ignore si un commit est en vol.
             if app.pending_paint.is_none()
                 && let Some(id) = app.selected_layer
             {
                 app.stroke_layer = Some(id);
-                app.stroke_points = vec![(x, y)];
             }
         }
-        Message::BrushExtend { x, y } => {
-            if app.pending_paint.is_none() && app.stroke_layer.is_some() {
-                app.stroke_points.push((x, y));
-            }
-        }
-        Message::BrushEnd => {
+        Message::BrushEnd { points } => {
             // Le travail lourd (copie RGBA, rastérisation, aperçu, miniature)
             // part sur un thread de fond (spawn_blocking) : l'UI reste fluide.
             // L'aperçu reste affiché (pending_paint) jusqu'à PaintApplied.
             if let Some(id) = app.stroke_layer.take()
                 && app.pending_paint.is_none()
-                && app.stroke_points.len() > 1
+                && points.len() > 1
                 && let Some(layer) = app.layers.iter().find(|l| l.id == id).cloned()
             {
-                let pts = std::mem::take(&mut app.stroke_points);
+                let pts = points;
                 let color = [
                     (app.brush_color.r * 255.0) as u8,
                     (app.brush_color.g * 255.0) as u8,
@@ -921,7 +916,6 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     },
                 );
             }
-            app.stroke_points.clear();
         }
         Message::PaintApplied { layer_id, width, height, rgba, preview, thumb } => {
             if let Some(layer) = app.layers.iter_mut().find(|l| l.id == layer_id)
@@ -1306,11 +1300,8 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
             ui::image_canvas::ImageCanvasEvent::BrushStart { x, y } => {
                 return update(app, Message::BrushStart { x, y });
             }
-            ui::image_canvas::ImageCanvasEvent::BrushExtend { x, y } => {
-                return update(app, Message::BrushExtend { x, y });
-            }
-            ui::image_canvas::ImageCanvasEvent::BrushEnd => {
-                return update(app, Message::BrushEnd);
+            ui::image_canvas::ImageCanvasEvent::BrushEnd { points } => {
+                return update(app, Message::BrushEnd { points });
             }
             ui::image_canvas::ImageCanvasEvent::Viewport(size) => {
                 app.canvas_viewport = size;
@@ -1687,12 +1678,13 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             &app.gen_previews,
             app.node_context_menu,
             app.node_context_world,
-            // Aperçu du trait : commit en cours (figé) sinon trait live
+            // Overlay figé pendant le commit asynchrone (l'aperçu live
+            // du drag est dessiné par le canvas lui-même)
             if let Some(p) = &app.pending_paint {
                 Some(p.overlay.clone())
-            } else if app.stroke_layer.is_some() && !app.stroke_points.is_empty() {
+            } else if app.stroke_layer.is_some() {
                 Some(ui::image_canvas::StrokeOverlay {
-                    points: app.stroke_points.clone(),
+                    points: Vec::new(),
                     color: app.brush_color,
                     radius: app.brush_size / 2.0,
                     opacity: app.brush_opacity,

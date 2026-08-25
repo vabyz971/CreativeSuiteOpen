@@ -56,10 +56,8 @@ pub enum ImageCanvasEvent {
     MoveLayerEnd,
     /// Début d'un trait de pinceau (coordonnées document)
     BrushStart { x: f32, y: f32 },
-    /// Prolongement du trait pendant le drag (coordonnées document)
-    BrushExtend { x: f32, y: f32 },
-    /// Fin du trait (relâchement) — commit pixels côté app
-    BrushEnd,
+    /// Fin du trait — transporte la polyligne complète pour le commit pixels
+    BrushEnd { points: Vec<(f32, f32)> },
 }
 
 /// Aperçu live d'un trait de pinceau dessiné par-dessus les calques.
@@ -156,6 +154,10 @@ impl ImageCanvas {
 #[derive(Default)]
 pub struct State {
     pub dragging: Option<(Point, Vector)>,
+    /// Points du trait en cours (coords document) — stockés dans le canvas
+    /// pour un aperçu sans aller-retour vers l'application (zéro latence,
+    /// redraw explicite à chaque déplacement).
+    pub stroke: Vec<(f32, f32)>,
     pub selecting: Option<(Point, Point)>, // start, current
     /// Modificateurs clavier courants (Alt = zoom inversé avec l'outil loupe)
     pub modifiers: iced::keyboard::Modifiers,
@@ -246,8 +248,10 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     );
                 }
                 if self.tool == CanvasTool::Brush {
+                    let points = std::mem::take(&mut state.stroke);
                     return Some(
-                        canvas::Action::publish(ImageCanvasEvent::BrushEnd).and_capture(),
+                        canvas::Action::publish(ImageCanvasEvent::BrushEnd { points })
+                            .and_capture(),
                     );
                 }
                 return Some(canvas::Action::capture());
@@ -274,6 +278,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     }
                     CanvasTool::Brush => {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
+                        state.stroke = vec![(doc.x, doc.y)];
                         state.dragging = Some((cursor_pos, self.pan));
                         Some(
                             canvas::Action::publish(ImageCanvasEvent::BrushStart {
@@ -309,13 +314,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         return Some(canvas::Action::publish(ImageCanvasEvent::MoveLayer { dx, dy }));
                     } else if self.tool == CanvasTool::Brush {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
-                        return Some(
-                            canvas::Action::publish(ImageCanvasEvent::BrushExtend {
-                                x: doc.x,
-                                y: doc.y,
-                            })
-                            .and_capture(),
-                        );
+                        state.stroke.push((doc.x, doc.y));
+                        // Aperçu purement local : redraw sans aller-retour app
+                        return Some(canvas::Action::request_redraw().and_capture());
                     }
                 }
                 None
@@ -397,7 +398,17 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
 
         // Aperçu live du trait de pinceau : disques le long des segments
         // (espace document → écran), sous le curseur quoi qu'il arrive.
-        if let Some(st) = &self.stroke {
+        // Priorité au trait local du drag ; à défaut l'overlay fourni par
+        // l'app (commit en cours, figé jusqu'à PaintApplied).
+        let live_stroke: Option<StrokeOverlay> = if !state.stroke.is_empty() {
+            // Le trait local hérite couleur/rayon/opacité de l'overlay fourni
+            self.stroke
+                .as_ref()
+                .map(|st| StrokeOverlay { points: state.stroke.clone(), ..st.clone() })
+        } else {
+            self.stroke.clone()
+        };
+        if let Some(st) = &live_stroke {
             if !st.points.is_empty() {
                 let r = (st.radius * self.zoom).max(0.75);
                 let to_screen = |&(dx, dy): &(f32, f32)| {
