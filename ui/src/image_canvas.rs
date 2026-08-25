@@ -20,7 +20,7 @@
 use iced::mouse;
 use iced::widget::canvas::{self, Frame, Geometry, Path};
 use iced::widget::image;
-use iced::{Color, Point, Rectangle, Size, Theme, Vector};
+use iced::{Point, Rectangle, Size, Theme, Vector};
 
 use crate::theme::colors;
 
@@ -525,30 +525,22 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 Point::new(sel.x.min(sel.x + sel.width), sel.y.min(sel.y + sel.height)),
                 Size::new(sel.width.abs(), sel.height.abs()),
             );
-            frame.fill_rectangle(
-                norm.position(),
-                norm.size(),
-                Color::from_rgba(0.2, 0.5, 0.9, 0.15),
-            );
+            frame.fill_rectangle(norm.position(), norm.size(), colors::SELECTION_FILL);
             let path = Path::rectangle(norm.position(), norm.size());
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
                     .with_width(1.0)
-                    .with_color(Color::from_rgb(0.2, 0.5, 0.9)),
+                    .with_color(colors::SELECTION_STROKE),
             );
         } else if let Some(sel) = self.selection {
-            frame.fill_rectangle(
-                sel.position(),
-                sel.size(),
-                Color::from_rgba(0.2, 0.5, 0.9, 0.15),
-            );
+            frame.fill_rectangle(sel.position(), sel.size(), colors::SELECTION_FILL);
             let path = Path::rectangle(sel.position(), sel.size());
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
                     .with_width(1.0)
-                    .with_color(Color::from_rgb(0.2, 0.5, 0.9)),
+                    .with_color(colors::SELECTION_STROKE),
             );
         }
 

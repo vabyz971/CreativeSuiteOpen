@@ -18,7 +18,7 @@
 //! Utilise le widget natif `iced_aw::menu::MenuBar` : sous-menus au survol,
 //! comme Photoshop/Affinity. Inspiré de `iced_aw/examples/menu.rs`.
 
-use crate::theme::{colors, metrics};
+use crate::theme::colors;
 use iced::widget::{Space, button, container, text};
 use iced::{Alignment, Element, Length};
 
@@ -106,22 +106,7 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                             button(text(content).size(13))
                                 .width(Length::Fill)
                                 .padding(iced::Padding::new(6.0).left(10.0).right(8.0))
-                                .style(|_, s| {
-                                    let mut st = button::Style::default();
-                                    let hovered = s == iced::widget::button::Status::Hovered;
-                                    st.background = Some(if hovered {
-                                        colors::ACCENT.into()
-                                    } else {
-                                        iced::Color::TRANSPARENT.into()
-                                    });
-                                    st.text_color = if hovered {
-                                        colors::TEXT_ON_ACCENT
-                                    } else {
-                                        colors::ON_SURFACE
-                                    };
-                                    st.border.radius = metrics::RADIUS_BUTTON.into();
-                                    st
-                                })
+                                .style(|_, s| crate::style::menu_item(s))
                                 .on_press(message.clone()),
                         )
                     }
@@ -161,24 +146,7 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                                                 .padding(
                                                     iced::Padding::new(6.0).left(10.0).right(8.0),
                                                 )
-                                                .style(|_, s| {
-                                                    let mut st = button::Style::default();
-                                                    let hovered =
-                                                        s == iced::widget::button::Status::Hovered;
-                                                    st.background = Some(if hovered {
-                                                        colors::ACCENT.into()
-                                                    } else {
-                                                        iced::Color::TRANSPARENT.into()
-                                                    });
-                                                    st.text_color = if hovered {
-                                                        colors::TEXT_ON_ACCENT
-                                                    } else {
-                                                        colors::ON_SURFACE
-                                                    };
-                                                    st.border.radius =
-                                                        metrics::RADIUS_BUTTON.into();
-                                                    st
-                                                })
+                                                .style(|_, s| crate::style::menu_item(s))
                                                 .on_press(message.clone()),
                                         )
                                     }
@@ -207,22 +175,7 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                             )
                             .width(Length::Fill)
                             .padding(iced::Padding::new(6.0).left(10.0).right(8.0))
-                            .style(|_, s| {
-                                let mut st = button::Style::default();
-                                let hovered = s == iced::widget::button::Status::Hovered;
-                                st.background = Some(if hovered {
-                                    colors::ACCENT.into()
-                                } else {
-                                    iced::Color::TRANSPARENT.into()
-                                });
-                                st.text_color = if hovered {
-                                    colors::TEXT_ON_ACCENT
-                                } else {
-                                    colors::ON_SURFACE
-                                };
-                                st.border.radius = metrics::RADIUS_BUTTON.into();
-                                st
-                            }),
+                            .style(|_, s| crate::style::menu_item(s)),
                             sub_menu,
                         )
                     }
@@ -237,18 +190,7 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                 button(text(m.label.clone()).size(12).center())
                     .width(Length::Fixed(SLOT_WIDTH))
                     .height(Length::Fixed(BAR_HEIGHT))
-                    .style(|_, s| {
-                        let mut st = button::Style::default();
-                        let hovered = s == iced::widget::button::Status::Hovered;
-                        st.background = Some(if hovered {
-                            colors::HOVER_OVERLAY.into()
-                        } else {
-                            iced::Color::TRANSPARENT.into()
-                        });
-                        st.text_color = colors::TEXT_PRIMARY;
-                        st.border.radius = metrics::RADIUS_BUTTON.into();
-                        st
-                    }),
+                    .style(|_, s| crate::style::ghost(s)),
                 aw_menu,
             )
         })
@@ -256,5 +198,31 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
 
     iced_aw::menu::MenuBar::new(aw_items)
         .spacing(SLOT_GAP)
+        // Le style PAR DÉFAUT d'iced_aw est gris clair ([0.85; 3]) — on
+        // branche le barre + les dropdowns sur les tokens du DESIGN.md :
+        // barre transparente (fond du shell) et cartes sombres pour les
+        // menus déroulants, chemin de menus ouverts teinté accent.
+        .style(|_, _| iced_aw::style::menu_bar::Style {
+            bar_background: iced::Color::TRANSPARENT.into(),
+            bar_border: iced::Border {
+                width: 0.0,
+                color: iced::Color::TRANSPARENT,
+                radius: crate::theme::metrics::RADIUS_DROPDOWN.into(),
+            },
+            bar_shadow: iced::Shadow::default(),
+            menu_background: colors::BG_DROPDOWN.into(),
+            menu_border: iced::Border {
+                width: crate::theme::metrics::BORDER_WIDTH_PANEL,
+                color: colors::BORDER_SUBTLE,
+                radius: crate::theme::metrics::RADIUS_DROPDOWN.into(),
+            },
+            menu_shadow: crate::theme::shadows::dropdown(),
+            path: colors::BG_PANEL_HEADER_FOCUSED.into(),
+            path_border: iced::Border {
+                width: 0.0,
+                color: iced::Color::TRANSPARENT,
+                radius: crate::theme::metrics::RADIUS_BUTTON.into(),
+            },
+        })
         .into()
 }

@@ -80,8 +80,8 @@ pub fn render<'a>(selected: Tool) -> Element<'a, Message> {
             Message::SelectTool(Tool::Eyedropper)
         ),
     ]
-    .spacing(6)
+    .spacing(4)
     .align_x(Alignment::Center)
-    .padding(8)
+    .padding(6)
     .into()
 }

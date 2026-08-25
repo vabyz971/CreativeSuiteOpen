@@ -38,6 +38,13 @@ Le nom de crate diffère parfois du dossier — utiliser `-p` avec le nom de cra
 Découpée par rôle (même schéma pour les futures apps) :
 `message.rs` (enum Message + types partagés) · `state.rs` (PhotoApp + helpers) · `update.rs` (un handler par message) · `view.rs` (rendu + abonnements) · `menus.rs` · `ui_handles.rs`. Ne pas regrossir vers un main.rs monolithique.
 
+## Architecture de `ui/` (en couches, voir lib.rs)
+1. **`theme`** = SEULE source des couleurs/tailles/rayons/ombres (tokens DESIGN.md : `colors`, `type_scale`, `metrics`, `spacing`, `shadows`).
+2. **`style`** = styles canoniques par famille visuelle (`ghost`, `ghost_selected`, `menu_item`, `primary`, `chip`, `action_chip*`, `floating_card`, `inset_card`). Un composant n'écrit JAMAIS sa closure de style : il référence `ui::style::*`.
+3. **Primitives transverses** (`icon_button`, `spinner`, `dropdown`, `settings`, `shortcuts`) → 4. **Layouts** (`shell`, `menu`, `base_panel`) → 5. **Canvas domaine** (`image_canvas`, `layer_canvas`, `node_graph`, `timeline`, `piano_roll`).
+- Les éléments spécifiques à une app restent dans `apps/<app>/src/components/`. Promotion vers `ui/` seulement quand une 2e app en a besoin.
+- **Interdit de coder une couleur en dur hors `theme.rs`** — y compris dans les canvas (la sélection utilise `SELECTION_*`, les nœuds `NODE_*`). Tailles de texte : passer par `type_scale`.
+
 ## Conventions
 - `unwrap()`/`expect()` interdits hors tests ; pas d'emoji dans le code ni les commits.
 - Commits courts et préfixés par l'app : `photo: fix blend-mode offset jump`.

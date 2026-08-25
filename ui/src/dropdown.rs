@@ -77,17 +77,7 @@ where
 // --- STYLES INTERNES PARTAGÉS ---
 
 fn dropdown_item_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let mut style = button::Style::default();
-    style.text_color = colors::ON_SURFACE;
-    style.border.radius = metrics::RADIUS_BUTTON.into();
-
-    if status == button::Status::Hovered {
-        style.background = Some(colors::ACCENT.into());
-        style.text_color = colors::TEXT_ON_ACCENT;
-    } else {
-        style.background = Some(iced::Color::TRANSPARENT.into());
-    }
-    style
+    crate::style::menu_item(status)
 }
 
 fn dropdown_container_style(_theme: &Theme) -> container::Style {

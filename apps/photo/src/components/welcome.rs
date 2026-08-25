@@ -87,16 +87,9 @@ pub fn render<'a>(
             button(text(*label).size(11).color(colors::TEXT_SECONDARY))
                 .padding(Padding::new(3.0).left(8.0).right(8.0))
                 .style(|_, s| {
-                    let mut st = button::Style::default();
-                    st.background = Some(if s == button::Status::Hovered {
-                        colors::HOVER_OVERLAY.into()
-                    } else {
-                        colors::SURFACE_CONTAINER.into()
-                    });
-                    st.border.radius = metrics::RADIUS_BUTTON.into();
-                    st.border.width = 1.0;
-                    st.border.color = colors::BORDER_SUBTLE;
-                    st
+                    let mut c = ui::style::chip(s);
+                    c.border.radius = metrics::RADIUS_BUTTON.into();
+                    c
                 })
                 .on_press(Message::SetDocPreset { w: *w, h: *h })
         })
@@ -117,16 +110,7 @@ pub fn render<'a>(
             .color(colors::TEXT_ON_ACCENT),
     )
     .padding(Padding::new(8.0).left(18.0).right(18.0))
-    .style(|_, s| {
-        let mut st = button::Style::default();
-        st.background = Some(if s == button::Status::Hovered {
-            colors::ACCENT_HOVER.into()
-        } else {
-            colors::ACCENT.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st
-    })
+    .style(|_, s| ui::style::primary(s))
     .on_press(Message::CreateDocument);
 
     let open_btn = button(
@@ -143,16 +127,7 @@ pub fn render<'a>(
         .align_y(Alignment::Center),
     )
     .padding(Padding::new(8.0).left(14.0).right(14.0))
-    .style(|_, s| {
-        let mut st = button::Style::default();
-        st.background = Some(if s == button::Status::Hovered {
-            colors::HOVER_OVERLAY.into()
-        } else {
-            colors::SURFACE_CONTAINER_HIGH.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st
-    })
+    .style(|_, s| ui::style::chip(s))
     .on_press(Message::OpenImage);
 
     let error_line: Element<'a, Message> = match error {

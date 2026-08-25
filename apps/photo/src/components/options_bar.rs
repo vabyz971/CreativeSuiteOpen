@@ -26,7 +26,7 @@
 use crate::{Message, Tool};
 use iced::widget::{button, container, row, text};
 use iced::{Alignment, Element, Length, Padding};
-use ui::theme::{colors, metrics};
+use ui::theme::colors;
 
 // Codepoints Material Icons — https://fonts.google.com/icons
 const ICON_ROTATE_LEFT: &str = "\u{e419}";
@@ -101,22 +101,13 @@ fn brush_section<'a>(
             border: iced::Border {
                 width: 1.0,
                 color: colors::BORDER_SUBTLE,
-                radius: iced::border::Radius::new(7.0),
+                radius: ui::theme::metrics::RADIUS_DROPDOWN.into(),
             },
             ..Default::default()
         }),
     )
     .padding(5)
-    .style(|_t, s| {
-        let mut st = button::Style::default();
-        st.background = Some(if s == button::Status::Hovered {
-            colors::HOVER_OVERLAY.into()
-        } else {
-            iced::Color::TRANSPARENT.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st
-    })
+    .style(|_t, s| ui::style::ghost(s))
     .on_press(Message::ToggleColorPicker);
 
     let color_circle = iced_aw::widget::ColorPicker::new(
@@ -228,16 +219,7 @@ fn move_section<'a>(
         )
         .padding(Padding::new(4.0).left(8.0).right(8.0));
         if enabled {
-            b.on_press(msg).style(|_t, s| {
-                let mut st = button::Style::default();
-                st.background = Some(if s == button::Status::Hovered {
-                    colors::HOVER_OVERLAY.into()
-                } else {
-                    iced::Color::TRANSPARENT.into()
-                });
-                st.border.radius = metrics::RADIUS_BUTTON.into();
-                st
-            })
+            b.on_press(msg).style(|_t, s| ui::style::ghost(s))
         } else {
             b.style(|_t, _s| button::Style::default())
         }

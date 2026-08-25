@@ -69,11 +69,12 @@ CreativeSuiteOpen/
 │   ├── audio-engine/         # Moteur audio (à venir)
 │   └── shell/                # Shell commun : layout, barre de menus, fenêtre
 ├── ui/                       # Bibliothèque de widgets iced
+│   ├── theme.rs              # SEULE source des tokens (DESIGN.md)
+│   ├── style.rs              # Styles canoniques par famille visuelle
 │   ├── node_graph.rs         # Éditeur de graphe nodal (câbles, previews, context menu)
 │   ├── image_canvas.rs       # Canvas image : pan/zoom infini, calques, repère document
 │   ├── layer_canvas.rs       # Canvas GPU expérimental (render passes wgpu)
 │   ├── menu.rs / dropdown.rs # Menus applicatifs et dropdowns
-│   ├── theme.rs              # Palette, typographie, métriques
 │   └── timeline.rs / piano_roll.rs  # Widgets réservés (vidéo/audio)
 ├── assets/fonts/             # Hanken Grotesk, Material Icons
 ├── flake.nix                 # Environnement de dev NixOS (Vulkan, Wayland)

@@ -144,16 +144,7 @@ pub fn render<'a>(
         .padding(4);
 
         if enabled {
-            b.on_press(msg).style(move |_t, s| {
-                let mut st = button::Style::default();
-                st.background = Some(if s == button::Status::Hovered {
-                    colors::HOVER_OVERLAY.into()
-                } else {
-                    iced::Color::TRANSPARENT.into()
-                });
-                st.border.radius = metrics::RADIUS_BUTTON.into();
-                st
-            })
+            b.on_press(msg).style(move |_t, s| ui::style::ghost(s))
         } else {
             b.style(|_t, _s| button::Style::default())
         }
@@ -243,16 +234,7 @@ fn layer_row<'a>(
         }),
     )
     .padding(2)
-    .style(move |_t, s| {
-        let mut st = button::Style::default();
-        st.background = Some(if s == button::Status::Hovered {
-            colors::HOVER_OVERLAY.into()
-        } else {
-            iced::Color::TRANSPARENT.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st
-    })
+    .style(|_t, s| ui::style::ghost(s))
     .on_press(Message::ToggleLayerVisible(id));
 
     // Cache synchronisé après chaque update ; repli neutre si absent
@@ -265,14 +247,11 @@ fn layer_row<'a>(
             .width(Length::Fixed(48.0))
             .height(Length::Fixed(32.0)),
     )
-    .style(|_| container::Style {
-        background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
-        border: iced::Border {
-            width: 1.0,
-            color: colors::BORDER_PANEL,
-            radius: 2.0.into(),
-        },
-        ..Default::default()
+    .style(|_| {
+        ui::style::inset_card(
+            colors::SURFACE_CONTAINER_LOWEST,
+            ui::theme::metrics::RADIUS_SM,
+        )
     });
 
     let name_field = text_input("Nom", &layer.name)
@@ -297,17 +276,7 @@ fn layer_row<'a>(
     )
     .padding(Padding::new(4.0).left(4.0).right(6.0))
     .width(Length::Fill)
-    .style(move |_t, _s| {
-        let mut st = button::Style::default();
-        st.background = Some(if is_selected {
-            colors::BG_NODE_SELECTED.into()
-        } else {
-            iced::Color::TRANSPARENT.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st.text_color = colors::TEXT_PRIMARY;
-        st
-    })
+    .style(move |_t, s| ui::style::ghost_selected(is_selected, s))
     .on_press(Message::SelectLayer(id));
 
     container(row_btn).width(Length::Fill).into()

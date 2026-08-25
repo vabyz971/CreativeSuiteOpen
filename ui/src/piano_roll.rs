@@ -16,6 +16,7 @@
 
 //! Piano Roll FL Studio-like — widget minimaliste pour l'app Audio
 
+use crate::theme::colors;
 use iced::widget::{Space, column, container, row, text};
 use iced::{Alignment, Color, Element, Length};
 
@@ -29,26 +30,24 @@ where
                 row![
                     text("Piano Roll").size(13).color(Color::WHITE),
                     Space::new().width(Length::Fill),
-                    text("C4 • 120 BPM")
-                        .size(11)
-                        .color(Color::from_rgb(0.6, 0.6, 0.6)),
+                    text("C4 • 120 BPM").size(11).color(colors::TEXT_MUTED),
                 ]
                 .align_y(Alignment::Center)
             )
             .padding(8)
             .style(|_| container::Style {
-                background: Some(Color::from_rgb(0.11, 0.11, 0.11).into()),
+                background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
                 ..Default::default()
             }),
             container(
                 column![
                     text("FL Studio • Channel Rack / Mixer")
                         .size(12)
-                        .color(Color::from_rgb(0.7, 0.7, 0.7)),
+                        .color(colors::TEXT_SECONDARY),
                     Space::new().height(Length::Fixed(12.0)),
                     text("Notes, automation, mixer — même shell que Photo/Vidéo")
                         .size(11)
-                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                        .color(colors::TEXT_MUTED),
                 ]
                 .padding(16)
                 .align_x(Alignment::Center)
@@ -58,7 +57,7 @@ where
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Color::from_rgb(0.09, 0.09, 0.09).into()),
+                background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
                 ..Default::default()
             }),
         ]
@@ -66,7 +65,7 @@ where
     )
     .padding(8)
     .style(|_| container::Style {
-        background: Some(Color::from_rgb(0.09, 0.09, 0.09).into()),
+        background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
         ..Default::default()
     })
     .into()

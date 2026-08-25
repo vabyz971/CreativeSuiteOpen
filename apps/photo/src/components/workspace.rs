@@ -424,16 +424,14 @@ fn render_canvas_preview<'a>(
     // Barre d'outils FLOTTANTE verticale en HAUT à gauche du canvas
     let floating_tools: Element<'_, Message> = if tools_visible {
         let tools_pill = container(toolpanel::render(selected_tool))
-            .padding(iced::Padding::new(4.0).top(4.0).bottom(4.0))
-            .style(|_| container::Style {
-                background: Some(colors::SURFACE_CONTAINER.into()),
-                border: iced::Border {
-                    width: 1.0,
-                    color: colors::BORDER_PANEL,
-                    radius: 10.0.into(),
-                },
-                shadow: ui::theme::shadows::panel(),
-                ..Default::default()
+            .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
+            .style(|_| {
+                // Palette flottante façon macOS : fond discret, ombre portée
+                ui::style::floating_card(
+                    colors::SURFACE_CONTAINER_LOW,
+                    ui::theme::metrics::RADIUS_NODE,
+                    ui::theme::shadows::panel(),
+                )
             });
         container(tools_pill.width(Length::Shrink))
             .width(Length::Fill)

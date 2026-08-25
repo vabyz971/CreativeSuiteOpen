@@ -302,7 +302,7 @@ impl Default for PhotoApp {
             main_window: None,
             history: photo_engine::history::History::new(),
             project_path: None,
-            brush_color: Color::from_rgb8(0x1E, 0x1E, 0x22),
+            brush_color: ui::theme::colors::BRUSH_DEFAULT,
             brush_size: 12.0,
             brush_opacity: 1.0,
             color_picker_open: false,

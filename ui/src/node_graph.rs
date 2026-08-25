@@ -111,22 +111,22 @@ fn node_palette(
 ) -> (Color, Vec<(String, SocketType)>, Vec<(String, SocketType)>) {
     match type_id {
         "input_image" => (
-            Color::from_rgb(0.25, 0.45, 0.75),
+            colors::NODE_INPUT_IMAGE,
             vec![],
             vec![("image".into(), SocketType::Image)],
         ),
         "output" => (
-            Color::from_rgb(0.65, 0.20, 0.20),
+            colors::NODE_OUTPUT,
             vec![("image".into(), SocketType::Image)],
             vec![],
         ),
         "brightness_contrast" => (
-            Color::from_rgb(0.75, 0.55, 0.15),
+            colors::NODE_BRIGHTNESS_CONTRAST,
             vec![("image".into(), SocketType::Image)],
             vec![("image".into(), SocketType::Image)],
         ),
         "layer" => (
-            Color::from_rgb(0.45, 0.55, 0.85),
+            colors::NODE_LAYER,
             vec![
                 ("base".into(), SocketType::Image),
                 ("top".into(), SocketType::Image),
@@ -134,7 +134,7 @@ fn node_palette(
             vec![("image".into(), SocketType::Image)],
         ),
         "blur" => (
-            Color::from_rgb(0.20, 0.55, 0.75),
+            colors::NODE_BLUR,
             vec![("image".into(), SocketType::Image)],
             vec![("image".into(), SocketType::Image)],
         ),
@@ -152,18 +152,18 @@ fn node_palette(
                 .map(|i| (format!("image_{i}"), SocketType::Image))
                 .collect();
             (
-                Color::from_rgb(0.45, 0.35, 0.65),
+                colors::NODE_MIX,
                 inputs,
                 vec![("image".into(), SocketType::Image)],
             )
         }
         "color_correct" => (
-            Color::from_rgb(0.85, 0.55, 0.10),
+            colors::NODE_COLOR_CORRECT,
             vec![("image".into(), SocketType::Image)],
             vec![("image".into(), SocketType::Image)],
         ),
         _ => (
-            Color::from_rgb(0.35, 0.35, 0.35),
+            colors::NODE_OTHER,
             vec![("in".into(), SocketType::Float)],
             vec![("out".into(), SocketType::Float)],
         ),
@@ -743,9 +743,9 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     frame.fill(
                         &btn_bg,
                         if view.preview_enabled {
-                            Color::from_rgb(0.20, 0.45, 0.85)
+                            colors::ACCENT
                         } else {
-                            Color::from_rgba(0.0, 0.0, 0.0, 0.25)
+                            colors::CABLE_SHADOW
                         },
                     );
                     frame.fill_text(Text {
@@ -774,7 +774,7 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     frame.stroke(
                         &c,
                         canvas::Stroke {
-                            style: canvas::Style::Solid(Color::from_rgb(0.05, 0.05, 0.05)),
+                            style: canvas::Style::Solid(colors::SURFACE_CONTAINER_LOWEST),
                             width: 1.2 / self.zoom,
                             ..Default::default()
                         },
@@ -805,7 +805,7 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     frame.stroke(
                         &c,
                         canvas::Stroke {
-                            style: canvas::Style::Solid(Color::from_rgb(0.05, 0.05, 0.05)),
+                            style: canvas::Style::Solid(colors::SURFACE_CONTAINER_LOWEST),
                             width: 1.2 / self.zoom,
                             ..Default::default()
                         },
@@ -836,9 +836,9 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                             for c in 0..cols {
                                 for r in 0..rows {
                                     let col = if (c + r) % 2 == 0 {
-                                        Color::from_rgb(0.22, 0.22, 0.22)
+                                        colors::BG_GRAPH_DOT
                                     } else {
-                                        Color::from_rgb(0.28, 0.28, 0.28)
+                                        colors::BG_GRAPH_GRID
                                     };
                                     frame.fill_rectangle(
                                         Point::new(
@@ -857,7 +857,7 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                         &pr_path,
                         canvas::Stroke::default()
                             .with_width(1.0 / self.zoom)
-                            .with_color(Color::from_rgb(0.30, 0.30, 0.30)),
+                            .with_color(colors::SURFACE_BRIGHT),
                     );
                     if let Some(handle) = self.previews.get(&view.id) {
                         frame.draw_image(pr, iced_core::Image::new(handle.clone()));
@@ -897,6 +897,11 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                 let p = if t < 0.5 { t * 2.0 } else { 2.0 - t * 2.0 };
                 let eased = p * p * (3.0 - 2.0 * p); // smoothstep ease-in-out
                 let veil_alpha = 0.30 * eased;
+                // Voile sombre animé : teinte de base issue des tokens
+                let veil_color = Color {
+                    a: veil_alpha,
+                    ..colors::BG_GRAPH_GRID
+                };
                 for view in self.views() {
                     if !self.busy.contains(&view.id) {
                         continue;
@@ -907,7 +912,7 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                         b.size(),
                         metrics::RADIUS_NODE.into(),
                     );
-                    frame.fill(&veil, Color::from_rgba(0.02, 0.03, 0.05, veil_alpha));
+                    frame.fill(&veil, veil_color);
                 }
             }
 

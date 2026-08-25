@@ -99,6 +99,13 @@ pub mod colors {
     pub const BORDER_NODE: Color = SURFACE_CONTAINER_LOWEST;
     pub const BORDER_NODE_SELECTED: Color = ACCENT;
 
+    /// Sélection rectangulaire sur canvas — ACCENT du DESIGN.md (pas de bleu ad-hoc)
+    pub const SELECTION_STROKE: Color = ACCENT;
+    pub const SELECTION_FILL: Color = Color::from_rgba(0.0, 0.4784, 1.0, 0.15);
+
+    /// Couleur par défaut du pinceau (contenu utilisateur, pas de l'UI chrome)
+    pub const BRUSH_DEFAULT: Color = Color::from_rgb8(0x1E, 0x1E, 0x22);
+
     // Hover neutre (blanc translucide, façon Affinity)
     pub const HOVER_OVERLAY: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.08);
 
@@ -107,6 +114,16 @@ pub mod colors {
     pub const ON_ERROR: Color = Color::from_rgb(0.4078, 0.0, 0.0196); // #690005
     pub const ERROR_CONTAINER: Color = Color::from_rgb(0.5765, 0.0, 0.0392); // #93000A
     pub const SUCCESS: Color = Color::from_rgb(0.4, 0.85, 0.4);
+
+    // Couleurs d'IDENTITÉ par type de nœud (données domaine, pas du chrome)
+    pub const NODE_INPUT_IMAGE: Color = Color::from_rgb(0.25, 0.45, 0.75);
+    pub const NODE_OUTPUT: Color = Color::from_rgb(0.65, 0.20, 0.20);
+    pub const NODE_BRIGHTNESS_CONTRAST: Color = Color::from_rgb(0.75, 0.55, 0.15);
+    pub const NODE_LAYER: Color = Color::from_rgb(0.45, 0.55, 0.85);
+    pub const NODE_BLUR: Color = Color::from_rgb(0.20, 0.55, 0.75);
+    pub const NODE_MIX: Color = Color::from_rgb(0.45, 0.35, 0.65);
+    pub const NODE_COLOR_CORRECT: Color = Color::from_rgb(0.85, 0.55, 0.10);
+    pub const NODE_OTHER: Color = Color::from_rgb(0.35, 0.35, 0.35);
 
     // En-têtes de nœuds par catégorie (RVB)
     pub const ACCENT_NODE_HEADER_IMAGE: [f32; 3] = [0.42, 0.28, 0.75];
@@ -125,14 +142,16 @@ pub mod colors {
 }
 
 // ---------------------------------------------------------------------------
-// Dimensions & Radius
+// Dimensions, Radius & Espacements
 // ---------------------------------------------------------------------------
 
 pub mod metrics {
-    pub const RADIUS_PANEL: f32 = 4.0;
-    pub const RADIUS_NODE: f32 = 8.0;
-    pub const RADIUS_BUTTON: f32 = 4.0;
-    pub const RADIUS_DROPDOWN: f32 = 6.0;
+    // --- Échelle de rayons (DESIGN.md « rounded ») : sm=2 / default=4 / md=6 / lg=8
+    pub const RADIUS_SM: f32 = 2.0;
+    pub const RADIUS_BUTTON: f32 = 4.0; // = DEFAULT
+    pub const RADIUS_PANEL: f32 = 4.0; // floating panel DESIGN.md
+    pub const RADIUS_DROPDOWN: f32 = 6.0; // = MD
+    pub const RADIUS_NODE: f32 = 8.0; // = LG
 
     pub const BORDER_WIDTH_PANEL: f32 = 1.0;
     pub const BORDER_WIDTH_NODE: f32 = 1.0;
@@ -149,6 +168,34 @@ pub mod metrics {
 
     pub const MENU_BAR_HEIGHT: f32 = 32.0;
     pub const TOOLBAR_WIDTH: f32 = 60.0;
+}
+
+/// Échelle typographique (DESIGN.md) — TOUTE taille de texte passe ici.
+/// Les tailles intermédiaires (12/13/16/20/22) existent pour les densités
+/// pro ; ne pas en introduire d'autres sans les ajouter à cette liste.
+pub mod type_scale {
+    /// DESIGN.md label-sm (11 px) — labels de champs, métadonnées
+    pub const LABEL_SM: u16 = 11;
+    /// Lignes denses (liste de calques, menus)
+    pub const LABEL_MD: u16 = 12;
+    /// Titres de sections compactes
+    pub const BODY_SM: u16 = 13;
+    /// DESIGN.md body-md (14 px)
+    pub const BODY_MD: u16 = 14;
+    /// Texte d'interface standard plus grand (boutons icône texte…)
+    pub const BODY_LG: u16 = 16;
+    /// DESIGN.md headline-md (18 px)
+    pub const HEADLINE_MD: u16 = 18;
+    /// Titres d'écrans (welcome)
+    pub const HEADLINE_LG: u16 = 22;
+}
+
+/// Espacements (DESIGN.md « spacing »)
+pub mod spacing {
+    pub const STACK_SM: f32 = 8.0;
+    pub const STACK_MD: f32 = 12.0;
+    pub const GUTTER_PANEL: f32 = 16.0;
+    pub const MARGIN_PAGE: f32 = 24.0;
 }
 
 // ---------------------------------------------------------------------------

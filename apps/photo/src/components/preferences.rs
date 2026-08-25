@@ -53,17 +53,7 @@ pub fn view<'a>(
             Space::new().width(Length::Fill),
             button(text("✕").size(13).color(colors::TEXT_PRIMARY))
                 .padding(5)
-                .style(|_, s| {
-                    let mut st = button::Style::default();
-                    st.background = Some(if s == button::Status::Hovered {
-                        colors::ERROR_CONTAINER.into()
-                    } else {
-                        iced::Color::TRANSPARENT.into()
-                    });
-                    st.text_color = colors::TEXT_PRIMARY;
-                    st.border.radius = metrics::RADIUS_BUTTON.into();
-                    st
-                })
+                .style(|_, s| ui::style::ghost_danger(s))
                 .on_press(Message::ClosePreferences),
         ]
         .align_y(Alignment::Center),
@@ -89,18 +79,7 @@ pub fn view<'a>(
         )
         .width(Length::Fill)
         .padding(Padding::new(8.0).left(12.0).right(8.0))
-        .style(move |_t, s| {
-            let mut st = button::Style::default();
-            st.background = Some(if is_active {
-                colors::BG_NODE_SELECTED.into()
-            } else if s == button::Status::Hovered {
-                colors::HOVER_OVERLAY.into()
-            } else {
-                iced::Color::TRANSPARENT.into()
-            });
-            st.border.radius = metrics::RADIUS_BUTTON.into();
-            st
-        })
+        .style(move |_t, s| ui::style::ghost_selected(is_active, s))
         .on_press(Message::PrefsSection(section_kind))
     };
 
@@ -212,17 +191,7 @@ fn general_view<'a>(gpu_info: Option<String>, gpu_available: bool) -> Element<'a
                     .color(colors::TEXT_ON_ACCENT)
             )
             .padding(Padding::new(6.0).left(10.0).right(10.0))
-            .style(|_, s| {
-                let mut st = button::Style::default();
-                st.background = Some(if s == button::Status::Hovered {
-                    colors::ACCENT_HOVER.into()
-                } else {
-                    colors::ACCENT.into()
-                });
-                st.text_color = colors::TEXT_ON_ACCENT;
-                st.border.radius = metrics::RADIUS_BUTTON.into();
-                st
-            })
+            .style(|_, s| ui::style::primary(s))
             .on_press(Message::DetectGpu),
         ]
         .spacing(4),
@@ -309,21 +278,7 @@ fn shortcuts_view<'a>(shortcuts: &'a Shortcuts, capturing: Option<Action>) -> El
         let small_btn = |label: &'a str, msg: Message, enabled: bool| {
             let b = button(text(label).size(11)).padding(Padding::new(3.0).left(8.0).right(8.0));
             if enabled {
-                b.on_press(msg).style(|_, s| {
-                    let mut st = button::Style::default();
-                    st.background = Some(if s == button::Status::Hovered {
-                        colors::ACCENT.into()
-                    } else {
-                        colors::SURFACE_CONTAINER_HIGH.into()
-                    });
-                    st.text_color = if s == button::Status::Hovered {
-                        colors::TEXT_ON_ACCENT
-                    } else {
-                        colors::TEXT_SECONDARY
-                    };
-                    st.border.radius = metrics::RADIUS_BUTTON.into();
-                    st
-                })
+                b.on_press(msg).style(|_, s| ui::style::action_chip(s))
             } else {
                 b.style(|_, _| button::Style::default())
             }
@@ -376,21 +331,7 @@ fn shortcuts_view<'a>(shortcuts: &'a Shortcuts, capturing: Option<Action>) -> El
             button(text("Tout réinitialiser").size(11))
                 .padding(Padding::new(4.0).left(10.0).right(10.0))
                 .on_press(Message::ShortcutResetAll)
-                .style(|_, s| {
-                    let mut st = button::Style::default();
-                    st.background = Some(if s == button::Status::Hovered {
-                        colors::ERROR_CONTAINER.into()
-                    } else {
-                        colors::SURFACE_CONTAINER_HIGH.into()
-                    });
-                    st.text_color = if s == button::Status::Hovered {
-                        colors::TEXT_ON_ACCENT
-                    } else {
-                        colors::TEXT_SECONDARY
-                    };
-                    st.border.radius = metrics::RADIUS_BUTTON.into();
-                    st
-                }),
+                .style(|_, s| ui::style::action_chip_danger(s)),
         ]
         .align_y(Alignment::Center),
     )

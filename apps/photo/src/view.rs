@@ -48,21 +48,7 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     .width(Length::Fixed(30.0))
     .height(Length::Fixed(30.0))
     .padding(0)
-    .style(|_, s| {
-        let background: Option<iced::Color> = if s == iced::widget::button::Status::Hovered {
-            Some(ui::theme::colors::HOVER_OVERLAY)
-        } else {
-            None
-        };
-        iced::widget::button::Style {
-            background: background.map(iced::Background::Color),
-            border: iced::Border {
-                radius: ui::theme::metrics::RADIUS_DROPDOWN.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    })
+    .style(|_, s| ui::style::ghost(s))
     .on_press(Message::ToggleTaskMenu);
 
     let task_menu = {
@@ -94,15 +80,12 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
         };
         iced::widget::container(iced::widget::column(items).spacing(2).padding(4))
             .width(Length::Fixed(240.0))
-            .style(|_| iced::widget::container::Style {
-                background: Some(ui::theme::colors::BG_DROPDOWN.into()),
-                border: iced::Border {
-                    width: 1.0,
-                    color: ui::theme::colors::BORDER_SUBTLE,
-                    radius: ui::theme::metrics::RADIUS_DROPDOWN.into(),
-                },
-                shadow: ui::theme::shadows::dropdown(),
-                ..Default::default()
+            .style(|_| {
+                ui::style::floating_card(
+                    ui::theme::colors::BG_DROPDOWN,
+                    ui::theme::metrics::RADIUS_DROPDOWN,
+                    ui::theme::shadows::dropdown(),
+                )
             })
     };
 
@@ -133,7 +116,7 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     );
 
     let central = iced::widget::column![
-        components::toolbar::context_bar(app.image_path.as_deref()),
+        components::toolbar::context_bar(),
         options_bar,
         components::workspace::render(
             &app.panes,

@@ -17,6 +17,7 @@
 //! Timeline Final Cut-like — widget minimaliste pour l'app Vidéo
 //! Réutilise le même shell et le même moteur de graphe que Photo.
 
+use crate::theme::colors;
 use iced::widget::{Space, column, container, row, text};
 use iced::{Alignment, Color, Element, Length};
 
@@ -28,13 +29,9 @@ where
     let track = |label: &'static str, color: Color| {
         container(
             row![
-                container(
-                    text(label)
-                        .size(11)
-                        .color(Color::from_rgb(0.75, 0.75, 0.75))
-                )
-                .width(Length::Fixed(80.0))
-                .padding(6),
+                container(text(label).size(11).color(colors::TEXT_SECONDARY))
+                    .width(Length::Fixed(80.0))
+                    .padding(6),
                 container(
                     Space::new()
                         .width(Length::Fixed(120.0))
@@ -55,10 +52,10 @@ where
         )
         .padding(4)
         .style(|_| container::Style {
-            background: Some(Color::from_rgb(0.13, 0.13, 0.13).into()),
+            background: Some(colors::SURFACE.into()),
             border: iced::Border {
                 width: 1.0,
-                color: Color::from_rgb(0.20, 0.20, 0.20),
+                color: colors::SURFACE_CONTAINER,
                 radius: 4.0.into(),
             },
             ..Default::default()
@@ -71,24 +68,22 @@ where
                 row![
                     text("Timeline").size(13).color(Color::WHITE),
                     Space::new().width(Length::Fill),
-                    text("00:12:34:08")
-                        .size(11)
-                        .color(Color::from_rgb(0.6, 0.6, 0.6)),
+                    text("00:12:34:08").size(11).color(colors::TEXT_MUTED),
                 ]
                 .align_y(Alignment::Center)
             )
             .padding(8)
             .style(|_| container::Style {
-                background: Some(Color::from_rgb(0.11, 0.11, 0.11).into()),
+                background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
                 ..Default::default()
             }),
-            track("V1", Color::from_rgb(0.25, 0.45, 0.75)),
-            track("V2", Color::from_rgb(0.45, 0.35, 0.65)),
-            track("A1", Color::from_rgb(0.20, 0.55, 0.35)),
+            track("V1", colors::NODE_INPUT_IMAGE),
+            track("V2", colors::NODE_MIX),
+            track("A1", colors::SUCCESS),
             container(Space::new().height(Length::Fixed(24.0)))
                 .width(Length::Fill)
                 .style(|_| container::Style {
-                    background: Some(Color::from_rgb(0.10, 0.10, 0.10).into()),
+                    background: Some(colors::SURFACE_CONTAINER_LOW.into()),
                     ..Default::default()
                 }),
         ]
@@ -96,7 +91,7 @@ where
     )
     .padding(8)
     .style(|_| container::Style {
-        background: Some(Color::from_rgb(0.09, 0.09, 0.09).into()),
+        background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
         ..Default::default()
     })
     .into()
