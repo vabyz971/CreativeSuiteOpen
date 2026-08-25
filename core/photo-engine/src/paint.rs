@@ -136,6 +136,69 @@ pub fn paint_stroke_rgba(
     }
 }
 
+/// Résultat d'un commit de trait : buffers prêts pour la couche UI
+/// (aucun calcul lourd restant côté interface).
+pub struct StrokeCommit {
+    /// Pixels calque complets (w×h RGBA8)
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    /// Aperçu interactif (≤2048 px) prêt pour `Handle::from_rgba`
+    pub preview: (u32, u32, Vec<u8>),
+    /// Miniature 48×32 prête pour `Handle::from_rgba`
+    pub thumb: (u32, u32, Vec<u8>),
+}
+
+/// Travail LOURD d'un coup de pinceau — à exécuter HORS thread UI
+/// (`Task::perform`) : copie du buffer, rastérisation, aperçu, miniature.
+///
+/// * `base`      : image source du calque (Arc partagé, non modifiée)
+/// * `pts_doc`   : polyligne en coordonnées DOCUMENT
+/// * offset/scale/rotation_deg : transform courant du calque (doc → calque)
+pub fn commit_stroke(
+    base: &image::DynamicImage,
+    pts_doc: &[(f32, f32)],
+    offset: (f32, f32),
+    scale: f32,
+    rotation_deg: f32,
+    radius: f32,
+    color: [u8; 3],
+    opacity: f32,
+) -> StrokeCommit {
+    use ::image::GenericImageView;
+    let (lw, lh) = base.dimensions();
+
+    // Espace DOCUMENT → espace CALQUE (offset + échelle + rotation inversées
+    // autour du centre du calque) — identique au transform de draw.
+    let theta = -rotation_deg.to_radians();
+    let (cos, sin) = (theta.cos(), theta.sin());
+    let cx = offset.0 + lw as f32 * scale / 2.0;
+    let cy = offset.1 + lh as f32 * scale / 2.0;
+    let pts: Vec<(f32, f32)> = pts_doc
+        .iter()
+        .map(|&(dx, dy)| {
+            let (rx, ry) = (
+                (dx - cx) * cos - (dy - cy) * sin,
+                (dx - cx) * sin + (dy - cy) * cos,
+            );
+            (rx / scale + lw as f32 / 2.0, ry / scale + lh as f32 / 2.0)
+        })
+        .collect();
+
+    let mut rgba = base.to_rgba8().into_raw();
+    paint_stroke_rgba(&mut rgba, lw, lh, &pts, radius, color, opacity);
+    let painted =
+        ::image::DynamicImage::ImageRgba8(::image::RgbaImage::from_raw(lw, lh, rgba.clone()).expect("taille inchangée"));
+
+    StrokeCommit {
+        width: lw,
+        height: lh,
+        rgba,
+        preview: crate::document::preview_bytes(&painted),
+        thumb: crate::document::thumb_bytes(&painted),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -57,6 +57,10 @@ pub fn render<'a>(
     node_context_world: Option<datatypes::Vec2>,
     // Trait de pinceau en cours (aperçu canvas, style inclus)
     stroke_overlay: Option<ui::image_canvas::StrokeOverlay>,
+    // Écran d'accueil (aucun document ouvert)
+    new_doc_w: &'a str,
+    new_doc_h: &'a str,
+    welcome_error: Option<&'a str>,
 ) -> Element<'a, Message> {
     let total_panes = panes.len();
 
@@ -89,6 +93,9 @@ pub fn render<'a>(
                     canvas_selection,
                     canvas_viewport,
                     stroke_src.clone(),
+                    new_doc_w,
+                    new_doc_h,
+                    welcome_error,
                 );
                 // Titre dynamique : nom du fichier + dimensions + profil
                 let title = match (image_path.as_deref(), doc_size) {
@@ -207,6 +214,9 @@ fn render_canvas_preview<'a>(
     canvas_selection: Option<iced::Rectangle>,
     _viewport: Size,
     stroke_overlay: Option<ui::image_canvas::StrokeOverlay>,
+    new_doc_w: &'a str,
+    new_doc_h: &'a str,
+    welcome_error: Option<&'a str>,
 ) -> Element<'a, Message> {
     let _ = selected_layer; // conservé pour futurs réglages contextuels
     let zoom = zoom_level as f32 / 100.0;
@@ -322,47 +332,19 @@ fn render_canvas_preview<'a>(
         )
         .map(Message::ImageCanvasEvent);
         if layers.is_empty() && doc_size.is_none() {
-            // Placeholder ouverture
-            let placeholder = column![
-                text("APERÇU CANVAS").size(13).color(colors::TEXT_MUTED),
-                Space::new().height(Length::Fixed(12.0)),
-                button(text("Ouvrir une image...").size(13).color(colors::TEXT_ON_ACCENT))
-                    .padding(iced::Padding::new(8.0).left(16.0).right(16.0))
-                    .style(|_, s| {
-                        let mut st = button::Style::default();
-                        st.background = Some(
-                            if s == button::Status::Hovered {
-                                colors::ACCENT_HOVER.into()
-                            } else {
-                                colors::ACCENT.into()
-                            }
-                        );
-                        st.text_color = colors::TEXT_ON_ACCENT;
-                        st.border.radius = 6.0.into();
-                        st
-                    })
-                    .on_press(Message::OpenImage),
-                Space::new().height(Length::Fixed(8.0)),
-                text("ou glissez-déposez (à venir) • Fichier > Ouvrir")
-                    .size(10)
-                    .color(colors::TEXT_MUTED),
-                Space::new().height(Length::Fixed(12.0)),
-                if let Some(err) = image_error {
-                    text(err).size(11).color(colors::ERROR)
-                } else {
-                    text("Les calques composent l'image finale").size(10).color(colors::TEXT_MUTED)
-                }
-            ]
-            .align_x(Alignment::Center)
-            .spacing(4);
+            // Écran d'accueil : créer/ouvrir un document
+            let welcome = crate::components::welcome::render(
+                new_doc_w,
+                new_doc_h,
+                welcome_error,
+            );
             iced::widget::stack![
                 container(canvas).width(Length::Fill).height(Length::Fill),
-                container(placeholder)
+                container(welcome)
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .padding(24),
+                    .center_y(Length::Fill),
             ]
             .into()
         } else {

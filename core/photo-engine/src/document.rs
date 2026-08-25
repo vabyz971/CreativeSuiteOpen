@@ -85,23 +85,8 @@ impl Layer {
     }
 
     fn make_preview_handle(image: &DynamicImage) -> iced::widget::image::Handle {
-        const MAX_PREVIEW: u32 = 2048;
-        let (w, h) = image.dimensions();
-        if w.max(h) <= MAX_PREVIEW {
-            let rgba = image.to_rgba8();
-            let (w, h) = (rgba.width(), rgba.height());
-            iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw())
-        } else {
-            // Downscale pour l'affichage interactif — garde l'original pour l'export
-            let preview = image.resize(
-                MAX_PREVIEW,
-                MAX_PREVIEW,
-                ::image::imageops::FilterType::Triangle,
-            );
-            let rgba = preview.to_rgba8();
-            let (w, h) = (rgba.width(), rgba.height());
-            iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw())
-        }
+        let (w, h, bytes) = preview_bytes(image);
+        iced::widget::image::Handle::from_rgba(w, h, bytes)
     }
 
     /// Dimensions du calque
@@ -152,9 +137,30 @@ impl Layer {
 
 /// Miniature 48×32 pour le panneau
 pub fn thumb_handle(img: &DynamicImage) -> iced::widget::image::Handle {
+    let (w, h, bytes) = thumb_bytes(img);
+    iced::widget::image::Handle::from_rgba(w, h, bytes)
+}
+
+/// Octets RGBA de l'aperçu interactif (downscale au-delà de 2048 px).
+pub fn preview_bytes(image: &DynamicImage) -> (u32, u32, Vec<u8>) {
+    const MAX_PREVIEW: u32 = 2048;
+    let (w, h) = image.dimensions();
+    if w.max(h) <= MAX_PREVIEW {
+        let rgba = image.to_rgba8();
+        (rgba.width(), rgba.height(), rgba.into_raw())
+    } else {
+        let preview =
+            image.resize(MAX_PREVIEW, MAX_PREVIEW, ::image::imageops::FilterType::Triangle);
+        let rgba = preview.to_rgba8();
+        (rgba.width(), rgba.height(), rgba.into_raw())
+    }
+}
+
+/// Octets RGBA de la miniature 48×32.
+pub fn thumb_bytes(img: &DynamicImage) -> (u32, u32, Vec<u8>) {
     let t = img.resize(48, 32, ::image::imageops::FilterType::Triangle);
     let rgba = t.to_rgba8();
-    iced::widget::image::Handle::from_rgba(rgba.width(), rgba.height(), rgba.into_raw())
+    (rgba.width(), rgba.height(), rgba.into_raw())
 }
 
 /// Donnée légère envoyée au worker (Arc = partage sans copie).

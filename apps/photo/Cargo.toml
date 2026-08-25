@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 [dependencies]
 iced.workspace = true
 iced.features = ["debug", "image", "tokio"]
+tokio = { version = "1", features = ["rt-multi-thread"] }
 iced_aw.workspace = true
 ui = { path = "../../ui" }
 suite-core = { path = "../../core/core", package = "suite-core" }

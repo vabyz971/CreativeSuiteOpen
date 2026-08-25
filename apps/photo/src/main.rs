@@ -283,6 +283,13 @@ pub enum Tool {
     Brush,
 }
 
+/// Trait terminé dont les pixels sont en cours de fusion hors thread UI.
+#[derive(Clone)]
+pub struct PendingPaint {
+    pub layer_id: u64,
+    pub overlay: ui::image_canvas::StrokeOverlay,
+}
+
 struct PhotoApp {
     pub zoom_level: u32,
     pub panes: pane_grid::State<PanelType>,
@@ -336,6 +343,14 @@ struct PhotoApp {
     /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
     pub stroke_layer: Option<u64>,
     pub stroke_points: Vec<(f32, f32)>,
+    /// Commit lourd EN COURS hors thread UI — l'aperçu reste figé à l'écran
+    /// jusqu'à l'application (aucun gel de l'interface).
+    pub pending_paint: Option<PendingPaint>,
+
+    // ---- Écran d'accueil (nouveau document) ----
+    pub new_doc_w: String,
+    pub new_doc_h: String,
+    pub welcome_error: Option<String>,
 
     /// Modal Préférences ouverte
     pub show_prefs: bool,
@@ -488,12 +503,29 @@ pub enum Message {
     BrushStart { x: f32, y: f32 },
     /// Prolongement du trait (coordonnées document)
     BrushExtend { x: f32, y: f32 },
-    /// Relâchement : commit des pixels dans le calque
+    /// Relâchement : lance le commit des pixels HORS thread UI
     BrushEnd,
+    /// Résultat du calcul lourd — applique pixels + textures au calque
+    PaintApplied {
+        layer_id: u64,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+        preview: (u32, u32, Vec<u8>),
+        thumb: (u32, u32, Vec<u8>),
+    },
     SetBrushColor(iced::Color),
     SetBrushSize(f32),
     SetBrushOpacity(f32),
     ToggleColorPicker,
+
+    // ---- Écran d'accueil ----
+    NewDocWidth(String),
+    NewDocHeight(String),
+    /// Preset : fixe largeur + hauteur d'un coup
+    SetDocPreset { w: u32, h: u32 },
+    /// Crée le document : fond blanc plein cadre + calque sélectionné
+    CreateDocument,
     /// Section active dans la fenêtre Préférences
     PrefsSection(components::preferences::PrefsSection),
 
@@ -583,6 +615,10 @@ impl Default for PhotoApp {
             color_picker_open: false,
             stroke_layer: None,
             stroke_points: Vec::new(),
+            pending_paint: None,
+            new_doc_w: "1920".to_string(),
+            new_doc_h: "1080".to_string(),
+            welcome_error: None,
             show_prefs: false,
             prefs_section: components::preferences::PrefsSection::Shortcuts,
             capturing: None,
@@ -734,6 +770,9 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.image_path = None;
             app.image_error = None;
             app.move_anchor = None;
+            app.new_doc_w = "1920".to_string();
+            app.new_doc_h = "1080".to_string();
+            app.welcome_error = None;
         }
         Message::OpenProject => {
             if app.background_tasks.is_empty() {
@@ -817,19 +856,26 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
 
         // ---- Raccourcis clavier ----
         Message::BrushStart { x, y } => {
-            if let Some(id) = app.selected_layer {
+            if app.pending_paint.is_none()
+                && let Some(id) = app.selected_layer
+            {
                 app.stroke_layer = Some(id);
                 app.stroke_points = vec![(x, y)];
             }
         }
         Message::BrushExtend { x, y } => {
-            if app.stroke_layer.is_some() {
+            if app.pending_paint.is_none() && app.stroke_layer.is_some() {
                 app.stroke_points.push((x, y));
             }
         }
         Message::BrushEnd => {
+            // Le travail lourd (copie RGBA, rastérisation, aperçu, miniature)
+            // part sur un thread de fond (spawn_blocking) : l'UI reste fluide.
+            // L'aperçu reste affiché (pending_paint) jusqu'à PaintApplied.
             if let Some(id) = app.stroke_layer.take()
+                && app.pending_paint.is_none()
                 && app.stroke_points.len() > 1
+                && let Some(layer) = app.layers.iter().find(|l| l.id == id).cloned()
             {
                 let pts = std::mem::take(&mut app.stroke_points);
                 let color = [
@@ -837,44 +883,60 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     (app.brush_color.g * 255.0) as u8,
                     (app.brush_color.b * 255.0) as u8,
                 ];
-                if let Some(layer) = app.layers.iter_mut().find(|l| l.id == id) {
-                    // Espace DOCUMENT → espace CALQUE (offset, échelle et
-                    // rotation inversées autour du centre du calque)
-                    let (lw, lh) = layer.dimensions();
-                    let sc = layer.scale;
-                    let theta = -layer.rotation.to_radians();
-                    let (cos, sin) = (theta.cos(), theta.sin());
-                    let cx = layer.offset_x + lw as f32 * sc / 2.0;
-                    let cy = layer.offset_y + lh as f32 * sc / 2.0;
-                    let layer_pts: Vec<(f32, f32)> = pts
-                        .iter()
-                        .map(|&(dx, dy)| {
-                            let (rx, ry) = (
-                                (dx - cx) * cos - (dy - cy) * sin,
-                                (dx - cx) * sin + (dy - cy) * cos,
-                            );
-                            (rx / sc + lw as f32 / 2.0, ry / sc + lh as f32 / 2.0)
+                app.pending_paint = Some(PendingPaint {
+                    layer_id: id,
+                    overlay: ui::image_canvas::StrokeOverlay {
+                        points: pts.clone(),
+                        color: app.brush_color,
+                        radius: app.brush_size / 2.0,
+                        opacity: app.brush_opacity,
+                    },
+                });
+                let radius = app.brush_size / 2.0;
+                let opacity = app.brush_opacity;
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            photo_engine::paint::commit_stroke(
+                                &layer.image,
+                                &pts,
+                                (layer.offset_x, layer.offset_y),
+                                layer.scale,
+                                layer.rotation,
+                                radius,
+                                color,
+                                opacity,
+                            )
                         })
-                        .collect();
-
-                    let mut rgba = layer.image.to_rgba8().into_raw();
-                    photo_engine::paint::paint_stroke_rgba(
-                        &mut rgba,
-                        lw,
-                        lh,
-                        &layer_pts,
-                        app.brush_size / 2.0,
-                        color,
-                        app.brush_opacity,
-                    );
-                    layer.apply_edit(::image::DynamicImage::ImageRgba8(
-                        ::image::RgbaImage::from_raw(lw, lh, rgba)
-                            .expect("taille inchangée"),
-                    ));
-                }
+                        .await
+                        .expect("worker paint")
+                    },
+                    move |commit| Message::PaintApplied {
+                        layer_id: id,
+                        width: commit.width,
+                        height: commit.height,
+                        rgba: commit.rgba,
+                        preview: commit.preview,
+                        thumb: commit.thumb,
+                    },
+                );
             }
             app.stroke_points.clear();
         }
+        Message::PaintApplied { layer_id, width, height, rgba, preview, thumb } => {
+            if let Some(layer) = app.layers.iter_mut().find(|l| l.id == layer_id)
+                && let Some(img) = ::image::RgbaImage::from_raw(width, height, rgba)
+            {
+                layer.image = Arc::new(::image::DynamicImage::ImageRgba8(img));
+                layer.handle =
+                    iced::widget::image::Handle::from_rgba(preview.0, preview.1, preview.2);
+                layer.thumb =
+                    iced::widget::image::Handle::from_rgba(thumb.0, thumb.1, thumb.2);
+            }
+            app.pending_paint = None;
+            app.refresh_fallback();
+        }
+
         Message::SetBrushColor(color) => {
             app.brush_color = color;
             app.color_picker_open = false;
@@ -887,6 +949,52 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::ToggleColorPicker => {
             app.color_picker_open = !app.color_picker_open;
+        }
+
+        Message::NewDocWidth(v) => {
+            app.new_doc_w = v;
+            app.welcome_error = None;
+        }
+        Message::NewDocHeight(v) => {
+            app.new_doc_h = v;
+            app.welcome_error = None;
+        }
+        Message::SetDocPreset { w, h } => {
+            app.new_doc_w = w.to_string();
+            app.new_doc_h = h.to_string();
+            app.welcome_error = None;
+        }
+        Message::CreateDocument => {
+            let parsed = (
+                app.new_doc_w.trim().parse::<u32>(),
+                app.new_doc_h.trim().parse::<u32>(),
+            );
+            match parsed {
+                (Ok(w), Ok(h)) if (1..=10000).contains(&w) && (1..=10000).contains(&h) => {
+                    let white =
+                        ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
+                            w,
+                            h,
+                            ::image::Rgba([255, 255, 255, 255]),
+                        ));
+                    let id = app.alloc_layer_id();
+                    let layer = Layer::new(id, "Arrière-plan".into(), Arc::new(white));
+                    app.layers.clear();
+                    app.layers.push(layer);
+                    app.selected_layer = Some(id);
+                    app.doc_size = Some((w, h));
+                    app.image_path = None;
+                    app.image_error = None;
+                    app.canvas_pan = Vector::new(0.0, 0.0);
+                    app.zoom_level = 100;
+                    app.welcome_error = None;
+                    app.refresh_fallback();
+                }
+                _ => {
+                    app.welcome_error =
+                        Some("Dimensions invalides (1 à 10000 px)".into());
+                }
+            }
         }
 
         Message::OpenPreferences => {
@@ -1579,7 +1687,10 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             &app.gen_previews,
             app.node_context_menu,
             app.node_context_world,
-            if app.stroke_layer.is_some() && !app.stroke_points.is_empty() {
+            // Aperçu du trait : commit en cours (figé) sinon trait live
+            if let Some(p) = &app.pending_paint {
+                Some(p.overlay.clone())
+            } else if app.stroke_layer.is_some() && !app.stroke_points.is_empty() {
                 Some(ui::image_canvas::StrokeOverlay {
                     points: app.stroke_points.clone(),
                     color: app.brush_color,
@@ -1589,6 +1700,9 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             } else {
                 None
             },
+            &app.new_doc_w,
+            &app.new_doc_h,
+            app.welcome_error.as_deref(),
         )
     ];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas

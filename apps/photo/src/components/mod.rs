@@ -27,5 +27,6 @@ pub mod options_bar;
 pub mod properties;
 pub mod preferences;
 pub mod toolpanel;
+pub mod welcome;
 pub mod toolbar;
 pub mod workspace;
