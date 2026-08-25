@@ -53,7 +53,7 @@ Main, Zoom, Sélection rectangulaire, Déplacement, **Pinceau**, **Gomme** (dest
 ### Interface
 - Layout à panneaux redimensionnables (Calques, Propriétés, Générateur)
 - Menus complets (Fichier, Édition, Calque, Affichage) avec raccourcis (`Ctrl+O`, `Ctrl+J`, `F7`…)
-- Design system unifié : tokens DESIGN.md + styles canoniques partagés (`ui::style`) — palette d'outils façon macOS
+- Design system unifié : tokens DESIGN.md + styles canoniques partagés (`ui_kit::style`) — palette d'outils façon macOS
 - Thème sombre cohérent, police Hanken Grotesk, icônes Material
 
 ### Interface
@@ -71,29 +71,29 @@ CreativeSuiteOpen/
 │   ├── photo/                # Éditeur photo (calques, outils, canvas)
 │   ├── video/                # Éditeur vidéo (fondations)
 │   └── audio/                # Station audio (fondations)
-├── core/                     # Moteurs et logique métier (réutilisables entre apps)
-│   ├── core/                 # suite-core : graphe de nœuds générique (évaluation, connexions)
-│   ├── datatypes/            # Types partagés : nœuds, sockets, paramètres, Vec2
+├── engines/                  # Moteurs métier PURS (zéro dépendance UI)
 │   ├── photo-engine/         # Moteur photo : modèle document, compositing CPU/GPU, modes de fusion
 │   ├── video-engine/         # Moteur vidéo (à venir)
-│   ├── audio-engine/         # Moteur audio (à venir)
+│   └── audio-engine/         # Moteur audio (à venir)
+├── core/                     # Socle commun réutilisable entre apps
+│   ├── core/                 # suite-core : graphe de nœuds générique (évaluation, connexions)
+│   ├── datatypes/            # Types partagés : nœuds, sockets, paramètres, Vec2
 │   └── shell/                # Shell commun : layout, barre de menus, fenêtre
-├── ui/                       # Bibliothèque de widgets iced
-│   ├── theme.rs              # SEULE source des tokens (DESIGN.md)
-│   ├── style.rs              # Styles canoniques par famille visuelle
-│   ├── node_graph.rs         # Éditeur de graphe nodal (câbles, previews, context menu)
-│   ├── image_canvas.rs       # Canvas image : pan/zoom infini, calques, repère document
-│   ├── layer_canvas.rs       # Canvas GPU expérimental (render passes wgpu)
-│   ├── menu.rs / dropdown.rs # Menus applicatifs et dropdowns
-│   └── timeline.rs / piano_roll.rs  # Widgets réservés (vidéo/audio)
+├── packages/                 # Bibliothèques réutilisables (ne dépendent jamais des engines/apps)
+│   ├── ui-kit/               # Widgets iced : theme.rs (SEULE source des tokens), style.rs,
+│   │                         #   node_graph.rs, image_canvas.rs, layer_canvas.rs,
+│   │                         #   menu.rs / dropdown.rs, timeline.rs / piano_roll.rs
+│   ├── math-utils/           # Math partagées : Vec3, Matrix4, Bézier (Vec2 canonique = datatypes)
+│   └── file-utils/           # I/O : drag & drop, dialogues de fichiers
 ├── assets/fonts/             # Hanken Grotesk, Material Icons
 ├── flake.nix                 # Environnement de dev NixOS (Vulkan, Wayland)
 └── Cargo.toml                # Workspace Rust
 ```
 
 ### Philosophie d'architecture
-- **Modularité stricte** : la logique métier vit dans `core/*`, jamais dans les apps. Une app = interface + orchestration.
-- **Moteurs réutilisables** : `photo-engine` (modèle document, compositing) est indépendant de l'UI et pourra servir au module vidéo (titres, compositing d'images).
+- **Modularité stricte** : la logique métier vit dans `engines/*` et `core/*`, jamais dans les apps. Une app = interface + orchestration.
+- **Moteurs purs** : `photo-engine` (modèle document, compositing) est indépendant de l'UI et pourra servir au module vidéo (titres, compositing d'images).
+- **Dépendances en couches** : `packages` ← `core`/`engines` ← `apps`. Les packages ne dépendent jamais des engines ni des apps.
 - **Rust + Iced + wgpu** : un seul code source, rendu GPU natif sur les trois plateformes.
 
 ---
@@ -136,7 +136,7 @@ Les contributions sont **très bienvenues** — c'est un projet jeune, chaque ap
 
 ### Bonnes pratiques
 1. **Ouvre une issue avant** les changements importants (architecture, nouveaux moteurs) pour en discuter.
-2. **Respecte la modularité** : logique métier → `core/*`, UI → `ui/`, orchestration → `apps/*`. Pas de logique de rendu dans les apps.
+2. **Respecte la modularité** : logique métier → `engines/*` / `core/*`, widgets → `packages/ui-kit`, orchestration → `apps/*`. Pas de logique de rendu dans les apps.
 3. **Performance** : le modèle de rendu est « state-only » (les réglages ne régénèrent jamais les textures). Préserve-le — profile avant d'optimiser (`cargo flamegraph`), mesure avant/après.
 4. **Qualité** : `cargo clippy --workspace` sans erreur, `cargo fmt` avant tout commit. Les `unwrap()` sont interdits hors tests.
 5. **Pas d'emoji** dans le code ni les commits ; messages de commit courts et descriptifs (`photo: fix blend-mode offset jump`).
