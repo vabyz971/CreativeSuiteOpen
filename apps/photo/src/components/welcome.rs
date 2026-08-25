@@ -20,7 +20,7 @@
 use crate::Message;
 use iced::widget::{Space, button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
-use ui::theme::{colors, fonts, metrics};
+use ui_kit::theme::{colors, fonts, metrics};
 
 /// Presets de documents : (libellé, largeur, hauteur en px)
 const PRESETS: &[(&str, u32, u32)] = &[
@@ -87,7 +87,7 @@ pub fn render<'a>(
             button(text(*label).size(11).color(colors::TEXT_SECONDARY))
                 .padding(Padding::new(3.0).left(8.0).right(8.0))
                 .style(|_, s| {
-                    let mut c = ui::style::chip(s);
+                    let mut c = ui_kit::style::chip(s);
                     c.border.radius = metrics::RADIUS_BUTTON.into();
                     c
                 })
@@ -110,13 +110,13 @@ pub fn render<'a>(
             .color(colors::TEXT_ON_ACCENT),
     )
     .padding(Padding::new(8.0).left(18.0).right(18.0))
-    .style(|_, s| ui::style::primary(s))
+    .style(|_, s| ui_kit::style::primary(s))
     .on_press(Message::CreateDocument);
 
     let open_btn = button(
         row![
             text("\u{e2c8}")
-                .font(ui::icon_button::MATERIAL_ICONS)
+                .font(ui_kit::icon_button::MATERIAL_ICONS)
                 .size(15)
                 .color(colors::TEXT_PRIMARY),
             text("Ouvrir une image…")
@@ -127,7 +127,7 @@ pub fn render<'a>(
         .align_y(Alignment::Center),
     )
     .padding(Padding::new(8.0).left(14.0).right(14.0))
-    .style(|_, s| ui::style::chip(s))
+    .style(|_, s| ui_kit::style::chip(s))
     .on_press(Message::OpenImage);
 
     let error_line: Element<'a, Message> = match error {

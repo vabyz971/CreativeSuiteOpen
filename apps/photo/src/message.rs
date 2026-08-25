@@ -67,7 +67,7 @@ impl std::fmt::Debug for DecodedLayer {
 #[derive(Clone)]
 pub struct PendingPaint {
     pub layer_id: u64,
-    pub tex: ui::image_canvas::StrokeTex,
+    pub tex: ui_kit::image_canvas::StrokeTex,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ pub enum Message {
 
     // Outils
     SelectTool(Tool),
-    ImageCanvasEvent(ui::image_canvas::ImageCanvasEvent),
+    ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent),
 
     // Calques
     SelectLayer(u64),
@@ -185,17 +185,17 @@ pub enum Message {
     OpenPreferences,
     ClosePreferences,
     /// Démarre la capture d'une nouvelle combinaison pour l'action
-    ShortcutCapture(ui::shortcuts::Action),
+    ShortcutCapture(ui_kit::shortcuts::Action),
     /// Touche capturée (None = Échap → annule)
-    ShortcutCaptured(Option<ui::shortcuts::Binding>),
+    ShortcutCaptured(Option<ui_kit::shortcuts::Binding>),
     /// Annule la capture en cours
     ShortcutCancelCapture,
     /// Remet le raccourci par défaut d'une action
-    ShortcutReset(ui::shortcuts::Action),
+    ShortcutReset(ui_kit::shortcuts::Action),
     /// Remet toute la table par défaut
     ShortcutResetAll,
     /// Raccourci clavier résolu → action sémantique
-    ShortcutAction(ui::shortcuts::Action),
+    ShortcutAction(ui_kit::shortcuts::Action),
 
     // ---- Pinceau / Gomme ----
     /// Début d'un trait (coordonnées document)
@@ -208,7 +208,7 @@ pub enum Message {
     /// Relâchement : lance le commit des pixels HORS thread UI
     BrushEnd {
         points: Vec<(f32, f32)>,
-        tex: Option<ui::image_canvas::StrokeTex>,
+        tex: Option<ui_kit::image_canvas::StrokeTex>,
         /// true = gomme (destination-out), false = pinceau
         erase: bool,
     },
@@ -240,7 +240,7 @@ pub enum Message {
     PrefsSection(crate::components::preferences::PrefsSection),
 
     // Générateur de textures (graphe nodal)
-    NodeGraphEvent(ui::node_graph::NodeGraphEvent),
+    NodeGraphEvent(ui_kit::node_graph::NodeGraphEvent),
     UpdateParam {
         node: datatypes::NodeId,
         key: String,

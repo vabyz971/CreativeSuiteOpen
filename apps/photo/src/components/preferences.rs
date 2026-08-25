@@ -17,10 +17,10 @@
 //! Modal Préférences unifiée (comme Photoshop → Préférences).
 //! Sidebar gauche des sections d'options, contenu à droite :
 //! Général (matériel, épuré), Raccourcis clavier, À propos.
-//! Design : tokens DESIGN.md via ui::theme.
+//! Design : tokens DESIGN.md via ui_kit::theme.
 
-use ui::shortcuts::{Action, Shortcuts};
-use ui::theme::{colors, fonts, metrics};
+use ui_kit::shortcuts::{Action, Shortcuts};
+use ui_kit::theme::{colors, fonts, metrics};
 
 use crate::Message;
 use iced::widget::{Space, button, column, container, row, scrollable, text};
@@ -53,7 +53,7 @@ pub fn view<'a>(
             Space::new().width(Length::Fill),
             button(text("✕").size(13).color(colors::TEXT_PRIMARY))
                 .padding(5)
-                .style(|_, s| ui::style::ghost_danger(s))
+                .style(|_, s| ui_kit::style::ghost_danger(s))
                 .on_press(Message::ClosePreferences),
         ]
         .align_y(Alignment::Center),
@@ -79,7 +79,7 @@ pub fn view<'a>(
         )
         .width(Length::Fill)
         .padding(Padding::new(8.0).left(12.0).right(8.0))
-        .style(move |_t, s| ui::style::ghost_selected(is_active, s))
+        .style(move |_t, s| ui_kit::style::ghost_selected(is_active, s))
         .on_press(Message::PrefsSection(section_kind))
     };
 
@@ -191,7 +191,7 @@ fn general_view<'a>(gpu_info: Option<String>, gpu_available: bool) -> Element<'a
                     .color(colors::TEXT_ON_ACCENT)
             )
             .padding(Padding::new(6.0).left(10.0).right(10.0))
-            .style(|_, s| ui::style::primary(s))
+            .style(|_, s| ui_kit::style::primary(s))
             .on_press(Message::DetectGpu),
         ]
         .spacing(4),
@@ -278,7 +278,7 @@ fn shortcuts_view<'a>(shortcuts: &'a Shortcuts, capturing: Option<Action>) -> El
         let small_btn = |label: &'a str, msg: Message, enabled: bool| {
             let b = button(text(label).size(11)).padding(Padding::new(3.0).left(8.0).right(8.0));
             if enabled {
-                b.on_press(msg).style(|_, s| ui::style::action_chip(s))
+                b.on_press(msg).style(|_, s| ui_kit::style::action_chip(s))
             } else {
                 b.style(|_, _| button::Style::default())
             }
@@ -331,7 +331,7 @@ fn shortcuts_view<'a>(shortcuts: &'a Shortcuts, capturing: Option<Action>) -> El
             button(text("Tout réinitialiser").size(11))
                 .padding(Padding::new(4.0).left(10.0).right(10.0))
                 .on_press(Message::ShortcutResetAll)
-                .style(|_, s| ui::style::action_chip_danger(s)),
+                .style(|_, s| ui_kit::style::action_chip_danger(s)),
         ]
         .align_y(Alignment::Center),
     )

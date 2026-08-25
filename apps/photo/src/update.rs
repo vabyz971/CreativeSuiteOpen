@@ -677,29 +677,29 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             }
         }
         Message::ImageCanvasEvent(evt) => match evt {
-            ui::image_canvas::ImageCanvasEvent::BrushStart { x, y, erase } => {
+            ui_kit::image_canvas::ImageCanvasEvent::BrushStart { x, y, erase } => {
                 return dispatch(app, Message::BrushStart { x, y, erase });
             }
-            ui::image_canvas::ImageCanvasEvent::BrushEnd { points, tex, erase } => {
+            ui_kit::image_canvas::ImageCanvasEvent::BrushEnd { points, tex, erase } => {
                 return dispatch(app, Message::BrushEnd { points, tex, erase });
             }
-            ui::image_canvas::ImageCanvasEvent::Viewport(size) => {
+            ui_kit::image_canvas::ImageCanvasEvent::Viewport(size) => {
                 app.canvas_viewport = size;
             }
-            ui::image_canvas::ImageCanvasEvent::Pan(pan) => {
+            ui_kit::image_canvas::ImageCanvasEvent::Pan(pan) => {
                 if app.selected_tool == crate::message::Tool::Hand {
                     app.canvas_pan = pan;
                 }
             }
-            ui::image_canvas::ImageCanvasEvent::ZoomPan { zoom, pan } => {
+            ui_kit::image_canvas::ImageCanvasEvent::ZoomPan { zoom, pan } => {
                 app.zoom_level = (zoom * 100.0) as u32;
                 app.canvas_pan = pan;
             }
-            ui::image_canvas::ImageCanvasEvent::ZoomAt { zoom, pan } => {
+            ui_kit::image_canvas::ImageCanvasEvent::ZoomAt { zoom, pan } => {
                 app.zoom_level = (zoom * 100.0) as u32;
                 app.canvas_pan = pan;
             }
-            ui::image_canvas::ImageCanvasEvent::SelectRect(rect) => {
+            ui_kit::image_canvas::ImageCanvasEvent::SelectRect(rect) => {
                 if app.selected_tool == crate::message::Tool::Select
                     || app.selected_tool == crate::message::Tool::Zoom
                 {
@@ -723,7 +723,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     }
                 }
             }
-            ui::image_canvas::ImageCanvasEvent::MoveLayerStart => {
+            ui_kit::image_canvas::ImageCanvasEvent::MoveLayerStart => {
                 if app.selected_tool == crate::message::Tool::Move {
                     // Lit l'ancre avant toute mutation (règle own-borrow-over-clone)
                     let anchor = app
@@ -742,7 +742,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     }
                 }
             }
-            ui::image_canvas::ImageCanvasEvent::MoveLayer { dx, dy } => {
+            ui_kit::image_canvas::ImageCanvasEvent::MoveLayer { dx, dy } => {
                 if app.selected_tool == crate::message::Tool::Move
                     && let Some((id, ax, ay)) = app.move_anchor
                     && Some(id) == app.selected_layer
@@ -763,7 +763,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     }
                 }
             }
-            ui::image_canvas::ImageCanvasEvent::MoveLayerEnd => {
+            ui_kit::image_canvas::ImageCanvasEvent::MoveLayerEnd => {
                 app.move_anchor = None;
                 // Vrai recomposite : le blend réel du calque à sa position
                 // finale remplace l'approximation du drag
@@ -855,23 +855,23 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         // ---- Générateur de textures (graphe nodal, usage futur filtres/génération) ----
         Message::NodeGraphEvent(evt) => match evt {
-            ui::node_graph::NodeGraphEvent::NodeSelected(id) => {
+            ui_kit::node_graph::NodeGraphEvent::NodeSelected(id) => {
                 app.gen_selected_node = Some(id);
                 app.node_context_menu = None;
             }
-            ui::node_graph::NodeGraphEvent::NodeMoved { id, position } => {
+            ui_kit::node_graph::NodeGraphEvent::NodeMoved { id, position } => {
                 app.gen_graph.move_node(id, position);
             }
-            ui::node_graph::NodeGraphEvent::BackgroundClicked => {
+            ui_kit::node_graph::NodeGraphEvent::BackgroundClicked => {
                 app.gen_selected_node = None;
                 app.node_context_menu = None;
             }
-            ui::node_graph::NodeGraphEvent::RequestContextMenu(world, local) => {
+            ui_kit::node_graph::NodeGraphEvent::RequestContextMenu(world, local) => {
                 app.pending_connect = None;
                 app.node_context_menu = Some(local);
                 app.node_context_world = Some(world);
             }
-            ui::node_graph::NodeGraphEvent::Connect {
+            ui_kit::node_graph::NodeGraphEvent::Connect {
                 from,
                 from_socket,
                 to,
@@ -900,7 +900,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 ));
                 app.node_context_menu = None;
             }
-            ui::node_graph::NodeGraphEvent::Disconnect { node, socket } => {
+            ui_kit::node_graph::NodeGraphEvent::Disconnect { node, socket } => {
                 app.gen_graph.disconnect_input(node, &socket);
             }
             // Événements non utilisés par le générateur (ignorés silencieusement)

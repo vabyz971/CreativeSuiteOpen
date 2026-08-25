@@ -22,9 +22,9 @@ use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{Space, column, container, image, text};
 use iced::{Element, Length, Size, Vector};
 use suite_core::Graph;
-use ui::base_panel;
-use ui::dropdown::{dropdown_box, menu_item, menu_separator};
-use ui::theme::colors;
+use ui_kit::base_panel;
+use ui_kit::dropdown::{dropdown_box, menu_item, menu_separator};
+use ui_kit::theme::colors;
 
 #[allow(clippy::too_many_arguments)]
 pub fn render<'a>(
@@ -57,8 +57,8 @@ pub fn render<'a>(
     node_context_menu: Option<iced::Point>,
     node_context_world: Option<datatypes::Vec2>,
     // Style du pinceau + aperçu figé du commit en cours (texture)
-    brush: ui::image_canvas::BrushStyle,
-    pending_preview: Option<ui::image_canvas::StrokeTex>,
+    brush: ui_kit::image_canvas::BrushStyle,
+    pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
     // Écran d'accueil (aucun document ouvert)
     new_doc_w: &'a str,
     new_doc_h: &'a str,
@@ -127,7 +127,7 @@ pub fn render<'a>(
                 let g_clone = gen_graph.clone();
                 let previews = gen_previews.clone();
                 let busy_empty: std::collections::HashSet<NodeId> = Default::default();
-                let canvas = ui::node_graph::view(
+                let canvas = ui_kit::node_graph::view(
                     g_clone,
                     gen_selected,
                     Vector::new(0.0, 0.0),
@@ -259,8 +259,8 @@ fn render_canvas_preview<'a>(
     zoom_level: u32,
     canvas_selection: Option<iced::Rectangle>,
     _viewport: Size,
-    brush: ui::image_canvas::BrushStyle,
-    pending_preview: Option<ui::image_canvas::StrokeTex>,
+    brush: ui_kit::image_canvas::BrushStyle,
+    pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
     new_doc_w: &'a str,
     new_doc_h: &'a str,
     welcome_error: Option<&'a str>,
@@ -268,18 +268,18 @@ fn render_canvas_preview<'a>(
     let _ = selected_layer; // conservé pour futurs réglages contextuels
     let zoom = zoom_level as f32 / 100.0;
     let canvas_tool = match selected_tool {
-        Tool::Hand => ui::image_canvas::CanvasTool::Hand,
-        Tool::Move => ui::image_canvas::CanvasTool::Move,
-        Tool::Zoom => ui::image_canvas::CanvasTool::Zoom,
-        Tool::Select => ui::image_canvas::CanvasTool::Select,
-        Tool::Eyedropper => ui::image_canvas::CanvasTool::Select,
-        Tool::Brush => ui::image_canvas::CanvasTool::Brush,
-        Tool::Eraser => ui::image_canvas::CanvasTool::Eraser,
+        Tool::Hand => ui_kit::image_canvas::CanvasTool::Hand,
+        Tool::Move => ui_kit::image_canvas::CanvasTool::Move,
+        Tool::Zoom => ui_kit::image_canvas::CanvasTool::Zoom,
+        Tool::Select => ui_kit::image_canvas::CanvasTool::Select,
+        Tool::Eyedropper => ui_kit::image_canvas::CanvasTool::Select,
+        Tool::Brush => ui_kit::image_canvas::CanvasTool::Brush,
+        Tool::Eraser => ui_kit::image_canvas::CanvasTool::Eraser,
     };
     // Calques canvas : texture + offset + opacité appliqués AU DRAW (GPU)
     // → slider d'opacité = zéro régénération de pixels, zéro clignotement
     let dragging = drag_layer.is_some();
-    let mut canvas_layers: Vec<ui::image_canvas::CanvasLayer> = layers
+    let mut canvas_layers: Vec<ui_kit::image_canvas::CanvasLayer> = layers
         .iter()
         .filter(|l| l.visible && l.opacity > 0.01)
         // En drag fallback : le calque déplacé est exclu du fond (il est
@@ -289,7 +289,7 @@ fn render_canvas_preview<'a>(
         .filter_map(|l| {
             let handle = preview_cache.preview(l.id)?.clone();
             let (w, h) = l.dimensions();
-            Some(ui::image_canvas::CanvasLayer {
+            Some(ui_kit::image_canvas::CanvasLayer {
                 handle,
                 width: w as f32,
                 height: h as f32,
@@ -316,7 +316,7 @@ fn render_canvas_preview<'a>(
             .unwrap_or((0.0, 0.0));
         canvas_layers.insert(
             0,
-            ui::image_canvas::CanvasLayer {
+            ui_kit::image_canvas::CanvasLayer {
                 handle: bg,
                 width: bgsz.width,
                 height: bgsz.height,
@@ -338,7 +338,7 @@ fn render_canvas_preview<'a>(
         // on le dessine par-dessus. En chemin rapide il est DÉJÀ dans
         // canvas_layers — le push ici le dessinerait deux fois.
         let (w, h) = l.dimensions();
-        canvas_layers.push(ui::image_canvas::CanvasLayer {
+        canvas_layers.push(ui_kit::image_canvas::CanvasLayer {
             handle,
             width: w as f32,
             height: h as f32,
@@ -362,7 +362,7 @@ fn render_canvas_preview<'a>(
         let (fb_off_x, fb_off_y) = doc_size
             .map(|d| ((d.width - sz.width) / 2.0, (d.height - sz.height) / 2.0))
             .unwrap_or((0.0, 0.0));
-        let ls = vec![ui::image_canvas::CanvasLayer {
+        let ls = vec![ui_kit::image_canvas::CanvasLayer {
             handle,
             width: sz.width,
             height: sz.height,
@@ -372,7 +372,7 @@ fn render_canvas_preview<'a>(
             rotation_deg: 0.0,
             scale: 1.0,
         }];
-        let canvas = ui::image_canvas::view_with_tool(
+        let canvas = ui_kit::image_canvas::view_with_tool(
             doc_size,
             canvas_pan,
             zoom,
@@ -389,7 +389,7 @@ fn render_canvas_preview<'a>(
             .clip(true)
             .into()
     } else {
-        let canvas = ui::image_canvas::view_with_tool(
+        let canvas = ui_kit::image_canvas::view_with_tool(
             doc_size,
             canvas_pan,
             zoom,
@@ -427,10 +427,10 @@ fn render_canvas_preview<'a>(
             .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
             .style(|_| {
                 // Palette flottante façon macOS : fond discret, ombre portée
-                ui::style::floating_card(
+                ui_kit::style::floating_card(
                     colors::SURFACE_CONTAINER_LOW,
-                    ui::theme::metrics::RADIUS_NODE,
-                    ui::theme::shadows::panel(),
+                    ui_kit::theme::metrics::RADIUS_NODE,
+                    ui_kit::theme::shadows::panel(),
                 )
             });
         container(tools_pill.width(Length::Shrink))

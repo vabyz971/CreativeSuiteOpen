@@ -7,7 +7,7 @@ members = [
     "engines/photo-engine",
     "engines/video-engine",
     "engines/audio-engine",
-    "ui/",
+    "packages/ui-kit",
     "apps/photo",
     "apps/video",
     "apps/audio",

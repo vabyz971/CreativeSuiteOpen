@@ -26,7 +26,7 @@
 use crate::{Message, Tool};
 use iced::widget::{button, container, row, text};
 use iced::{Alignment, Element, Length, Padding};
-use ui::theme::colors;
+use ui_kit::theme::colors;
 
 // Codepoints Material Icons — https://fonts.google.com/icons
 const ICON_ROTATE_LEFT: &str = "\u{e419}";
@@ -101,13 +101,13 @@ fn brush_section<'a>(
             border: iced::Border {
                 width: 1.0,
                 color: colors::BORDER_SUBTLE,
-                radius: ui::theme::metrics::RADIUS_DROPDOWN.into(),
+                radius: ui_kit::theme::metrics::RADIUS_DROPDOWN.into(),
             },
             ..Default::default()
         }),
     )
     .padding(5)
-    .style(|_t, s| ui::style::ghost(s))
+    .style(|_t, s| ui_kit::style::ghost(s))
     .on_press(Message::ToggleColorPicker);
 
     let color_circle = iced_aw::widget::ColorPicker::new(
@@ -201,7 +201,7 @@ fn move_section<'a>(
         let b = button(
             row![
                 text(codepoint)
-                    .font(ui::icon_button::MATERIAL_ICONS)
+                    .font(ui_kit::icon_button::MATERIAL_ICONS)
                     .size(15)
                     .color(if enabled {
                         colors::TEXT_SECONDARY
@@ -219,7 +219,7 @@ fn move_section<'a>(
         )
         .padding(Padding::new(4.0).left(8.0).right(8.0));
         if enabled {
-            b.on_press(msg).style(|_t, s| ui::style::ghost(s))
+            b.on_press(msg).style(|_t, s| ui_kit::style::ghost(s))
         } else {
             b.style(|_t, _s| button::Style::default())
         }
@@ -315,7 +315,7 @@ fn move_section<'a>(
 fn field_label(s: &'static str) -> Element<'static, Message> {
     text(s)
         .size(11)
-        .font(ui::theme::fonts::SANS_SEMIBOLD)
+        .font(ui_kit::theme::fonts::SANS_SEMIBOLD)
         .color(colors::TEXT_MUTED)
         .into()
 }

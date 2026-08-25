@@ -25,7 +25,7 @@ use iced::widget::{
     Space, button, column, container, image, pick_list, row, scrollable, slider, text, text_input,
 };
 use iced::{Alignment, Element, Length, Padding};
-use ui::theme::{colors, metrics};
+use ui_kit::theme::{colors, metrics};
 
 const ICON_ADD: &str = "\u{e145}"; // add
 const ICON_IMAGE: &str = "\u{e3f4}"; // image
@@ -134,7 +134,7 @@ pub fn render<'a>(
     };
 
     // --- Barre d'actions ---
-    let material = ui::icon_button::MATERIAL_ICONS;
+    let material = ui_kit::icon_button::MATERIAL_ICONS;
     let action_btn = |codepoint: &'a str, _tip: &'a str, msg: Message, enabled: bool| {
         let b = button(text(codepoint).font(material).size(16).color(if enabled {
             colors::TEXT_SECONDARY
@@ -144,7 +144,7 @@ pub fn render<'a>(
         .padding(4);
 
         if enabled {
-            b.on_press(msg).style(move |_t, s| ui::style::ghost(s))
+            b.on_press(msg).style(move |_t, s| ui_kit::style::ghost(s))
         } else {
             b.style(|_t, _s| button::Style::default())
         }
@@ -216,7 +216,7 @@ fn layer_row<'a>(
     preview_cache: &'a crate::ui_handles::PreviewCache,
     is_selected: bool,
 ) -> Element<'a, Message> {
-    let material = ui::icon_button::MATERIAL_ICONS;
+    let material = ui_kit::icon_button::MATERIAL_ICONS;
     let id = layer.id;
 
     let eye = button(
@@ -234,7 +234,7 @@ fn layer_row<'a>(
         }),
     )
     .padding(2)
-    .style(|_t, s| ui::style::ghost(s))
+    .style(|_t, s| ui_kit::style::ghost(s))
     .on_press(Message::ToggleLayerVisible(id));
 
     // Cache synchronisé après chaque update ; repli neutre si absent
@@ -248,9 +248,9 @@ fn layer_row<'a>(
             .height(Length::Fixed(32.0)),
     )
     .style(|_| {
-        ui::style::inset_card(
+        ui_kit::style::inset_card(
             colors::SURFACE_CONTAINER_LOWEST,
-            ui::theme::metrics::RADIUS_SM,
+            ui_kit::theme::metrics::RADIUS_SM,
         )
     });
 
@@ -276,7 +276,7 @@ fn layer_row<'a>(
     )
     .padding(Padding::new(4.0).left(4.0).right(6.0))
     .width(Length::Fill)
-    .style(move |_t, s| ui::style::ghost_selected(is_selected, s))
+    .style(move |_t, s| ui_kit::style::ghost_selected(is_selected, s))
     .on_press(Message::SelectLayer(id));
 
     container(row_btn).width(Length::Fill).into()
