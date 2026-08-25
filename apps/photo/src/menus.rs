@@ -19,7 +19,10 @@
 use crate::message::{Message, PanelType};
 
 /// Menus applicatifs affichés dans le shell (Fichier / Édition / Affichage).
-pub fn app_menus(tools_visible: bool, selected_layer: Option<u64>) -> Vec<ui_kit::menu::Menu<Message>> {
+pub fn app_menus(
+    tools_visible: bool,
+    selected_layer: Option<u64>,
+) -> Vec<ui_kit::menu::Menu<Message>> {
     vec![
         ui_kit::menu::Menu::new(
             "Fichier",
