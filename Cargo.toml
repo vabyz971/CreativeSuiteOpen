@@ -8,6 +8,8 @@ members = [
     "engines/video-engine",
     "engines/audio-engine",
     "packages/ui-kit",
+    "packages/math-utils",
+    "packages/file-utils",
     "apps/photo",
     "apps/video",
     "apps/audio",
