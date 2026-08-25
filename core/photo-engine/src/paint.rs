@@ -307,7 +307,7 @@ mod tests {
         let centre = ((8 * w + 8) * 4) as usize;
         assert_eq!(rgba[centre + 3], 0); // alpha effacé
         assert_eq!(rgba[centre], 255); // RGB inchangé (droits)
-        let coin = ((0 * w + 0) * 4) as usize;
+        let coin = 0usize; // pixel document (0, 0), hors trait
         assert_eq!(rgba[coin + 3], 255); // hors trait : intact
     }
 

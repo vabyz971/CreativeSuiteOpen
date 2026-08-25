@@ -88,21 +88,114 @@ pub struct BrushStyle {
     pub erase: bool,
 }
 
-/// Texture RGBA de l'aperçu d'un trait — bbox en coordonnées document.
+/// Aperçu d'un trait — TUILES 512×512 en coordonnées document.
 ///
 /// Pourquoi une texture et pas des cercles vectoriels ? Le moteur iced
 /// impose par couche l'ordre de rendu figé quads -> meshes -> images :
 /// la géométrie vectorielle passerait SOUS les textures des calques.
 /// Une image, elle, est dessinée après les images de calques.
-#[derive(Clone, Debug)]
+///
+/// Pourquoi des tuiles ? L'atlas de textures iced_wgpu limite une image à
+/// 2048×2048 (`atlas::MAX_SIZE`) : un grand tracé dans une texture unique
+/// dépassait la limite et DISPARAISSAIT de l'aperçu. Chaque tuile reste
+/// loin sous la limite, quelle que soit l'étendue du trait. Les tuiles
+/// étant alignées sur une grille entière, aucun ré-échantillonnage n'a
+/// lieu lors de l'extension du trait — l'aperçu ne « marche » plus.
+#[derive(Clone, Debug, Default)]
 pub struct StrokeTex {
-    /// Coin haut-gauche de la bbox (coords document)
-    pub x: f32,
-    pub y: f32,
-    pub w: u32,
-    pub h: u32,
-    /// Pixels RGBA droits (non prémultipliés)
-    pub rgba: Vec<u8>,
+    tiles: Vec<Tile>,
+}
+
+/// Côté d'une tuile d'aperçu (pixels document).
+const TILE: u32 = 512;
+
+#[derive(Clone, Debug)]
+struct Tile {
+    /// Coordonnées tuile sur la grille (× TILE = origine document)
+    tx: i32,
+    ty: i32,
+    rgba: Vec<u8>,
+}
+
+impl StrokeTex {
+    fn tile_mut(&mut self, tx: i32, ty: i32) -> &mut Tile {
+        if let Some(pos) = self.tiles.iter().position(|t| t.tx == tx && t.ty == ty) {
+            &mut self.tiles[pos]
+        } else {
+            self.tiles.push(Tile {
+                tx,
+                ty,
+                rgba: vec![0; (TILE * TILE * 4) as usize],
+            });
+            self.tiles.last_mut().expect("vient d'être poussée")
+        }
+    }
+
+    /// Estampe un disque (couleur) ou un anneau (gomme) centré en (cx, cy)
+    /// document — écrit dans toutes les tuiles chevauchées.
+    fn stamp_disc(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        ring: bool,
+        col: [u8; 3],
+        opacity: f32,
+    ) {
+        let pad = radius + 1.5;
+        let tx0 = ((cx - pad).floor() as i32).div_euclid(TILE as i32);
+        let tx1 = ((cx + pad).floor() as i32).div_euclid(TILE as i32);
+        let ty0 = ((cy - pad).floor() as i32).div_euclid(TILE as i32);
+        let ty1 = ((cy + pad).floor() as i32).div_euclid(TILE as i32);
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                let tile = self.tile_mut(tx, ty);
+                let lx = cx - tx as f32 * TILE as f32;
+                let ly = cy - ty as f32 * TILE as f32;
+                if ring {
+                    let thickness = (radius * 0.16).max(1.5);
+                    stamp_ring(tile, lx, ly, radius, thickness, col, opacity);
+                } else {
+                    stamp_circle(tile, lx, ly, radius, col, opacity);
+                }
+            }
+        }
+    }
+
+    /// Estampe des disques/anneaux le long du segment (pas ~ rayon/3).
+    fn stamp_segment(&mut self, from: (f32, f32), to: (f32, f32), b: &BrushStyle) {
+        let dx = to.0 - from.0;
+        let dy = to.1 - from.1;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let step = (b.radius * 0.35).max(0.5);
+        let n = ((dist / step).ceil() as usize).max(1);
+        for i in 0..=n {
+            let k = i as f32 / n as f32;
+            self.stamp_disc(
+                from.0 + dx * k,
+                from.1 + dy * k,
+                b.radius,
+                b.erase,
+                b.color,
+                b.opacity,
+            );
+        }
+    }
+
+    /// Itère les tuiles touchées : (origine document x, y, pixels RGBA).
+    fn tiles(&self) -> impl Iterator<Item = (f32, f32, &[u8])> {
+        self.tiles.iter().map(|t| {
+            (
+                t.tx as f32 * TILE as f32,
+                t.ty as f32 * TILE as f32,
+                t.rgba.as_slice(),
+            )
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
+    }
 }
 
 /// Un calque affichable sur le canvas — dessiné à SA position monde.
@@ -460,23 +553,26 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             );
         }
 
-        // Aperçu pinceau : TEXTURE dessinée après les images de calques.
-        // Ordre figé du moteur iced par couche : quads -> meshes -> images ;
-        // une géométrie vectorielle passerait SOUS les calques.
-        // Priorité au trait live (drag) ; sinon l'aperçu figé du commit.
+        // Aperçu pinceau : TEXTURES (une par tuile 512×512) dessinées après
+        // les images de calques. Ordre figé du moteur iced par couche :
+        // quads -> meshes -> images ; une géométrie vectorielle passerait
+        // SOUS les calques. Priorité au trait live (drag) ; sinon l'aperçu
+        // figé du commit.
         let preview = state.stroke_tex.as_ref().or(self.pending_preview.as_ref());
-        if let Some(t) = preview.filter(|t| t.w > 0 && t.h > 0) {
-            let tl = Point::new(
-                center.x + (t.x - doc_half_w) * self.zoom,
-                center.y + (t.y - doc_half_h) * self.zoom,
-            );
-            frame.draw_image(
-                Rectangle::new(
-                    tl,
-                    Size::new(t.w as f32 * self.zoom, t.h as f32 * self.zoom),
-                ),
-                iced_core::Image::new(image::Handle::from_rgba(t.w, t.h, t.rgba.clone())),
-            );
+        if let Some(t) = preview {
+            for (x, y, rgba) in t.tiles() {
+                let tl = Point::new(
+                    center.x + (x - doc_half_w) * self.zoom,
+                    center.y + (y - doc_half_h) * self.zoom,
+                );
+                frame.draw_image(
+                    Rectangle::new(
+                        tl,
+                        Size::new(TILE as f32 * self.zoom, TILE as f32 * self.zoom),
+                    ),
+                    iced_core::Image::new(image::Handle::from_rgba(TILE, TILE, rgba.to_vec())),
+                );
+            }
         }
 
         // Repère document dessiné DANS l'espace monde → insensible au zoom,
@@ -596,115 +692,26 @@ pub fn view_with_tool<'a>(
 }
 
 // ---------------------------------------------------------------------------
-// Rastérisation de l'aperçu du trait
+// Rastérisation de l'aperçu du trait (par tuile 512×512)
 // ---------------------------------------------------------------------------
 
-/// Rastérise le segment `from -> to` dans la texture du trait, en agrandissant
-/// la bbox (et le buffer) si nécessaire. Couverture cumulée par MAX d'alpha :
-/// les recouvrements de disques n'assombrissent pas le trait.
+/// Rastérise le segment `from -> to` (coordonnées document) dans l'aperçu.
+/// Les tuiles manquantes sont créées à la volée ; les existantes ne sont
+/// JAMAIS déplacées (grille entière) → zéro dérive de l'aperçu.
 fn rasterize_segment(
     tex: &mut Option<StrokeTex>,
     from: (f32, f32),
     to: (f32, f32),
     brush: &BrushStyle,
 ) {
-    let r = brush.radius.max(0.5);
-    let pad = r + 1.5;
-    let min_x = from.0.min(to.0) - pad;
-    let min_y = from.1.min(to.1) - pad;
-    let max_x = from.0.max(to.0) + pad;
-    let max_y = from.1.max(to.1) + pad;
-
-    match tex {
-        None => {
-            let w = ((max_x - min_x).ceil() as u32).max(1);
-            let h = ((max_y - min_y).ceil() as u32).max(1);
-            let mut t = StrokeTex {
-                x: min_x,
-                y: min_y,
-                w,
-                h,
-                rgba: vec![0; (w * h * 4) as usize],
-            };
-            stamp_segment(&mut t, from, to, brush);
-            *tex = Some(t);
-        }
-        Some(t) => {
-            let grow =
-                min_x < t.x || min_y < t.y || max_x > t.x + t.w as f32 || max_y > t.y + t.h as f32;
-            if !grow {
-                stamp_segment(t, from, to, brush);
-            } else {
-                let nx = min_x.min(t.x);
-                let ny = min_y.min(t.y);
-                let nw = ((max_x.max(t.x + t.w as f32) - nx).ceil() as u32).max(t.w);
-                let nh = ((max_y.max(t.y + t.h as f32) - ny).ceil() as u32).max(t.h);
-                let mut rgba = vec![0u8; (nw * nh * 4) as usize];
-                // Blit des anciennes lignes à leur nouvelle position
-                let dx = (t.x - nx) as usize;
-                let dy = (t.y - ny) as usize;
-                for row in 0..t.h as usize {
-                    let src = row * t.w as usize * 4;
-                    let dst = (row + dy) * nw as usize * 4 + dx * 4;
-                    let len = t.w as usize * 4;
-                    rgba[dst..dst + len].copy_from_slice(&t.rgba[src..src + len]);
-                }
-                let mut nt = StrokeTex {
-                    x: nx,
-                    y: ny,
-                    w: nw,
-                    h: nh,
-                    rgba,
-                };
-                stamp_segment(&mut nt, from, to, brush);
-                *tex = Some(nt);
-            }
-        }
-    }
-}
-
-/// Estampe des disques le long du segment (pas ~ rayon/3 pour un trait continu).
-/// Pinceau = disque plein de la couleur ; gomme = ANNEAU blanc (empreinte,
-/// sans suggérer une couleur de peinture).
-fn stamp_segment(t: &mut StrokeTex, from: (f32, f32), to: (f32, f32), b: &BrushStyle) {
-    let dx = to.0 - from.0;
-    let dy = to.1 - from.1;
-    let dist = (dx * dx + dy * dy).sqrt();
-    let step = (b.radius * 0.35).max(0.5);
-    let n = ((dist / step).ceil() as usize).max(1);
-    if b.erase {
-        // Anneau : épaisseur ~8 % du rayon (min 1.5 px document)
-        let thickness = (b.radius * 0.16).max(1.5);
-        for i in 0..=n {
-            let k = i as f32 / n as f32;
-            stamp_ring(
-                t,
-                from.0 + dx * k - t.x,
-                from.1 + dy * k - t.y,
-                b.radius,
-                thickness,
-                b.opacity,
-            );
-        }
-    } else {
-        for i in 0..=n {
-            let k = i as f32 / n as f32;
-            stamp_circle(
-                t,
-                from.0 + dx * k - t.x,
-                from.1 + dy * k - t.y,
-                b.radius,
-                b.color,
-                b.opacity,
-            );
-        }
-    }
+    let t = tex.get_or_insert_with(StrokeTex::default);
+    t.stamp_segment(from, to, brush);
 }
 
 /// Disque avec bord adouci sur 1 px ; alpha final = couverture x opacité
-fn stamp_circle(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, col: [u8; 3], opacity: f32) {
-    let w = t.w as i64;
-    let h = t.h as i64;
+fn stamp_circle(t: &mut Tile, cx: f32, cy: f32, r: f32, col: [u8; 3], opacity: f32) {
+    let w = TILE as i64;
+    let h = TILE as i64;
     let x0 = ((cx - r - 1.0).floor() as i64).clamp(0, w.saturating_sub(1));
     let y0 = ((cy - r - 1.0).floor() as i64).clamp(0, h.saturating_sub(1));
     let x1 = ((cx + r + 1.0).ceil() as i64).clamp(0, w - 1);
@@ -744,13 +751,12 @@ fn stamp_circle(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, col: [u8; 3], opaci
 /// Anneau blanc semi-transparent : empreinte visuelle de la gomme.
 /// L'intérieur reste TRANSPARENT — on montre OÙ l'effacement aura lieu,
 /// pas une couleur de peinture. Blanc pour rester lisible sur tout fond.
-fn stamp_ring(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, thickness: f32, opacity: f32) {
-    const RING_COL: [u8; 3] = [255, 255, 255];
+fn stamp_ring(t: &mut Tile, cx: f32, cy: f32, r: f32, thickness: f32, col: [u8; 3], opacity: f32) {
     const RING_ALPHA: f32 = 0.85;
     let inner = (r - thickness).max(0.0);
     let outer = r + 1.0; // bord adouci externe 1 px
-    let w = t.w as i64;
-    let h = t.h as i64;
+    let w = TILE as i64;
+    let h = TILE as i64;
     let x0 = ((cx - outer).floor() as i64).clamp(0, w.saturating_sub(1));
     let y0 = ((cy - outer).floor() as i64).clamp(0, h.saturating_sub(1));
     let x1 = ((cx + outer).ceil() as i64).clamp(0, w - 1);
@@ -763,11 +769,17 @@ fn stamp_ring(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, thickness: f32, opaci
             let ddx = px as f32 + 0.5 - cx;
             let ddy = py as f32 + 0.5 - cy;
             let d = (ddx * ddx + ddy * ddy).sqrt();
-            // Couverture du bandeau [inner, r], adouci sur 1 px de chaque côté
+            // Bandeau [inner, r] plein, adouci sur 1 px de chaque côté ;
+            // l'INTÉRIEUR (d < inner-1) reste transparent — l'anneau montre
+            // l'empreinte de la gomme, pas une peinture.
             let cov = if d >= inner && d <= r {
                 255.0
             } else if d < inner {
-                ((inner - d) * 255.0).min(255.0) // fondu interne court
+                if d >= inner - 1.0 {
+                    (d - (inner - 1.0)) * 255.0 // fondu interne court
+                } else {
+                    continue;
+                }
             } else if d < outer {
                 (outer - d) * 255.0
             } else {
@@ -779,11 +791,124 @@ fn stamp_ring(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, thickness: f32, opaci
             }
             let idx = ((py * w + px) * 4) as usize;
             if a > t.rgba[idx + 3] {
-                t.rgba[idx] = RING_COL[0];
-                t.rgba[idx + 1] = RING_COL[1];
-                t.rgba[idx + 2] = RING_COL[2];
+                t.rgba[idx] = col[0];
+                t.rgba[idx + 1] = col[1];
+                t.rgba[idx + 2] = col[2];
                 t.rgba[idx + 3] = a;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alpha_at(tile: &Tile, local_x: u32, local_y: u32) -> u8 {
+        tile.rgba[((local_y * TILE + local_x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn disque_sur_frontiere_de_tuiles_ecrit_dans_les_deux() {
+        let mut tex = StrokeTex::default();
+        // Disque centré sur la frontière x = 512
+        tex.stamp_disc(512.0, 100.0, 20.0, false, [255, 0, 0], 1.0);
+        assert_eq!(tex.tiles.len(), 2, "tuiles (0,0) et (1,0) touchées");
+
+        let right = &tex.tiles.iter().find(|t| t.tx == 1).expect("tuile droite");
+        // Centre du disque : local (0, 100) dans la tuile de droite
+        assert_eq!(alpha_at(right, 0, 100), 255);
+        let left = &tex.tiles.iter().find(|t| t.tx == 0).expect("tuile gauche");
+        // Bord gauche du disque : local (511, 100) dans la tuile de gauche
+        assert!(alpha_at(left, 511, 100) > 0);
+    }
+
+    #[test]
+    fn trait_transfrontalier_sans_limite_de_taille() {
+        // Tracé de (0,0) à (3000, 3000) : dépasse largement l'ancienne
+        // limite atlas de 2048 — chaque tuile reste ≤ 512×512
+        let mut tex = StrokeTex::default();
+        tex.stamp_segment(
+            (0.0, 0.0),
+            (3000.0, 3000.0),
+            &BrushStyle {
+                color: [10, 20, 30],
+                radius: 8.0,
+                opacity: 1.0,
+                erase: false,
+            },
+        );
+        // La diagonale traverse les tuiles (0,0)…(5,5) + voisines touchées
+        // par le rayon du disque
+        assert!(
+            tex.tiles.len() >= 12,
+            "au moins la bande diagonale + voisines"
+        );
+        for d in 0..=5 {
+            assert!(
+                tex.tiles.iter().any(|t| t.tx == d && t.ty == d),
+                "tuile diagonale ({d},{d}) manquante"
+            );
+        }
+        for t in &tex.tiles {
+            assert_eq!(t.rgba.len() as u32, TILE * TILE * 4);
+        }
+        // Point de départ et d'arrivée bien estampés
+        let first = &tex.tiles.iter().find(|t| t.tx == 0 && t.ty == 0).unwrap();
+        assert!(alpha_at(first, 0, 0) > 0);
+        let last = &tex.tiles.iter().find(|t| t.tx == 5 && t.ty == 5).unwrap();
+        // 3000 - 5*512 = 440 : le centre du disque final est en (440,440) local
+        assert!(alpha_at(last, 440, 440) > 0);
+    }
+
+    #[test]
+    fn extension_du_trait_ne_deplace_pas_les_tuiles_existantes() {
+        // Régression du bug de dérive : estampe proche, puis segment loin —
+        // les pixels de la première estampe restent EXACTEMENT en place.
+        let mut tex = StrokeTex::default();
+        tex.stamp_segment(
+            (100.0, 100.0),
+            (110.0, 100.0),
+            &BrushStyle {
+                color: [1, 2, 3],
+                radius: 6.0,
+                opacity: 1.0,
+                erase: false,
+            },
+        );
+        let before = tex.tiles.clone();
+
+        // Segment loin de la première estampe : aucune retouche possible
+        // de la tuile (0,0) — elle doit rester byte-identique.
+        tex.stamp_segment(
+            (1200.0, 1200.0),
+            (1500.0, 900.0),
+            &BrushStyle {
+                color: [1, 2, 3],
+                radius: 6.0,
+                opacity: 1.0,
+                erase: false,
+            },
+        );
+
+        for old in &before {
+            let now = tex
+                .tiles
+                .iter()
+                .find(|t| t.tx == old.tx && t.ty == old.ty)
+                .expect("tuile existante conservée");
+            assert_eq!(old.rgba, now.rgba, "tuile ({},{}) modifiée", old.tx, old.ty);
+        }
+    }
+
+    #[test]
+    fn gomme_produit_un_anneau_interieur_transparent() {
+        let mut tex = StrokeTex::default();
+        tex.stamp_disc(100.0, 100.0, 20.0, true, [255, 255, 255], 1.0);
+        let t = &tex.tiles[0];
+        // Centre : intérieur de l'anneau → transparent
+        assert_eq!(alpha_at(t, 100, 100), 0);
+        // Bande de l'anneau (d ≤ r) : opaque à 85 % (RING_ALPHA)
+        assert_eq!(alpha_at(t, 119, 100), 217);
     }
 }
