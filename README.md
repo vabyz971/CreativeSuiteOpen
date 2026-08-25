@@ -13,7 +13,7 @@ CreativeSuiteOpen est une suite créative (Photo, Vidéo, Audio) construite en *
 
 | App | État | Version |
 |-----|------|---------|
-| **Photo** | Utilisable au quotidien — calques temps réel, GPU | `0.3.0` |
+| **Photo** | Utilisable au quotidien — calques temps réel, GPU, undo/redo, projets | `0.4.0` |
 | **Vidéo** | Fondations (interface) | `0.1.0` |
 | **Audio** | Fondations (interface) | `0.1.0` |
 
@@ -21,7 +21,7 @@ Les versions suivent la maturité fonctionnelle de chaque crate : `0.1.0` = fond
 
 ---
 
-## Fonctionnalités — Photo (`0.3.0`)
+## Fonctionnalités — Photo (`0.4.0`)
 
 ### Système de calques façon Photoshop / Affinity
 - Pile de calques ordonnée : **ajouter, dupliquer, supprimer, réordonner, renommer**
@@ -29,6 +29,10 @@ Les versions suivent la maturité fonctionnelle de chaque crate : `0.1.0` = fond
 - **Opacité appliquée au draw (GPU)** — le slider répond instantanément, zéro régénération de pixels, zéro clignotement
 - **Modes de fusion** : Normal, Multiply, Screen, Overlay, Darken, Lighten
 - Déplacement **par calque en temps réel** (60 fps, zéro recomposite pendant le drag)
+
+### Historique & projet natif (`0.4.0`)
+- **Undo/redo** complet (Ctrl+Z / Ctrl+Y, 50 pas) — snapshots quasi gratuits grâce au partage de pixels, gestes continus (sliders, renommage, drag) coalescés en un seul point de restauration
+- **Format projet `.csphoto`** : enregistrement/ouverture du document (calques, fusion, transforms) — Enregistrer (`Ctrl+S`), Enregistrer sous (`Ctrl+Maj+S`), ouverture projet ou image depuis la même boîte
 
 ### Plan de travail infini
 - Aucun crop : les images peuvent dépasser le document, comme sur les plans de travail pro
@@ -44,7 +48,13 @@ Les versions suivent la maturité fonctionnelle de chaque crate : `0.1.0` = fond
 - Éditeur nodal intégré (panneau dédié) — destiné à la génération de textures et aux filtres appliquables aux calques (en développement)
 
 ### Outils
-Main, Zoom, Sélection rectangulaire, Déplacement, Pipette — barre d'outils flottante masquable (`Tab`)
+Main, Zoom, Sélection rectangulaire, Déplacement, **Pinceau**, **Gomme** (destination-out, aperçu en anneau), Pipette — barre d'outils flottante masquable (`Tab`, raccourcis `B` / `E`)
+
+### Interface
+- Layout à panneaux redimensionnables (Calques, Propriétés, Générateur)
+- Menus complets (Fichier, Édition, Calque, Affichage) avec raccourcis (`Ctrl+O`, `Ctrl+J`, `F7`…)
+- Design system unifié : tokens DESIGN.md + styles canoniques partagés (`ui::style`) — palette d'outils façon macOS
+- Thème sombre cohérent, police Hanken Grotesk, icônes Material
 
 ### Interface
 - Layout à panneaux redimensionnables (Calques, Propriétés, Générateur)
@@ -132,7 +142,7 @@ Les contributions sont **très bienvenues** — c'est un projet jeune, chaque ap
 5. **Pas d'emoji** dans le code ni les commits ; messages de commit courts et descriptifs (`photo: fix blend-mode offset jump`).
 
 ### Idées de contribution
-- Photo : masques de calque, outils pinceau/formes, export (PNG/JPEG), historique undo/redo
+- Photo : masques de calque, formes/sélection, export (PNG/JPEG)
 - Générateur nodal : brancher l'évaluation du graphe sur des textures de calque
 - Video / Audio : faire passer les fondations au stade `0.2.0` (timeline fonctionnelle)
 - Packaging : Flatpak, AppImage, AUR, brew
@@ -143,7 +153,8 @@ Les contributions sont **très bienvenues** — c'est un projet jeune, chaque ap
 ## Feuille de route
 
 - [x] Photo : système de calques temps réel (`0.3.0`)
-- [ ] Photo : masques de calque, pinceau, export
+- [x] Photo : pinceau + gomme, historique undo/redo, projet `.csphoto` (`0.4.0`)
+- [ ] Photo : masques de calque, formes, export (PNG/JPEG)
 - [ ] Générateur nodal : textures générées appliquées aux calques
 - [ ] Vidéo : timeline, montage, preview (`0.2.0` → `0.3.0`)
 - [ ] Audio : mixer, pistes, piano roll

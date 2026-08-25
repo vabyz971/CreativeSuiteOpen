@@ -192,10 +192,6 @@ impl StrokeTex {
             )
         })
     }
-
-    fn is_empty(&self) -> bool {
-        self.tiles.is_empty()
-    }
 }
 
 /// Un calque affichable sur le canvas — dessiné à SA position monde.
