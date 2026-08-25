@@ -12,4 +12,4 @@ ui = { path = "../../ui" }
 suite-core = { path = "../../core/core", package = "suite-core" }
 datatypes = { path = "../../core/datatypes" }
 suite-shell = { path = "../../core/shell" }
-video-engine = { path = "../../core/video-engine" }
+video-engine = { path = "../../engines/video-engine" }
