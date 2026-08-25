@@ -63,7 +63,7 @@ pub struct PhotoApp {
     /// Angle du spinner d'activité (animé par TickFrame)
     pub spinner_angle: f32,
     /// Table de raccourcis clavier (persistée en JSON)
-    pub shortcuts: ui::shortcuts::Shortcuts,
+    pub shortcuts: ui_kit::shortcuts::Shortcuts,
     /// Fenêtre principale — son Id (ouverte au boot)
     pub main_window: Option<iced::window::Id>,
     // ---- Historique (undo/redo) ----
@@ -95,7 +95,7 @@ pub struct PhotoApp {
     /// Section active dans la fenêtre Préférences
     pub prefs_section: components::preferences::PrefsSection,
     /// Capture de touche en cours (action en attente d'un nouveau raccourci)
-    pub capturing: Option<ui::shortcuts::Action>,
+    pub capturing: Option<ui_kit::shortcuts::Action>,
     // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
     pub gen_graph: suite_core::Graph,
     pub gen_selected_node: Option<datatypes::NodeId>,
@@ -157,8 +157,8 @@ impl PhotoApp {
     /// Raccourci clavier → Message applicatif.
     /// SEULE correspondance action ↔ logique : ajouter une action ici la
     /// branche au clavier partout.
-    pub(crate) fn message_for(action: ui::shortcuts::Action) -> Option<Message> {
-        use ui::shortcuts::Action;
+    pub(crate) fn message_for(action: ui_kit::shortcuts::Action) -> Option<Message> {
+        use ui_kit::shortcuts::Action;
         let sel = None; // sélection courante indisponible hors update (abonnement statique)
         match action {
             Action::NewProject => Some(Message::NewProject),
@@ -298,11 +298,11 @@ impl Default for PhotoApp {
             background_tasks: Vec::new(),
             task_menu_open: false,
             spinner_angle: 0.0,
-            shortcuts: ui::shortcuts::Shortcuts::load(),
+            shortcuts: ui_kit::shortcuts::Shortcuts::load(),
             main_window: None,
             history: photo_engine::history::History::new(),
             project_path: None,
-            brush_color: ui::theme::colors::BRUSH_DEFAULT,
+            brush_color: ui_kit::theme::colors::BRUSH_DEFAULT,
             brush_size: 12.0,
             brush_opacity: 1.0,
             color_picker_open: false,

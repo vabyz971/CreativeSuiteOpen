@@ -21,7 +21,7 @@ use crate::Message;
 use crate::layers::Layer;
 use iced::widget::{Space, column, container, row, scrollable, slider, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
-use ui::theme::{colors, fonts};
+use ui_kit::theme::{colors, fonts};
 
 pub fn render<'a>(layer: Option<&'a Layer>) -> Element<'a, Message> {
     let Some(layer) = layer else {
@@ -180,7 +180,7 @@ fn blend_mode_buttons<'a>(layer: &'a Layer) -> Element<'a, Message> {
                     st.background = Some(colors::SURFACE_CONTAINER_HIGH.into());
                     st.text_color = colors::TEXT_SECONDARY;
                 }
-                st.border.radius = ui::theme::metrics::RADIUS_BUTTON.into();
+                st.border.radius = ui_kit::theme::metrics::RADIUS_BUTTON.into();
                 st
             })
             .on_press(Message::SetLayerBlend {
@@ -242,7 +242,7 @@ fn param_slider<'a>(
             .style(|_t| container::Style {
                 background: Some(colors::SURFACE_CONTAINER_HIGH.into()),
                 border: iced::Border {
-                    radius: ui::theme::metrics::RADIUS_BUTTON.into(),
+                    radius: ui_kit::theme::metrics::RADIUS_BUTTON.into(),
                     width: 1.0,
                     color: colors::BORDER_PANEL,
                 },

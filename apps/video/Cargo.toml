@@ -8,8 +8,8 @@ license = "GPL-3.0-or-later"
 [dependencies]
 iced.workspace = true
 iced.features = ["debug"]
-ui = { path = "../../ui" }
+ui-kit = { path = "../../packages/ui-kit" }
 suite-core = { path = "../../core/core", package = "suite-core" }
 datatypes = { path = "../../core/datatypes" }
 suite-shell = { path = "../../core/shell" }
-video-engine = { path = "../../core/video-engine" }
+video-engine = { path = "../../engines/video-engine" }

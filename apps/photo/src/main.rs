@@ -80,6 +80,6 @@ pub fn main() -> iced::Result {
         .font(include_bytes!(
             "../../../assets/fonts/HankenGrotesk-Bold.ttf"
         ))
-        .default_font(ui::theme::fonts::SANS)
+        .default_font(ui_kit::theme::fonts::SANS)
         .run()
 }

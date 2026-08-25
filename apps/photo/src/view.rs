@@ -29,14 +29,14 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
         .map(|(w, h)| iced::Size::new(w as f32, h as f32));
     // Contenu central : barre contextuelle (projet/zoom/export) + workspace
     let menus = app_menus(app.tools_visible, app.selected_layer);
-    let menu_buttons = ui::menu::bar(&menus);
+    let menu_buttons = ui_kit::menu::bar(&menus);
 
     // Bouton spinner façon Final Cut Pro : toujours visible, tourne pendant
     // un traitement en arrière-plan, clic → menu des tâches en cours
     let spinning = !app.background_tasks.is_empty();
     let spinner_btn = iced::widget::button(
         // Canvas 20 px centré dans un bouton 30 px sans padding → pas de crop
-        iced::widget::container(ui::spinner::circle(
+        iced::widget::container(ui_kit::spinner::circle(
             if spinning { app.spinner_angle } else { 0.0 },
             20.0,
         ))
@@ -48,7 +48,7 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     .width(Length::Fixed(30.0))
     .height(Length::Fixed(30.0))
     .padding(0)
-    .style(|_, s| ui::style::ghost(s))
+    .style(|_, s| ui_kit::style::ghost(s))
     .on_press(Message::ToggleTaskMenu);
 
     let task_menu = {
@@ -57,7 +57,7 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
                 iced::widget::container(
                     iced::widget::text("Aucun traitement en cours")
                         .size(12)
-                        .color(ui::theme::colors::TEXT_MUTED),
+                        .color(ui_kit::theme::colors::TEXT_MUTED),
                 )
                 .padding(iced::Padding::new(8.0).left(10.0).right(10.0))
                 .into(),
@@ -69,9 +69,9 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
                     iced::widget::row![
                         iced::widget::text(label)
                             .size(12)
-                            .color(ui::theme::colors::TEXT_PRIMARY),
+                            .color(ui_kit::theme::colors::TEXT_PRIMARY),
                         iced::widget::Space::new().width(Length::Fill),
-                        ui::spinner::circle(app.spinner_angle, 12.0),
+                        ui_kit::spinner::circle(app.spinner_angle, 12.0),
                     ]
                     .align_y(Alignment::Center)
                     .into()
@@ -81,10 +81,10 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
         iced::widget::container(iced::widget::column(items).spacing(2).padding(4))
             .width(Length::Fixed(240.0))
             .style(|_| {
-                ui::style::floating_card(
-                    ui::theme::colors::BG_DROPDOWN,
-                    ui::theme::metrics::RADIUS_DROPDOWN,
-                    ui::theme::shadows::dropdown(),
+                ui_kit::style::floating_card(
+                    ui_kit::theme::colors::BG_DROPDOWN,
+                    ui_kit::theme::metrics::RADIUS_DROPDOWN,
+                    ui_kit::theme::shadows::dropdown(),
                 )
             })
     };
@@ -144,7 +144,7 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             &app.gen_previews,
             app.node_context_menu,
             app.node_context_world,
-            ui::image_canvas::BrushStyle {
+            ui_kit::image_canvas::BrushStyle {
                 color: [
                     (app.brush_color.r * 255.0).clamp(0.0, 255.0) as u8,
                     (app.brush_color.g * 255.0).clamp(0.0, 255.0) as u8,
@@ -161,7 +161,7 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
         )
     ];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
-    let base_layout = ui::shell::minimalist_layout_menus_only(
+    let base_layout = ui_kit::shell::minimalist_layout_menus_only(
         "Creative Suite Open Photo",
         menu_buttons,
         central,
@@ -179,7 +179,7 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
                         .height(Length::Fill)
                 )
                 .style(|_| iced::widget::container::Style {
-                    background: Some(ui::theme::colors::CABLE_SHADOW.into()),
+                    background: Some(ui_kit::theme::colors::CABLE_SHADOW.into()),
                     ..Default::default()
                 })
                 .width(Length::Fill)
@@ -210,7 +210,7 @@ pub fn subscription(app: &PhotoApp) -> Subscription<Message> {
     };
     Subscription::batch([
         tick,
-        ui::shortcuts::subscription(
+        ui_kit::shortcuts::subscription(
             &app.shortcuts,
             app.capturing.is_some(),
             PhotoApp::message_for,

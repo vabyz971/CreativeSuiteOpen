@@ -5,5 +5,5 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-suite-core = { path = "../core", package = "suite-core" }
-datatypes = { path = "../datatypes" }
+suite-core = { path = "../../core/core", package = "suite-core" }
+datatypes = { path = "../../core/datatypes" }

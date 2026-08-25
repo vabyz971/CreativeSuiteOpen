@@ -23,7 +23,7 @@ use iced::widget::{button, row, text};
 use iced::{Alignment, Element, Length, Padding};
 
 pub fn context_bar() -> Element<'static, Message> {
-    let material = ui::icon_button::MATERIAL_ICONS;
+    let material = ui_kit::icon_button::MATERIAL_ICONS;
 
     // Bouton primaire Export (accent #007AFF)
     let export_btn = button(
@@ -35,7 +35,7 @@ pub fn context_bar() -> Element<'static, Message> {
         .align_y(Alignment::Center),
     )
     .padding(Padding::new(6.0).left(14.0).right(14.0))
-    .style(|_, s| ui::style::primary(s))
+    .style(|_, s| ui_kit::style::primary(s))
     .on_press(Message::MockAction);
 
     row![iced::widget::Space::new().width(Length::Fill), export_btn,]

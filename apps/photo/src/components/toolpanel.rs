@@ -21,7 +21,7 @@
 use crate::{Message, Tool};
 use iced::widget::column;
 use iced::{Alignment, Element};
-use ui::icon_button;
+use ui_kit::icon_button;
 
 // Codepoints Material Icons - pas d'emoji en dur, police professionnelle
 // Voir https://fonts.google.com/icons - Material Icons Regular
