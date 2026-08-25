@@ -257,23 +257,22 @@ impl PhotoApp {
 
 impl Default for PhotoApp {
     fn default() -> Self {
-        // Layout : Canvas à gauche, à droite Propriétés (haut) + Calques (bas)
+        // Layout : Canvas à gauche, à droite Calques (bas) + Propriétés (haut).
+        // split() ne peut échouer que si le pane source n'existe pas ; en
+        // cas d'imprévu on garde simplement le pane unique (pas de panic).
         let (mut panes, canvas_pane) = pane_grid::State::new(PanelType::Canvas);
-
-        let (right_pane, _split_canvas_right) = panes
-            .split(pane_grid::Axis::Vertical, canvas_pane, PanelType::Layers)
-            .expect("Erreur lors de l'ajout du panneau Calques");
-
-        let (_props_pane, _split_right_panel) = panes
-            .split(
+        if let Some((right_pane, split_canvas_right)) =
+            panes.split(pane_grid::Axis::Vertical, canvas_pane, PanelType::Layers)
+        {
+            panes.resize(split_canvas_right, 0.74);
+            if let Some((_props_pane, split_right_panel)) = panes.split(
                 pane_grid::Axis::Horizontal,
                 right_pane,
                 PanelType::Properties,
-            )
-            .expect("Erreur lors de l'ajout des Propriétés");
-
-        panes.resize(_split_canvas_right, 0.74);
-        panes.resize(_split_right_panel, 0.55);
+            ) {
+                panes.resize(split_right_panel, 0.55);
+            }
+        }
 
         Self {
             zoom_level: 100,

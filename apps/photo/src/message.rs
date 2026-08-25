@@ -217,6 +217,10 @@ pub enum Message {
         layer_id: u64,
         buf: photo_engine::paint::StrokeCommit,
     },
+    /// Le worker de peinture a échoué : retire l'aperçu figé sans panic
+    PaintFailed {
+        layer_id: u64,
+    },
     SetBrushColor(Color),
     SetBrushSize(f32),
     SetBrushOpacity(f32),

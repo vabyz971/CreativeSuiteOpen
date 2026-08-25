@@ -245,11 +245,25 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                             )
                         })
                         .await
-                        .expect("worker paint")
                     },
-                    move |buf| Message::PaintApplied { layer_id: id, buf },
+                    move |result| match result {
+                        Ok(buf) => Message::PaintApplied { layer_id: id, buf },
+                        Err(_) => Message::PaintFailed { layer_id: id },
+                    },
                 );
             }
+        }
+        Message::PaintFailed { layer_id } => {
+            // Le worker a paniqué (JoinError) : on retire l'aperçu figé et
+            // on signale, sans jamais interrompre l'application.
+            if app
+                .pending_paint
+                .as_ref()
+                .is_some_and(|p| p.layer_id == layer_id)
+            {
+                app.pending_paint = None;
+            }
+            app.image_error = Some("Échec interne lors de l'application du trait".into());
         }
         Message::PaintApplied { layer_id, buf } => {
             if let Some(layer) = app.layers.iter_mut().find(|l| l.id == layer_id)
