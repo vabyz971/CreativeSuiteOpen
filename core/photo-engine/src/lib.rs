@@ -15,17 +15,20 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Photo Engine — logique métier Photo extraite de apps/photo
+//! PUR : aucune dépendance UI (les buffers sont convertis côté app).
 //! Utilise suite-core + datatypes, exposé à shell et aux apps
 
 pub mod document;
 pub mod gpu;
+pub mod history;
 pub mod nodes;
 pub mod paint;
 pub mod processor;
+pub mod project;
 pub mod registry;
 
 pub use gpu::GpuContext;
-pub use processor::{evaluate, evaluate_incremental, evaluate_with_cache, to_handle};
+pub use processor::{evaluate, evaluate_incremental, evaluate_with_cache};
 pub use registry::{
     all_definitions, create_empty_graph, create_minimal_graph, create_node_for_type, definition_for,
 };

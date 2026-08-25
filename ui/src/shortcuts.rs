@@ -67,6 +67,7 @@ pub enum Action {
     // Outils
     ToolHand,
     ToolBrush,
+    ToolEraser,
 }
 
 impl Action {
@@ -100,6 +101,7 @@ impl Action {
             Action::FitToScreen => "fit_to_screen",
             Action::ToolHand => "tool_hand",
             Action::ToolBrush => "tool_brush",
+            Action::ToolEraser => "tool_eraser",
         }
     }
 
@@ -132,6 +134,7 @@ impl Action {
             "fit_to_screen" => Action::FitToScreen,
             "tool_hand" => Action::ToolHand,
             "tool_brush" => Action::ToolBrush,
+            "tool_eraser" => Action::ToolEraser,
             _ => return None,
         })
     }
@@ -166,6 +169,7 @@ impl Action {
             Action::FitToScreen => "Ajuster à l'écran",
             Action::ToolHand => "Outil Main",
             Action::ToolBrush => "Outil Pinceau",
+            Action::ToolEraser => "Outil Gomme",
         }
     }
 
@@ -191,7 +195,7 @@ impl Action {
             | Action::ResetTransform
             | Action::CropToSelection => "Calque",
             Action::ZoomIn | Action::ZoomOut | Action::FitToScreen => "Vue",
-            Action::ToolHand | Action::ToolBrush => "Outils",
+            Action::ToolHand | Action::ToolBrush | Action::ToolEraser => "Outils",
         }
     }
 
@@ -225,6 +229,7 @@ impl Action {
             Action::FitToScreen,
             Action::ToolHand,
             Action::ToolBrush,
+            Action::ToolEraser,
         ]
         .into();
         all.sort_by_key(|a| (a.category(), a.label()));
@@ -334,6 +339,7 @@ fn default_bindings() -> Vec<(Action, Binding)> {
         // Outils
         (ToolHand, Binding::new("space", false, false, false)),
         (ToolBrush, Binding::new("b", false, false, false)),
+        (ToolEraser, Binding::new("e", false, false, false)),
         // Sans raccourci par défaut (dangereux ou rare) :
         // LayerDelete, LayerMoveUp/Down, Rotate*, ResetTransform,
         // CropToSelection, Preferences — assignables dans les préférences.

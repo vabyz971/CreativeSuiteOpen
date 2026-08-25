@@ -19,8 +19,8 @@ use crate::layers::Layer;
 use crate::{Message, PanelType, Tool};
 use datatypes::NodeId;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{Space, button, column, container, image, text};
-use iced::{Alignment, Element, Length, Size, Vector};
+use iced::widget::{Space, column, container, image, text};
+use iced::{Element, Length, Size, Vector};
 use suite_core::Graph;
 use ui::base_panel;
 use ui::dropdown::{dropdown_box, menu_item, menu_separator};
@@ -31,6 +31,7 @@ pub fn render<'a>(
     panes: &'a pane_grid::State<PanelType>,
     focus: Option<pane_grid::Pane>,
     layers: &'a [Layer],
+    preview_cache: &'a crate::ui_handles::PreviewCache,
     selected_layer: Option<u64>,
     doc_size: Option<Size>,
     fallback_handle: Option<image::Handle>,
@@ -41,7 +42,7 @@ pub fn render<'a>(
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
     image_path: Option<String>,
-    image_error: Option<String>,
+    image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
     tools_visible: bool,
     canvas_pan: Vector,
@@ -87,6 +88,7 @@ pub fn render<'a>(
                     drag_background.clone(),
                     drag_background_size,
                     layers,
+                    preview_cache,
                     doc_size,
                     image_error.clone(),
                     selected_tool,
@@ -119,7 +121,7 @@ pub fn render<'a>(
             }
             PanelType::Layers => (
                 "Calques".to_string(),
-                layers_panel::render(layers, selected_layer),
+                layers_panel::render(layers, preview_cache, selected_layer),
             ),
             PanelType::Generator => {
                 let g_clone = gen_graph.clone();
@@ -247,8 +249,9 @@ fn render_canvas_preview<'a>(
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
     layers: &'a [Layer],
+    preview_cache: &'a crate::ui_handles::PreviewCache,
     doc_size: Option<Size>,
-    image_error: Option<String>,
+    image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
     selected_layer: Option<u64>,
     tools_visible: bool,
@@ -271,6 +274,7 @@ fn render_canvas_preview<'a>(
         Tool::Select => ui::image_canvas::CanvasTool::Select,
         Tool::Eyedropper => ui::image_canvas::CanvasTool::Select,
         Tool::Brush => ui::image_canvas::CanvasTool::Brush,
+        Tool::Eraser => ui::image_canvas::CanvasTool::Eraser,
     };
     // Calques canvas : texture + offset + opacité appliqués AU DRAW (GPU)
     // → slider d'opacité = zéro régénération de pixels, zéro clignotement
@@ -281,10 +285,12 @@ fn render_canvas_preview<'a>(
         // En drag fallback : le calque déplacé est exclu du fond (il est
         // dessiné par-dessus le fond pré-calculé, voir plus bas)
         .filter(|l| !(dragging && drag_background.is_some() && Some(l.id) == drag_layer))
-        .map(|l| {
+        // Handle issu du cache (identité stable → cache de textures GPU)
+        .filter_map(|l| {
+            let handle = preview_cache.preview(l.id)?.clone();
             let (w, h) = l.dimensions();
-            ui::image_canvas::CanvasLayer {
-                handle: l.handle.clone(),
+            Some(ui::image_canvas::CanvasLayer {
+                handle,
                 width: w as f32,
                 height: h as f32,
                 offset_x: l.offset_x,
@@ -292,7 +298,7 @@ fn render_canvas_preview<'a>(
                 opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
                 rotation_deg: l.rotation,
                 scale: l.scale,
-            }
+            })
         })
         .collect();
 
@@ -326,13 +332,14 @@ fn render_canvas_preview<'a>(
         && has_drag_bg
         && let Some(l) = drag_layer.and_then(|id| layers.iter().find(|l| l.id == id))
         && l.visible
+        && let Some(handle) = preview_cache.preview(l.id).cloned()
     {
         // Uniquement en fallback : le fond pré-calculé exclut ce calque,
         // on le dessine par-dessus. En chemin rapide il est DÉJÀ dans
         // canvas_layers — le push ici le dessinerait deux fois.
         let (w, h) = l.dimensions();
         canvas_layers.push(ui::image_canvas::CanvasLayer {
-            handle: l.handle.clone(),
+            handle,
             width: w as f32,
             height: h as f32,
             offset_x: l.offset_x,

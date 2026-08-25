@@ -49,6 +49,7 @@ pub fn render<'a>(
 ) -> Element<'a, Message> {
     let content: Element<'a, Message> = match tool {
         Tool::Brush => brush_section(brush_color, brush_size, brush_opacity, color_picker_open),
+        Tool::Eraser => eraser_section(brush_size, brush_opacity),
         Tool::Move => move_section(selected_layer, selected_scale_percent, has_selection),
         _ => {
             // Aucun réglage pour cet outil : hauteur nulle
@@ -148,6 +149,41 @@ fn brush_section<'a>(
         field_label("Pinceau"),
         separator(),
         color_circle,
+        separator(),
+        size_slider,
+        opacity_slider,
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .padding(Padding::new(5.0))
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Section GOMME : taille + opacité (pas de couleur — efface l'alpha)
+// ---------------------------------------------------------------------------
+
+fn eraser_section<'a>(brush_size: f32, brush_opacity: f32) -> Element<'a, Message> {
+    let size_slider = row![
+        field_label("Taille"),
+        iced::widget::slider(1.0..=200.0, brush_size, Message::SetBrushSize)
+            .width(Length::Fixed(110.0)),
+        value_label(format!("{:.0}", brush_size)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let opacity_slider = row![
+        field_label("Opacité"),
+        iced::widget::slider(0.05..=1.0, brush_opacity, Message::SetBrushOpacity)
+            .width(Length::Fixed(90.0)),
+        value_label(format!("{:.0}%", brush_opacity * 100.0)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    row![
+        field_label("Gomme"),
         separator(),
         size_slider,
         opacity_slider,

@@ -14,33 +14,47 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Peinture destructive sur calque : rastérisation d'un trait de pinceau.
+//! Peinture destructive sur calque : rastérisation d'un trait de pinceau
+//! ou de gomme.
 //!
 //! Le trait est tamponné dans un masque de couverture (évite le
-//! assombrissement aux recouvrements), puis composé sur la base en
-//! source-over avec une opacité uniforme — comme un vrai coup de pinceau.
+//! assombrissement aux recouvrements), puis composé sur la base :
+//! - [`StrokeMode::Paint`] : source-over avec opacité uniforme — comme un
+//!   vrai coup de pinceau
+//! - [`StrokeMode::Erase`] : destination-out — réduit l'alpha des pixels
+//!   visés sans toucher à leur couleur
+
+/// Ce que fait le trait sur les pixels du calque.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrokeMode {
+    /// Peint la couleur du pinceau (source-over)
+    Paint,
+    /// Efface : réduit l'alpha proportionnellement à l'opacité du trait
+    Erase,
+}
+
+/// Réglages d'un outil à trait (pinceau ou gomme).
+#[derive(Clone, Copy, Debug)]
+pub struct BrushParams {
+    /// Rayon en pixels CALQUE
+    pub radius: f32,
+    /// Couleur RGB (ignorée en mode Erase)
+    pub color: [u8; 3],
+    /// Opacité globale du trait [0..1] (les recouvrements internes ne
+    /// s'accumulent PAS — un seul composite à la fin)
+    pub opacity: f32,
+    pub mode: StrokeMode,
+}
 
 /// Rastérise un trait dans un tampon RGBA8 (w×h, espace CALQUE en pixels).
 ///
 /// * `points` : polyligne en coordonnées calque (centre du pixel (0,0) = 0.0)
-/// * `radius` : rayon du pinceau en pixels calque
-/// * `color`  : RGB du pinceau
-/// * `opacity`: opacité globale du trait [0..1] (les recouvrements internes
-///   ne s'accumulent PAS — un seul composite à la fin)
-pub fn paint_stroke_rgba(
-    rgba: &mut [u8],
-    w: u32,
-    h: u32,
-    points: &[(f32, f32)],
-    radius: f32,
-    color: [u8; 3],
-    opacity: f32,
-) {
-    if points.is_empty() || w == 0 || h == 0 || radius <= 0.0 || opacity <= 0.0 {
+pub fn paint_stroke_rgba(rgba: &mut [u8], w: u32, h: u32, points: &[(f32, f32)], b: &BrushParams) {
+    if points.is_empty() || w == 0 || h == 0 || b.radius <= 0.0 || b.opacity <= 0.0 {
         return;
     }
-    let opacity = opacity.clamp(0.0, 1.0);
-    let radius = radius.max(0.5);
+    let opacity = b.opacity.clamp(0.0, 1.0);
+    let radius = b.radius.max(0.5);
 
     // --- Bounding box du trait (limité au calque) ---
     let pad = radius.ceil() + 1.0;
@@ -103,9 +117,9 @@ pub fn paint_stroke_rgba(
         prev = p;
     }
 
-    // --- Composite source-over avec opacité uniforme ---
+    // --- Composite selon le mode ---
     let a_paint = opacity;
-    let (cr, cg, cb) = (color[0] as f32, color[1] as f32, color[2] as f32);
+    let (cr, cg, cb) = (b.color[0] as f32, b.color[1] as f32, b.color[2] as f32);
     for my in 0..bh as u32 {
         for mx in 0..bw as u32 {
             let cov = mask[my as usize * bw + mx as usize] as f32 / 255.0;
@@ -116,43 +130,64 @@ pub fn paint_stroke_rgba(
             let x = bx0 + mx;
             let y = by0 + my;
             let idx = ((y as usize * w as usize) + x as usize) * 4;
-            let sr = rgba[idx] as f32;
-            let sg = rgba[idx + 1] as f32;
-            let sb = rgba[idx + 2] as f32;
             let sa = rgba[idx + 3] as f32 / 255.0;
-            // source-over : out = src*a + dst*(1-a)
-            let out_a = a + sa * (1.0 - a);
-            if out_a <= 0.0 {
-                continue;
+            match b.mode {
+                StrokeMode::Paint => {
+                    let sr = rgba[idx] as f32;
+                    let sg = rgba[idx + 1] as f32;
+                    let sb = rgba[idx + 2] as f32;
+                    // source-over : out = src*a + dst*(1-a)
+                    let out_a = a + sa * (1.0 - a);
+                    if out_a <= 0.0 {
+                        continue;
+                    }
+                    rgba[idx] = ((cr * a + sr * sa * (1.0 - a)) / out_a)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                    rgba[idx + 1] = ((cg * a + sg * sa * (1.0 - a)) / out_a)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                    rgba[idx + 2] = ((cb * a + sb * sa * (1.0 - a)) / out_a)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                    rgba[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+                StrokeMode::Erase => {
+                    // destination-out : l'alpha est réduit, la couleur reste
+                    // valide (pixels droits — RGB inchangé quand alpha baisse).
+                    let out_a = sa * (1.0 - a);
+                    rgba[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
             }
-            rgba[idx] = ((cr * a + sr * sa * (1.0 - a)) / out_a)
-                .round()
-                .clamp(0.0, 255.0) as u8;
-            rgba[idx + 1] = ((cg * a + sg * sa * (1.0 - a)) / out_a)
-                .round()
-                .clamp(0.0, 255.0) as u8;
-            rgba[idx + 2] = ((cb * a + sb * sa * (1.0 - a)) / out_a)
-                .round()
-                .clamp(0.0, 255.0) as u8;
-            rgba[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
 }
 
 /// Résultat d'un commit de trait : buffers prêts pour la couche UI
 /// (aucun calcul lourd restant côté interface).
+#[derive(Clone)]
 pub struct StrokeCommit {
     /// Pixels calque complets (w×h RGBA8)
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
-    /// Aperçu interactif (≤2048 px) prêt pour `Handle::from_rgba`
-    pub preview: (u32, u32, Vec<u8>),
-    /// Miniature 48×32 prête pour `Handle::from_rgba`
-    pub thumb: (u32, u32, Vec<u8>),
+    /// Aperçu interactif (≤2048 px) — buffer pur, conversion UI côté app
+    pub preview: crate::document::RgbaBuf,
+    /// Miniature 48×32 — buffer pur
+    pub thumb: crate::document::RgbaBuf,
 }
 
-/// Travail LOURD d'un coup de pinceau — à exécuter HORS thread UI
+impl std::fmt::Debug for StrokeCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Pixels omis volontairement (buffers volumineux)
+        f.debug_struct("StrokeCommit")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+
+/// Travail LOURD d'un coup de pinceau/gomme — à exécuter HORS thread UI
 /// (`Task::perform`) : copie du buffer, rastérisation, aperçu, miniature.
 ///
 /// * `base`      : image source du calque (Arc partagé, non modifiée)
@@ -164,9 +199,7 @@ pub fn commit_stroke(
     offset: (f32, f32),
     scale: f32,
     rotation_deg: f32,
-    radius: f32,
-    color: [u8; 3],
-    opacity: f32,
+    brush: &BrushParams,
 ) -> StrokeCommit {
     use ::image::GenericImageView;
     let (lw, lh) = base.dimensions();
@@ -189,7 +222,7 @@ pub fn commit_stroke(
         .collect();
 
     let mut rgba = base.to_rgba8().into_raw();
-    paint_stroke_rgba(&mut rgba, lw, lh, &pts, radius, color, opacity);
+    paint_stroke_rgba(&mut rgba, lw, lh, &pts, brush);
     let painted = ::image::DynamicImage::ImageRgba8(
         ::image::RgbaImage::from_raw(lw, lh, rgba.clone()).expect("taille inchangée"),
     );
@@ -198,8 +231,8 @@ pub fn commit_stroke(
         width: lw,
         height: lh,
         rgba,
-        preview: crate::document::preview_bytes(&painted),
-        thumb: crate::document::thumb_bytes(&painted),
+        preview: crate::document::preview_buf(&painted),
+        thumb: crate::document::thumb_buf(&painted),
     }
 }
 
@@ -217,9 +250,12 @@ mod tests {
             w,
             h,
             &[(4.0, 8.0), (12.0, 8.0)],
-            2.0,
-            [255, 0, 0],
-            1.0,
+            &BrushParams {
+                radius: 2.0,
+                color: [255, 0, 0],
+                opacity: 1.0,
+                mode: StrokeMode::Paint,
+            },
         );
         // Centre du trait : rouge opaque
         let idx = ((8 * w + 8) * 4) as usize;
@@ -234,9 +270,87 @@ mod tests {
         let w = 8u32;
         let h = 8u32;
         let mut rgba = vec![255u8; (w * h * 4) as usize];
-        paint_stroke_rgba(&mut rgba, w, h, &[(4.0, 4.0)], 2.0, [0, 0, 0], 0.5);
+        paint_stroke_rgba(
+            &mut rgba,
+            w,
+            h,
+            &[(4.0, 4.0)],
+            &BrushParams {
+                radius: 2.0,
+                color: [0, 0, 0],
+                opacity: 0.5,
+                mode: StrokeMode::Paint,
+            },
+        );
         let idx = ((4 * w + 4) * 4) as usize;
         assert_eq!(rgba[idx], 128); // mélange 50/50
         assert_eq!(rgba[idx + 3], 255); // fond opaque préservé
+    }
+
+    #[test]
+    fn gomme_opaque_efface_le_centre_preserve_les_bords() {
+        let w = 16u32;
+        let h = 16u32;
+        let mut rgba = vec![255u8; (w * h * 4) as usize]; // blanc opaque
+        paint_stroke_rgba(
+            &mut rgba,
+            w,
+            h,
+            &[(8.0, 8.0)],
+            &BrushParams {
+                radius: 3.0,
+                color: [0, 0, 0],
+                opacity: 1.0,
+                mode: StrokeMode::Erase,
+            },
+        );
+        let centre = ((8 * w + 8) * 4) as usize;
+        assert_eq!(rgba[centre + 3], 0); // alpha effacé
+        assert_eq!(rgba[centre], 255); // RGB inchangé (droits)
+        let coin = ((0 * w + 0) * 4) as usize;
+        assert_eq!(rgba[coin + 3], 255); // hors trait : intact
+    }
+
+    #[test]
+    fn gomme_50_reduit_alpha_de_moitie() {
+        let w = 8u32;
+        let h = 8u32;
+        let mut rgba = vec![200u8; (w * h * 4) as usize];
+        paint_stroke_rgba(
+            &mut rgba,
+            w,
+            h,
+            &[(4.0, 4.0)],
+            &BrushParams {
+                radius: 2.0,
+                color: [0, 0, 0],
+                opacity: 0.5,
+                mode: StrokeMode::Erase,
+            },
+        );
+        let idx = ((4 * w + 4) * 4) as usize;
+        assert!((rgba[idx + 3] as i16 - 100).abs() <= 1); // 200 → ≈100
+        assert_eq!(rgba[idx], 200); // couleur préservée
+    }
+
+    #[test]
+    fn gomme_sur_pixel_deja_transparent_sans_effet_bord() {
+        let w = 8u32;
+        let h = 8u32;
+        let mut rgba = vec![0u8; (w * h * 4) as usize]; // tout transparent
+        paint_stroke_rgba(
+            &mut rgba,
+            w,
+            h,
+            &[(4.0, 4.0)],
+            &BrushParams {
+                radius: 2.0,
+                color: [9, 9, 9],
+                opacity: 1.0,
+                mode: StrokeMode::Erase,
+            },
+        );
+        // Rien ne peut devenir opaque ni coloré par une gomme
+        assert!(rgba.iter().all(|&v| v == 0));
     }
 }

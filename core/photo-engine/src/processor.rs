@@ -189,10 +189,3 @@ fn valid_base(
         .map(|(id, img)| (*id, img.clone()))
         .collect()
 }
-
-/// Convertit une DynamicImage en Handle natif iced (texture GPU).
-pub fn to_handle(img: &DynamicImage) -> iced::widget::image::Handle {
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw())
-}

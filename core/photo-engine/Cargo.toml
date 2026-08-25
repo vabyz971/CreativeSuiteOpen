@@ -12,4 +12,6 @@ rayon = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 pollster = { workspace = true }
-iced = { workspace = true, features = ["image"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"

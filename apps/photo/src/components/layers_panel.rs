@@ -36,7 +36,11 @@ const ICON_DOWN: &str = "\u{e313}"; // arrow_downward
 const ICON_VISIBLE: &str = "\u{e8f4}"; // visibility
 const ICON_HIDDEN: &str = "\u{e8f5}"; // visibility_off
 
-pub fn render<'a>(layers: &'a [Layer], selected: Option<u64>) -> Element<'a, Message> {
+pub fn render<'a>(
+    layers: &'a [Layer],
+    preview_cache: &'a crate::ui_handles::PreviewCache,
+    selected: Option<u64>,
+) -> Element<'a, Message> {
     let sel_layer = selected.and_then(|id| layers.iter().find(|l| l.id == id));
 
     // --- En-tête : mode de fusion + opacité ---
@@ -112,7 +116,7 @@ pub fn render<'a>(layers: &'a [Layer], selected: Option<u64>) -> Element<'a, Mes
     // --- Liste des calques (haut de la pile affiché en premier) ---
     let mut list = column![].spacing(2).padding(6);
     for layer in layers.iter().rev() {
-        list = list.push(layer_row(layer, Some(layer.id) == selected));
+        list = list.push(layer_row(layer, preview_cache, Some(layer.id) == selected));
     }
     let list_view: Element<'_, Message> = if layers.is_empty() {
         container(
@@ -216,7 +220,11 @@ pub fn render<'a>(layers: &'a [Layer], selected: Option<u64>) -> Element<'a, Mes
         .into()
 }
 
-fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
+fn layer_row<'a>(
+    layer: &'a Layer,
+    preview_cache: &'a crate::ui_handles::PreviewCache,
+    is_selected: bool,
+) -> Element<'a, Message> {
     let material = ui::icon_button::MATERIAL_ICONS;
     let id = layer.id;
 
@@ -247,8 +255,13 @@ fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
     })
     .on_press(Message::ToggleLayerVisible(id));
 
+    // Cache synchronisé après chaque update ; repli neutre si absent
+    let thumb_handle = preview_cache
+        .thumb(layer.id)
+        .cloned()
+        .unwrap_or_else(|| iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]));
     let thumb_bg = container(
-        image(layer.thumb.clone())
+        image(thumb_handle)
             .width(Length::Fixed(48.0))
             .height(Length::Fixed(32.0)),
     )

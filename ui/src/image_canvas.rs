@@ -32,6 +32,8 @@ pub enum CanvasTool {
     Move,
     /// Pinceau : peint sur le calque sélectionné
     Brush,
+    /// Gomme : efface (réduit l'alpha) sur le calque sélectionné
+    Eraser,
 }
 
 #[derive(Debug, Clone)]
@@ -57,27 +59,33 @@ pub enum ImageCanvasEvent {
     },
     /// Fin du déplacement — valide le décalage
     MoveLayerEnd,
-    /// Début d'un trait de pinceau (coordonnées document)
+    /// Début d'un trait (coordonnées document) — pinceau ou gomme
     BrushStart {
         x: f32,
         y: f32,
+        /// true = gomme (destination-out), false = pinceau
+        erase: bool,
     },
     /// Fin du trait — polyligne (commit pixels) + texture d'aperçu figée
     /// jusqu'à l'application effective des pixels.
     BrushEnd {
         points: Vec<(f32, f32)>,
         tex: Option<StrokeTex>,
+        /// true = gomme (destination-out), false = pinceau
+        erase: bool,
     },
 }
 
-/// Style du pinceau pour l'aperçu live (espace document).
+/// Style du pinceau/gomme pour l'aperçu live (espace document).
 #[derive(Clone, Copy, Debug)]
 pub struct BrushStyle {
-    /// Couleur RGB 0-255
+    /// Couleur RGB 0-255 (ignorée pour la gomme : aperçu en anneau)
     pub color: [u8; 3],
     /// Rayon en pixels DOCUMENT (= taille / 2)
     pub radius: f32,
     pub opacity: f32,
+    /// true = gomme → l'aperçu est un ANNEAU (empreinte) au lieu du disque
+    pub erase: bool,
 }
 
 /// Texture RGBA de l'aperçu d'un trait — bbox en coordonnées document.
@@ -143,6 +151,7 @@ impl ImageCanvas {
                 color: [30, 30, 34],
                 radius: 6.0,
                 opacity: 1.0,
+                erase: false,
             },
             pending_preview: None,
         }
@@ -284,11 +293,12 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         canvas::Action::publish(ImageCanvasEvent::MoveLayerEnd).and_capture(),
                     );
                 }
-                if self.tool == CanvasTool::Brush {
+                if self.tool == CanvasTool::Brush || self.tool == CanvasTool::Eraser {
                     let points = std::mem::take(&mut state.stroke);
                     let tex = state.stroke_tex.take();
+                    let erase = self.tool == CanvasTool::Eraser;
                     return Some(
-                        canvas::Action::publish(ImageCanvasEvent::BrushEnd { points, tex })
+                        canvas::Action::publish(ImageCanvasEvent::BrushEnd { points, tex, erase })
                             .and_capture(),
                     );
                 }
@@ -313,15 +323,17 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                             canvas::Action::publish(ImageCanvasEvent::MoveLayerStart).and_capture(),
                         )
                     }
-                    CanvasTool::Brush => {
+                    CanvasTool::Brush | CanvasTool::Eraser => {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
                         state.stroke = vec![(doc.x, doc.y)];
                         state.stroke_tex = None;
                         state.dragging = Some((cursor_pos, self.pan));
+                        let erase = self.tool == CanvasTool::Eraser;
                         Some(
                             canvas::Action::publish(ImageCanvasEvent::BrushStart {
                                 x: doc.x,
                                 y: doc.y,
+                                erase,
                             })
                             .and_capture(),
                         )
@@ -353,7 +365,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                             dx,
                             dy,
                         }));
-                    } else if self.tool == CanvasTool::Brush {
+                    } else if self.tool == CanvasTool::Brush || self.tool == CanvasTool::Eraser {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
                         let last = *state.stroke.last().unwrap_or(&(doc.x, doc.y));
                         let dist = ((doc.x - last.0).powi(2) + (doc.y - last.1).powi(2)).sqrt();
@@ -559,7 +571,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             return match self.tool {
                 CanvasTool::Hand => mouse::Interaction::Grab,
                 CanvasTool::Move => mouse::Interaction::Move,
-                CanvasTool::Brush => mouse::Interaction::Crosshair,
+                CanvasTool::Brush | CanvasTool::Eraser => mouse::Interaction::Crosshair,
                 CanvasTool::Zoom => mouse::Interaction::ZoomIn,
                 CanvasTool::Select => mouse::Interaction::Crosshair,
             };
@@ -659,23 +671,41 @@ fn rasterize_segment(
     }
 }
 
-/// Estampe des disques le long du segment (pas ~ rayon/3 pour un trait continu)
+/// Estampe des disques le long du segment (pas ~ rayon/3 pour un trait continu).
+/// Pinceau = disque plein de la couleur ; gomme = ANNEAU blanc (empreinte,
+/// sans suggérer une couleur de peinture).
 fn stamp_segment(t: &mut StrokeTex, from: (f32, f32), to: (f32, f32), b: &BrushStyle) {
     let dx = to.0 - from.0;
     let dy = to.1 - from.1;
     let dist = (dx * dx + dy * dy).sqrt();
     let step = (b.radius * 0.35).max(0.5);
     let n = ((dist / step).ceil() as usize).max(1);
-    for i in 0..=n {
-        let k = i as f32 / n as f32;
-        stamp_circle(
-            t,
-            from.0 + dx * k - t.x,
-            from.1 + dy * k - t.y,
-            b.radius,
-            b.color,
-            b.opacity,
-        );
+    if b.erase {
+        // Anneau : épaisseur ~8 % du rayon (min 1.5 px document)
+        let thickness = (b.radius * 0.16).max(1.5);
+        for i in 0..=n {
+            let k = i as f32 / n as f32;
+            stamp_ring(
+                t,
+                from.0 + dx * k - t.x,
+                from.1 + dy * k - t.y,
+                b.radius,
+                thickness,
+                b.opacity,
+            );
+        }
+    } else {
+        for i in 0..=n {
+            let k = i as f32 / n as f32;
+            stamp_circle(
+                t,
+                from.0 + dx * k - t.x,
+                from.1 + dy * k - t.y,
+                b.radius,
+                b.color,
+                b.opacity,
+            );
+        }
     }
 }
 
@@ -713,6 +743,53 @@ fn stamp_circle(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, col: [u8; 3], opaci
                 t.rgba[idx] = col[0];
                 t.rgba[idx + 1] = col[1];
                 t.rgba[idx + 2] = col[2];
+                t.rgba[idx + 3] = a;
+            }
+        }
+    }
+}
+
+/// Anneau blanc semi-transparent : empreinte visuelle de la gomme.
+/// L'intérieur reste TRANSPARENT — on montre OÙ l'effacement aura lieu,
+/// pas une couleur de peinture. Blanc pour rester lisible sur tout fond.
+fn stamp_ring(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, thickness: f32, opacity: f32) {
+    const RING_COL: [u8; 3] = [255, 255, 255];
+    const RING_ALPHA: f32 = 0.85;
+    let inner = (r - thickness).max(0.0);
+    let outer = r + 1.0; // bord adouci externe 1 px
+    let w = t.w as i64;
+    let h = t.h as i64;
+    let x0 = ((cx - outer).floor() as i64).clamp(0, w.saturating_sub(1));
+    let y0 = ((cy - outer).floor() as i64).clamp(0, h.saturating_sub(1));
+    let x1 = ((cx + outer).ceil() as i64).clamp(0, w - 1);
+    let y1 = ((cy + outer).ceil() as i64).clamp(0, h - 1);
+    if w == 0 || h == 0 {
+        return;
+    }
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let ddx = px as f32 + 0.5 - cx;
+            let ddy = py as f32 + 0.5 - cy;
+            let d = (ddx * ddx + ddy * ddy).sqrt();
+            // Couverture du bandeau [inner, r], adouci sur 1 px de chaque côté
+            let cov = if d >= inner && d <= r {
+                255.0
+            } else if d < inner {
+                ((inner - d) * 255.0).min(255.0) // fondu interne court
+            } else if d < outer {
+                (outer - d) * 255.0
+            } else {
+                continue;
+            };
+            let a = ((cov * opacity.clamp(0.0, 1.0) * RING_ALPHA).round() as u32).min(255) as u8;
+            if a == 0 {
+                continue;
+            }
+            let idx = ((py * w + px) * 4) as usize;
+            if a > t.rgba[idx + 3] {
+                t.rgba[idx] = RING_COL[0];
+                t.rgba[idx + 1] = RING_COL[1];
+                t.rgba[idx + 2] = RING_COL[2];
                 t.rgba[idx + 3] = a;
             }
         }

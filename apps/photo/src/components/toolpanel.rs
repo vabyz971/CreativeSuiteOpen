@@ -30,6 +30,9 @@ const ICON_ZOOM_IN: &str = "\u{e8ff}"; // zoom_in - Zoom
 const ICON_SELECT: &str = "\u{e86e}"; // select_all - Sélection
 const ICON_MOVE: &str = "\u{e89f}"; // open_with - Déplacer
 const ICON_BRUSH: &str = "\u{e3ae}"; // brush - Pinceau
+/// Vérifié présent dans la cmap de MaterialIcons-Regular.ttf (format_color_reset).
+/// La police classique n'a pas de glyphe « eraser » dédié.
+const ICON_ERASER: &str = "\u{e1b0}";
 const ICON_COLORIZE: &str = "\u{e3b7}"; // colorize - Pipette
 
 pub fn render<'a>(selected: Tool) -> Element<'a, Message> {
@@ -63,6 +66,12 @@ pub fn render<'a>(selected: Tool) -> Element<'a, Message> {
             "Pinceau",
             selected == Tool::Brush,
             Message::SelectTool(Tool::Brush)
+        ),
+        icon_button::render(
+            ICON_ERASER,
+            "Gomme",
+            selected == Tool::Eraser,
+            Message::SelectTool(Tool::Eraser)
         ),
         icon_button::render(
             ICON_COLORIZE,

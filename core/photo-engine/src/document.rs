@@ -23,10 +23,32 @@
 //!   le calcul lui-même — le GPU reste réservé aux filtres lourds (blur…)
 //! - [`Quality::Preview`] : rendu à échelle réduite pendant les gestes
 //!   (drag/sliders), raffiné en pleine résolution au repos (débounced côté app)
+//!
+//! Ce module est PUR : aucun framework UI. Les aperçus/miniatures sont des
+//! [`RgbaBuf`] partageables sans copie ; l'app les convertit en textures.
 
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use rayon::prelude::*;
 use std::sync::Arc;
+
+/// Tampon RGBA8 partageable avec l'UI SANS copie (l'app en dérive ses
+/// textures via `Bytes::from_owner` sur l'Arc).
+#[derive(Clone)]
+pub struct RgbaBuf {
+    pub width: u32,
+    pub height: u32,
+    pub data: Arc<[u8]>,
+}
+
+impl RgbaBuf {
+    pub fn from_vec(width: u32, height: u32, data: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            data: data.into(),
+        }
+    }
+}
 
 pub const BLEND_MODES: [&str; 6] = [
     "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
@@ -48,10 +70,11 @@ pub struct Layer {
     pub id: u64,
     pub name: String,
     pub image: Arc<DynamicImage>,
-    /// Texture du calque — l'opacité est appliquée au draw (GPU),
-    /// les pixels ne sont JAMAIS régénérés lors des réglages
-    pub handle: iced::widget::image::Handle,
-    pub thumb: iced::widget::image::Handle,
+    /// Buffer d'affichage interactif — downscalé au-delà de 2048 px pour
+    /// garder les transforms GPU fluides. L'original est conservé pour l'export.
+    pub preview: RgbaBuf,
+    /// Miniature 48×32 pour le panneau Calques
+    pub thumb: RgbaBuf,
     pub opacity: f32,
     pub blend_mode: String,
     pub visible: bool,
@@ -65,15 +88,13 @@ pub struct Layer {
 
 impl Layer {
     pub fn new(id: u64, name: String, image: Arc<DynamicImage>) -> Self {
-        let thumb = thumb_handle(&image);
-        // Pour les très grandes images, on crée une texture d'aperçu downscalée
-        // pour garder la rotation fluide (GPU) — l'original est conservé pour l'export.
-        let handle = Self::make_preview_handle(&image);
+        let preview = preview_buf(&image);
+        let thumb = thumb_buf(&image);
         Self {
             id,
             name,
             image,
-            handle,
+            preview,
             thumb,
             opacity: 100.0,
             blend_mode: "Normal".into(),
@@ -83,11 +104,6 @@ impl Layer {
             rotation: 0.0,
             scale: 1.0,
         }
-    }
-
-    fn make_preview_handle(image: &DynamicImage) -> iced::widget::image::Handle {
-        let (w, h, bytes) = preview_bytes(image);
-        iced::widget::image::Handle::from_rgba(w, h, bytes)
     }
 
     /// Dimensions du calque
@@ -106,15 +122,15 @@ impl Layer {
     }
 
     /// Remplace le contenu pixels du calque (peinture…) et régénère
-    /// texture d'affichage + miniature.
+    /// buffer d'affichage + miniature.
     pub fn apply_edit(&mut self, new_image: ::image::DynamicImage) {
-        self.handle = Self::make_preview_handle(&new_image);
-        self.thumb = thumb_handle(&new_image);
+        self.preview = preview_buf(&new_image);
+        self.thumb = thumb_buf(&new_image);
         self.image = Arc::new(new_image);
     }
 
     /// Rogne le calque au rect (coordonnées CALQUE, pixels).
-    /// Destructif : régénère texture + miniature. Le contenu reste en place
+    /// Destructif : régénère buffer + miniature. Le contenu reste en place
     /// dans le monde (l'offset compense l'origine du crop).
     /// Retourne une erreur descriptive si le rect est invalide.
     pub fn crop(&mut self, x: i32, y: i32, w: u32, h: u32) -> Result<(), String> {
@@ -126,8 +142,8 @@ impl Layer {
             return Err("rogner : la sélection dépasse les bords du calque".into());
         }
         let cropped = self.image.crop_imm(x as u32, y as u32, w, h);
-        self.handle = Self::make_preview_handle(&cropped);
-        self.thumb = thumb_handle(&cropped);
+        self.preview = preview_buf(&cropped);
+        self.thumb = thumb_buf(&cropped);
         self.image = Arc::new(cropped);
         // Compense l'origine : le pixel (x,y) d'origine reste à sa place monde
         self.offset_x += x as f32;
@@ -136,19 +152,13 @@ impl Layer {
     }
 }
 
-/// Miniature 48×32 pour le panneau
-pub fn thumb_handle(img: &DynamicImage) -> iced::widget::image::Handle {
-    let (w, h, bytes) = thumb_bytes(img);
-    iced::widget::image::Handle::from_rgba(w, h, bytes)
-}
-
-/// Octets RGBA de l'aperçu interactif (downscale au-delà de 2048 px).
-pub fn preview_bytes(image: &DynamicImage) -> (u32, u32, Vec<u8>) {
+/// Buffer d'affichage interactif (downscale au-delà de 2048 px).
+pub fn preview_buf(image: &DynamicImage) -> RgbaBuf {
     const MAX_PREVIEW: u32 = 2048;
     let (w, h) = image.dimensions();
     if w.max(h) <= MAX_PREVIEW {
         let rgba = image.to_rgba8();
-        (rgba.width(), rgba.height(), rgba.into_raw())
+        RgbaBuf::from_vec(rgba.width(), rgba.height(), rgba.into_raw())
     } else {
         let preview = image.resize(
             MAX_PREVIEW,
@@ -156,15 +166,15 @@ pub fn preview_bytes(image: &DynamicImage) -> (u32, u32, Vec<u8>) {
             ::image::imageops::FilterType::Triangle,
         );
         let rgba = preview.to_rgba8();
-        (rgba.width(), rgba.height(), rgba.into_raw())
+        RgbaBuf::from_vec(rgba.width(), rgba.height(), rgba.into_raw())
     }
 }
 
-/// Octets RGBA de la miniature 48×32.
-pub fn thumb_bytes(img: &DynamicImage) -> (u32, u32, Vec<u8>) {
+/// Miniature 48×32 pour le panneau Calques.
+pub fn thumb_buf(img: &DynamicImage) -> RgbaBuf {
     let t = img.resize(48, 32, ::image::imageops::FilterType::Triangle);
     let rgba = t.to_rgba8();
-    (rgba.width(), rgba.height(), rgba.into_raw())
+    RgbaBuf::from_vec(rgba.width(), rgba.height(), rgba.into_raw())
 }
 
 /// Donnée légère envoyée au worker (Arc = partage sans copie).
@@ -351,7 +361,7 @@ fn prepare_top(l: &LayerData) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, f32) {
     let rot = l.rotation.rem_euclid(360.0); // ∈ [0, 360)
     // Multiples de 90° avec epsilon (les rotations libres arrondies
     // silencieusement seraient une erreur visuelle)
-    let is_0 = rot < 0.01 || rot > 359.99;
+    let is_0 = !(0.01..=359.99).contains(&rot);
     let is_90 = (rot - 90.0).abs() < 0.01;
     let is_180 = (rot - 180.0).abs() < 0.01;
     let is_270 = (rot - 270.0).abs() < 0.01;
@@ -465,7 +475,7 @@ pub fn composite_preview(layers: &[LayerData], doc_w: u32, doc_h: u32) -> Option
         let mut tw = w0 as f32 * scale;
         let mut th = h0 as f32 * scale;
         let rot = l.rotation.rem_euclid(360.0); // ∈ [0, 360)
-        let is_0 = rot < 0.01 || rot > 359.99;
+        let is_0 = !(0.01..=359.99).contains(&rot);
         let is_90 = (rot - 90.0).abs() < 0.01;
         let is_180 = (rot - 180.0).abs() < 0.01;
         let is_270 = (rot - 270.0).abs() < 0.01;
@@ -508,4 +518,227 @@ pub fn composite_preview(layers: &[LayerData], doc_w: u32, doc_h: u32) -> Option
     }
 
     Some(DynamicImage::ImageRgba8(acc))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests « golden » du compositing CPU : images synthétiques minuscules
+    //! dont la sortie est vérifiée pixel par pixel (tolérance ±1 pour les
+    //! arrondis f32→u8). Toute régression de blend/transform est visible ici.
+
+    use super::*;
+
+    fn solid(w: u32, h: u32, rgba: [u8; 4]) -> DynamicImage {
+        DynamicImage::ImageRgba8(ImageBuffer::from_pixel(w, h, Rgba(rgba)))
+    }
+
+    fn layer_data(img: &DynamicImage, opacity: f32, mode: &str, ox: f32, oy: f32) -> LayerData {
+        LayerData {
+            id: 1,
+            image: Arc::new(img.clone()),
+            opacity,
+            blend_mode: mode.into(),
+            offset_x: ox,
+            offset_y: oy,
+            rotation: 0.0,
+            scale: 1.0,
+            visible: true,
+        }
+    }
+
+    fn px(img: &DynamicImage, x: u32, y: u32) -> [u8; 4] {
+        let rgba = img.to_rgba8();
+        let p = rgba.get_pixel(x, y);
+        [p[0], p[1], p[2], p[3]]
+    }
+
+    fn assert_close(got: [u8; 4], exp: [u8; 4]) {
+        for c in 0..4 {
+            assert!(
+                (got[c] as i16 - exp[c] as i16).abs() <= 1,
+                "canal {c} : {got:?} ≠ {exp:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_opaque_recouvre_et_deborde() {
+        let base = solid(4, 4, [255, 0, 0, 255]);
+        let top = solid(2, 2, [0, 255, 0, 255]);
+        // Pile : rouge en bas, vert au-dessus décalé en (2,2)
+        let out = composite(
+            &[
+                layer_data(&base, 100.0, "Normal", 0.0, 0.0),
+                layer_data(&top, 100.0, "Normal", 2.0, 2.0),
+            ],
+            4,
+            4,
+        )
+        .expect("composite non vide");
+        assert_close(px(&out, 3, 3), [0, 255, 0, 255]); // zone recouverte
+        assert_close(px(&out, 0, 0), [255, 0, 0, 255]); // zone de base
+    }
+
+    #[test]
+    fn calque_hors_document_n_influence_pas_le_crop() {
+        let base = solid(4, 4, [10, 20, 30, 255]);
+        let top = solid(2, 2, [255, 255, 255, 255]);
+        let out = composite(
+            &[
+                layer_data(&base, 100.0, "Normal", 0.0, 0.0),
+                layer_data(&top, 100.0, "Normal", -10.0, -10.0),
+            ],
+            4,
+            4,
+        )
+        .expect("composite non vide");
+        assert_close(px(&out, 1, 1), [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn modes_de_fusion_valeurs_connues() {
+        // Base grise 50 % + top gris clair : valeurs canoniques des modes
+        let base = solid(1, 1, [128, 128, 128, 255]);
+        let top = solid(1, 1, [192, 192, 192, 255]);
+        let stack_with = |mode: &str| {
+            vec![
+                layer_data(&base, 100.0, "Normal", 0.0, 0.0),
+                layer_data(&top, 100.0, mode, 0.0, 0.0),
+            ]
+        };
+
+        let cases = [
+            ("Multiply", (128 * 192) / 255),                     // ≈ 96
+            ("Screen", 255 - ((255 - 128) * (255 - 192)) / 255), // ≈ 224
+            ("Darken", 128),
+            ("Lighten", 192),
+        ];
+        for (mode, expected) in cases {
+            let out = composite(&stack_with(mode), 1, 1).expect("composite");
+            let got = px(&out, 0, 0);
+            assert_close(got, [expected as u8, expected as u8, expected as u8, 255]);
+        }
+
+        // Overlay sur base < 0.5 : 2·b·t ; sur base ≥ 0.5 : formule claire
+        let dark = solid(1, 1, [64, 64, 64, 255]);
+        let out = composite(
+            &[
+                layer_data(&dark, 100.0, "Normal", 0.0, 0.0),
+                layer_data(&top, 100.0, "Overlay", 0.0, 0.0),
+            ],
+            1,
+            1,
+        )
+        .expect("composite");
+        let exp = (2 * 64 * 192 / 255) as u8;
+        assert_close(px(&out, 0, 0), [exp, exp, exp, 255]);
+    }
+
+    #[test]
+    fn opacite_50_normal_sur_blanc() {
+        let base = solid(2, 2, [255, 255, 255, 255]);
+        let top = solid(2, 2, [0, 0, 0, 255]);
+        let out = composite(
+            &[
+                layer_data(&base, 100.0, "Normal", 0.0, 0.0),
+                layer_data(&top, 50.0, "Normal", 0.0, 0.0),
+            ],
+            2,
+            2,
+        )
+        .expect("composite");
+        assert_close(px(&out, 0, 0), [127, 127, 127, 255]);
+    }
+
+    #[test]
+    fn calque_seul_translucide_sur_transparent() {
+        // Un seul calque 50 % au-dessus du vide : l'alpha de sortie est
+        // semi-transparent (plan de travail infini) — pas de fond magique.
+        let top = solid(2, 2, [0, 0, 0, 255]);
+        let out =
+            composite(&[layer_data(&top, 50.0, "Normal", 0.0, 0.0)], 2, 2).expect("composite");
+        assert_close(px(&out, 0, 0), [0, 0, 0, 127]);
+    }
+
+    #[test]
+    fn opacite_nulle_ou_cache_ignores() {
+        let base = solid(2, 2, [9, 9, 9, 255]);
+        let top = solid(2, 2, [250, 250, 250, 255]);
+        let mut hidden = layer_data(&top, 100.0, "Normal", 0.0, 0.0);
+        hidden.visible = false;
+        let out = composite(
+            &[layer_data(&base, 100.0, "Normal", 0.0, 0.0), hidden],
+            2,
+            2,
+        )
+        .expect("composite");
+        assert_close(px(&out, 0, 0), [9, 9, 9, 255]);
+
+        let transparent = layer_data(&top, 0.0, "Normal", 0.0, 0.0);
+        let out = composite(&[transparent], 2, 2);
+        assert!(out.is_none(), "aucun calque visible → None");
+    }
+
+    #[test]
+    fn crop_compense_loffset_monde() {
+        let mut l = Layer::new(
+            7,
+            "crop".into(),
+            Arc::new({
+                let mut b = ImageBuffer::from_pixel(4, 2, Rgba([0, 0, 0, 255]));
+                b.put_pixel(3, 0, Rgba([200, 10, 20, 255]));
+                DynamicImage::ImageRgba8(b)
+            }),
+        );
+        l.crop(2, 0, 2, 2).expect("crop valide");
+        assert_eq!((l.offset_x, l.offset_y), (2.0, 0.0));
+        let img = l.image.to_rgba8();
+        assert_eq!((img.width(), img.height()), (2, 2));
+        // Le pixel rouge d'origine (3,0) devient (1,0) dans le calque rogné
+        let p = img.get_pixel(1, 0);
+        assert_eq!([p[0], p[1], p[2]], [200, 10, 20]);
+    }
+
+    #[test]
+    fn plan_infini_agrandit_autour_du_document() {
+        let doc = solid(4, 4, [0, 0, 0, 255]);
+        let big = solid(8, 8, [255, 255, 255, 255]);
+        // Calque dépassant à gauche/haut : le composite preview ne doit pas rogner
+        let out = composite_preview(
+            &[
+                layer_data(&doc, 100.0, "Normal", 0.0, 0.0),
+                layer_data(&big, 100.0, "Normal", -6.0, -6.0),
+            ],
+            4,
+            4,
+        )
+        .expect("preview non vide");
+        let rgba = out.to_rgba8();
+        assert!(
+            rgba.width() >= 8 && rgba.height() >= 8,
+            "plan infini trop petit"
+        );
+        // Coin haut-gauche du grand calque visible quelque part hors document :
+        // le centre du buffer correspond au centre document → pixel blanc à (0,0)
+        assert_eq!(rgba.get_pixel(0, 0)[0], 255);
+    }
+
+    #[test]
+    fn flip_est_destructif_et_symetrique() {
+        let mut l = Layer::new(
+            3,
+            "flip".into(),
+            Arc::new({
+                let mut b = ImageBuffer::from_pixel(2, 1, Rgba([0, 0, 0, 255]));
+                b.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+                DynamicImage::ImageRgba8(b)
+            }),
+        );
+        let avant_gauche = px(&l.image, 0, 0);
+        l.flip(true);
+        // Après miroir horizontal, le rouge est passé à droite
+        assert_ne!(px(&l.image, 0, 0), avant_gauche);
+        let p = px(&l.image, 1, 0);
+        assert_eq!([p[0], p[1], p[2]], [255, 0, 0]);
+    }
 }
