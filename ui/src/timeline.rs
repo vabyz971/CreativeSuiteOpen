@@ -17,7 +17,7 @@
 //! Timeline Final Cut-like — widget minimaliste pour l'app Vidéo
 //! Réutilise le même shell et le même moteur de graphe que Photo.
 
-use iced::widget::{column, container, row, text, Space};
+use iced::widget::{Space, column, container, row, text};
 use iced::{Alignment, Color, Element, Length};
 
 /// Barre de timeline horizontale (pistes + clips)
@@ -28,19 +28,27 @@ where
     let track = |label: &'static str, color: Color| {
         container(
             row![
-                container(text(label).size(11).color(Color::from_rgb(0.75, 0.75, 0.75)))
-                    .width(Length::Fixed(80.0))
-                    .padding(6),
-                container(Space::new().width(Length::Fixed(120.0)).height(Length::Fixed(28.0)))
-                    .style(move |_| container::Style {
-                        background: Some(color.into()),
-                        border: iced::Border {
-                            radius: 4.0.into(),
-                            ..Default::default()
-                        },
+                container(
+                    text(label)
+                        .size(11)
+                        .color(Color::from_rgb(0.75, 0.75, 0.75))
+                )
+                .width(Length::Fixed(80.0))
+                .padding(6),
+                container(
+                    Space::new()
+                        .width(Length::Fixed(120.0))
+                        .height(Length::Fixed(28.0))
+                )
+                .style(move |_| container::Style {
+                    background: Some(color.into()),
+                    border: iced::Border {
+                        radius: 4.0.into(),
                         ..Default::default()
-                    })
-                    .padding(4),
+                    },
+                    ..Default::default()
+                })
+                .padding(4),
                 Space::new().width(Length::Fill),
             ]
             .align_y(Alignment::Center),
@@ -63,7 +71,9 @@ where
                 row![
                     text("Timeline").size(13).color(Color::WHITE),
                     Space::new().width(Length::Fill),
-                    text("00:12:34:08").size(11).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                    text("00:12:34:08")
+                        .size(11)
+                        .color(Color::from_rgb(0.6, 0.6, 0.6)),
                 ]
                 .align_y(Alignment::Center)
             )

@@ -30,9 +30,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iced::widget::shader;
-use iced::widget::Shader;
 use iced::wgpu;
+use iced::widget::Shader;
+use iced::widget::shader;
 use iced::{Element, Length, Point, Rectangle, Size, Vector};
 
 use crate::image_canvas::{CanvasTool, ImageCanvasEvent};
@@ -170,7 +170,9 @@ where
         if let Event::Mouse(mouse::Event::ButtonReleased(Button::Left)) = event {
             if let Some((start, end)) = state.selecting.take() {
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
-                    return Some(shader::Action::publish((self.on_event)(ImageCanvasEvent::SelectRect(None))));
+                    return Some(shader::Action::publish((self.on_event)(
+                        ImageCanvasEvent::SelectRect(None),
+                    )));
                 };
                 let rect = Rectangle::new(start, Size::new(end.x - start.x, end.y - start.y));
                 let norm = Rectangle::new(
@@ -186,8 +188,11 @@ where
                     )));
                 } else if self.tool == CanvasTool::Zoom {
                     let base_factor = 1.4_f32;
-                    let factor =
-                        if state.modifiers.alt() { 1.0 / base_factor } else { base_factor };
+                    let factor = if state.modifiers.alt() {
+                        1.0 / base_factor
+                    } else {
+                        base_factor
+                    };
                     let new_zoom = (self.zoom * factor).clamp(0.08, 6.0);
                     let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
                     let ratio = new_zoom / self.zoom;
@@ -195,16 +200,23 @@ where
                         cursor_pos.x - center.x - (cursor_pos.x - center.x - self.pan.x) * ratio,
                         cursor_pos.y - center.y - (cursor_pos.y - center.y - self.pan.y) * ratio,
                     );
-                    return Some(shader::Action::publish((self.on_event)(ImageCanvasEvent::ZoomAt {
-                        zoom: new_zoom,
-                        pan: new_pan,
-                    })));
+                    return Some(shader::Action::publish((self.on_event)(
+                        ImageCanvasEvent::ZoomAt {
+                            zoom: new_zoom,
+                            pan: new_pan,
+                        },
+                    )));
                 } else {
-                    return Some(shader::Action::publish((self.on_event)(ImageCanvasEvent::SelectRect(None))));
+                    return Some(shader::Action::publish((self.on_event)(
+                        ImageCanvasEvent::SelectRect(None),
+                    )));
                 }
             }
             if state.dragging.take().is_some() && self.tool == CanvasTool::Move {
-                return Some(shader::Action::publish((self.on_event)(ImageCanvasEvent::MoveLayerEnd)).and_capture());
+                return Some(
+                    shader::Action::publish((self.on_event)(ImageCanvasEvent::MoveLayerEnd))
+                        .and_capture(),
+                );
             }
             return Some(shader::Action::capture());
         }
@@ -235,16 +247,21 @@ where
                 if let Some((start, orig_pan)) = state.dragging {
                     if self.tool == CanvasTool::Hand {
                         let delta = Vector::new(cursor_pos.x - start.x, cursor_pos.y - start.y);
-                        return Some(shader::Action::publish((self.on_event)(ImageCanvasEvent::Pan(
-                            Vector::new(orig_pan.x + delta.x, orig_pan.y + delta.y),
-                        ))));
+                        return Some(shader::Action::publish((self.on_event)(
+                            ImageCanvasEvent::Pan(Vector::new(
+                                orig_pan.x + delta.x,
+                                orig_pan.y + delta.y,
+                            )),
+                        )));
                     } else if self.tool == CanvasTool::Move {
                         // Delta écran brut ; la conversion pixels image se fait
                         // côté app avec le zoom courant.
-                        return Some(shader::Action::publish((self.on_event)(ImageCanvasEvent::MoveLayer {
-                            dx: cursor_pos.x - start.x,
-                            dy: cursor_pos.y - start.y,
-                        })));
+                        return Some(shader::Action::publish((self.on_event)(
+                            ImageCanvasEvent::MoveLayer {
+                                dx: cursor_pos.x - start.x,
+                                dy: cursor_pos.y - start.y,
+                            },
+                        )));
                     }
                 }
                 if let Some((start, _)) = state.selecting {
@@ -274,10 +291,12 @@ where
                     cursor_pos.x - center.x - (cursor_pos.x - center.x - self.pan.x) * ratio,
                     cursor_pos.y - center.y - (cursor_pos.y - center.y - self.pan.y) * ratio,
                 );
-                Some(shader::Action::publish((self.on_event)(ImageCanvasEvent::ZoomPan {
-                    zoom: new_zoom,
-                    pan: new_pan,
-                })))
+                Some(shader::Action::publish((self.on_event)(
+                    ImageCanvasEvent::ZoomPan {
+                        zoom: new_zoom,
+                        pan: new_pan,
+                    },
+                )))
             }
             _ => None,
         }
@@ -819,7 +838,11 @@ impl CompositePipeline {
                             bytes_per_row: Some(row_bytes),
                             rows_per_image: None,
                         },
-                        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
                     );
                 } else {
                     // Copie ligne à ligne dans un buffer paddé (une seule fois
@@ -844,14 +867,22 @@ impl CompositePipeline {
                             bytes_per_row: Some(padded_row),
                             rows_per_image: None,
                         },
-                        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
                     );
                 }
                 let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 if let Some(err) = pollster::block_on(device.pop_error_scope()) {
                     eprintln!("layer-canvas: échec upload calque {:#?}", err);
                 }
-                LayerTex { view, width: l.width, height: l.height }
+                LayerTex {
+                    view,
+                    width: l.width,
+                    height: l.height,
+                }
             });
         }
         self.layer_textures.retain(|k, _| live.contains(k));
@@ -861,11 +892,8 @@ impl CompositePipeline {
     }
 
     fn write_params(&self, params: &Params) {
-        self.queue.write_buffer(
-            &self.params_buf,
-            0,
-            bytemuck::bytes_of(params),
-        );
+        self.queue
+            .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(params));
     }
 
     fn render(
@@ -908,7 +936,9 @@ impl CompositePipeline {
             }
 
             for layer in &prim.layers {
-                let Some(tex) = self.layer_textures.get(&layer.key) else { continue };
+                let Some(tex) = self.layer_textures.get(&layer.key) else {
+                    continue;
+                };
 
                 // Ping-pong : src = résultat précédent, dst = cible de ce calque
                 let src_view = self.accum.as_ref().unwrap().views[cur].clone();
@@ -974,7 +1004,12 @@ impl CompositePipeline {
             None => ([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]),
         };
         let params = Params {
-            screen_doc: [prim.viewport.0, prim.viewport.1, prim.doc_size.0, prim.doc_size.1],
+            screen_doc: [
+                prim.viewport.0,
+                prim.viewport.1,
+                prim.doc_size.0,
+                prim.doc_size.1,
+            ],
             pan_zoom: [prim.pan.x, prim.pan.y, prim.zoom, 1.0],
             mode_sizes: [0, 0, 0, if prim.has_doc { 1 } else { 0 }],
             off_sel: sel_pos,

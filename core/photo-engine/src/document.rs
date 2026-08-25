@@ -28,8 +28,9 @@ use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use rayon::prelude::*;
 use std::sync::Arc;
 
-pub const BLEND_MODES: [&str; 6] =
-    ["Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten"];
+pub const BLEND_MODES: [&str; 6] = [
+    "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
+];
 
 /// Échelle de l'aperçu interactif (1/4 linéaire = 16× moins de pixels).
 pub const PREVIEW_SCALE: f32 = 0.25;
@@ -149,8 +150,11 @@ pub fn preview_bytes(image: &DynamicImage) -> (u32, u32, Vec<u8>) {
         let rgba = image.to_rgba8();
         (rgba.width(), rgba.height(), rgba.into_raw())
     } else {
-        let preview =
-            image.resize(MAX_PREVIEW, MAX_PREVIEW, ::image::imageops::FilterType::Triangle);
+        let preview = image.resize(
+            MAX_PREVIEW,
+            MAX_PREVIEW,
+            ::image::imageops::FilterType::Triangle,
+        );
         let rgba = preview.to_rgba8();
         (rgba.width(), rgba.height(), rgba.into_raw())
     }
@@ -214,20 +218,34 @@ fn mode_id(mode: &str) -> u32 {
 #[inline]
 fn blend_pixel(b: [f32; 4], t: [f32; 4], mode: u32) -> [f32; 4] {
     let blended = match mode {
-        1 => [b[0] * t[0], b[1] * t[1], b[2] * t[2]],           // Multiply
-        2 => [                                                  // Screen
+        1 => [b[0] * t[0], b[1] * t[1], b[2] * t[2]], // Multiply
+        2 => [
+            // Screen
             1.0 - (1.0 - b[0]) * (1.0 - t[0]),
             1.0 - (1.0 - b[1]) * (1.0 - t[1]),
             1.0 - (1.0 - b[2]) * (1.0 - t[2]),
         ],
-        3 => [                                                  // Overlay
-            if b[0] < 0.5 { 2.0 * b[0] * t[0] } else { 1.0 - 2.0 * (1.0 - b[0]) * (1.0 - t[0]) },
-            if b[1] < 0.5 { 2.0 * b[1] * t[1] } else { 1.0 - 2.0 * (1.0 - b[1]) * (1.0 - t[1]) },
-            if b[2] < 0.5 { 2.0 * b[2] * t[2] } else { 1.0 - 2.0 * (1.0 - b[2]) * (1.0 - t[2]) },
+        3 => [
+            // Overlay
+            if b[0] < 0.5 {
+                2.0 * b[0] * t[0]
+            } else {
+                1.0 - 2.0 * (1.0 - b[0]) * (1.0 - t[0])
+            },
+            if b[1] < 0.5 {
+                2.0 * b[1] * t[1]
+            } else {
+                1.0 - 2.0 * (1.0 - b[1]) * (1.0 - t[1])
+            },
+            if b[2] < 0.5 {
+                2.0 * b[2] * t[2]
+            } else {
+                1.0 - 2.0 * (1.0 - b[2]) * (1.0 - t[2])
+            },
         ],
-        4 => [b[0].min(t[0]), b[1].min(t[1]), b[2].min(t[2])],  // Darken
-        5 => [b[0].max(t[0]), b[1].max(t[1]), b[2].max(t[2])],  // Lighten
-        _ => [t[0], t[1], t[2]],                                // Normal
+        4 => [b[0].min(t[0]), b[1].min(t[1]), b[2].min(t[2])], // Darken
+        5 => [b[0].max(t[0]), b[1].max(t[1]), b[2].max(t[2])], // Lighten
+        _ => [t[0], t[1], t[2]],                               // Normal
     };
     // Alpha compositing : top au-dessus de base, pondéré par l'alpha du top
     let ta = t[3];

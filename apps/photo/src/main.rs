@@ -149,32 +149,46 @@ fn app_menus(tools_visible: bool, selected_layer: Option<u64>) -> Vec<ui::menu::
                             label: "Rotation 90°".into(),
                             shortcut: "".to_string(),
                             checked: false,
-                            message: Message::RotateLayer { id: selected_layer.unwrap_or(u64::MAX), delta: 90.0 },
+                            message: Message::RotateLayer {
+                                id: selected_layer.unwrap_or(u64::MAX),
+                                delta: 90.0,
+                            },
                         },
                         ui::menu::Item::Action {
                             label: "Rotation 180°".into(),
                             shortcut: "".to_string(),
                             checked: false,
-                            message: Message::RotateLayer { id: selected_layer.unwrap_or(u64::MAX), delta: 180.0 },
+                            message: Message::RotateLayer {
+                                id: selected_layer.unwrap_or(u64::MAX),
+                                delta: 180.0,
+                            },
                         },
                         ui::menu::Item::Action {
                             label: "Rotation -90°".into(),
                             shortcut: "".to_string(),
                             checked: false,
-                            message: Message::RotateLayer { id: selected_layer.unwrap_or(u64::MAX), delta: -90.0 },
+                            message: Message::RotateLayer {
+                                id: selected_layer.unwrap_or(u64::MAX),
+                                delta: -90.0,
+                            },
                         },
                         ui::menu::Item::Action {
                             label: "Rotation -180°".into(),
                             shortcut: "".to_string(),
                             checked: false,
-                            message: Message::RotateLayer { id: selected_layer.unwrap_or(u64::MAX), delta: -180.0 },
+                            message: Message::RotateLayer {
+                                id: selected_layer.unwrap_or(u64::MAX),
+                                delta: -180.0,
+                            },
                         },
                         ui::menu::Item::Separator,
                         ui::menu::Item::Action {
                             label: "Réinitialiser transformation".into(),
                             shortcut: "".to_string(),
                             checked: false,
-                            message: Message::ResetLayerTransform(selected_layer.unwrap_or(u64::MAX)),
+                            message: Message::ResetLayerTransform(
+                                selected_layer.unwrap_or(u64::MAX),
+                            ),
                         },
                     ],
                 },
@@ -234,9 +248,7 @@ pub fn main() -> iced::Result {
     });
     // Daemon : multi-fenêtres (principale + Préférences), cf. examples/multi_window
     iced::daemon(PhotoApp::new, update, view)
-        .title(|_app: &PhotoApp, _window: iced::window::Id| {
-            "Creative Suite Open Photo".to_string()
-        })
+        .title(|_app: &PhotoApp, _window: iced::window::Id| "Creative Suite Open Photo".to_string())
         .subscription(subscription)
         .font(include_bytes!(
             "../../../assets/fonts/MaterialIcons-Regular.ttf"
@@ -284,10 +296,12 @@ pub enum Tool {
 }
 
 /// Trait terminé dont les pixels sont en cours de fusion hors thread UI.
+/// La texture d'aperçu (rastérisée par le canvas) reste affichée telle
+/// quelle jusqu'à PaintApplied — continuité visuelle parfaite.
 #[derive(Clone)]
 pub struct PendingPaint {
     pub layer_id: u64,
-    pub overlay: ui::image_canvas::StrokeOverlay,
+    pub tex: ui::image_canvas::StrokeTex,
 }
 
 struct PhotoApp {
@@ -449,15 +463,30 @@ pub enum Message {
         value: f32,
     },
     /// Rotation du calque (degrés, absolu)
-    SetLayerRotation { id: u64, degrees: f32 },
+    SetLayerRotation {
+        id: u64,
+        degrees: f32,
+    },
     /// Rotation rapide ±90° (true = horaire)
-    RotateLayer90 { id: u64, clockwise: bool },
+    RotateLayer90 {
+        id: u64,
+        clockwise: bool,
+    },
     /// Retourne le calque (miroir horizontal/vertical)
-    FlipLayer { id: u64, horizontal: bool },
+    FlipLayer {
+        id: u64,
+        horizontal: bool,
+    },
     /// Rotation relative (delta en degrés, ex: 90, -90, 180)
-    RotateLayer { id: u64, delta: f32 },
+    RotateLayer {
+        id: u64,
+        delta: f32,
+    },
     /// Échelle uniforme du calque (1.0 = 100 %)
-    SetLayerScale { id: u64, scale: f32 },
+    SetLayerScale {
+        id: u64,
+        scale: f32,
+    },
     /// Réinitialise rotation + échelle du calque
     ResetLayerTransform(u64),
     /// Rogne le calque sélectionné à la sélection rectangulaire active
@@ -499,10 +528,16 @@ pub enum Message {
 
     // ---- Pinceau ----
     /// Début d'un trait (coordonnées document)
-    BrushStart { x: f32, y: f32 },
+    BrushStart {
+        x: f32,
+        y: f32,
+    },
     /// Prolongement du trait (coordonnées document)
     /// Relâchement : lance le commit des pixels HORS thread UI
-    BrushEnd { points: Vec<(f32, f32)> },
+    BrushEnd {
+        points: Vec<(f32, f32)>,
+        tex: Option<ui::image_canvas::StrokeTex>,
+    },
     /// Résultat du calcul lourd — applique pixels + textures au calque
     PaintApplied {
         layer_id: u64,
@@ -521,7 +556,10 @@ pub enum Message {
     NewDocWidth(String),
     NewDocHeight(String),
     /// Preset : fixe largeur + hauteur d'un coup
-    SetDocPreset { w: u32, h: u32 },
+    SetDocPreset {
+        w: u32,
+        h: u32,
+    },
     /// Crée le document : fond blanc plein cadre + calque sélectionné
     CreateDocument,
     /// Section active dans la fenêtre Préférences
@@ -663,13 +701,12 @@ impl PhotoApp {
             Action::Preferences => Some(Message::OpenPreferences),
             Action::ToggleTools => Some(Message::ToggleToolsPanel),
             Action::ToggleLayersPanel => Some(Message::TogglePanel(PanelType::Layers)),
-            Action::TogglePropertiesPanel => {
-                Some(Message::TogglePanel(PanelType::Properties))
-            }
+            Action::TogglePropertiesPanel => Some(Message::TogglePanel(PanelType::Properties)),
             Action::LayerNew => Some(Message::AddEmptyLayer),
             Action::LayerDuplicate => sel.map(Message::DuplicateLayer),
             Action::LayerDelete => {
-                if sel.is_some() { // duplication : au moins un calque sélectionné
+                if sel.is_some() {
+                    // duplication : au moins un calque sélectionné
                     sel.map(Message::DeleteLayer)
                 } else {
                     None
@@ -863,30 +900,27 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 app.stroke_layer = Some(id);
             }
         }
-        Message::BrushEnd { points } => {
+        Message::BrushEnd { points, tex } => {
             // Le travail lourd (copie RGBA, rastérisation, aperçu, miniature)
             // part sur un thread de fond (spawn_blocking) : l'UI reste fluide.
-            // L'aperçu reste affiché (pending_paint) jusqu'à PaintApplied.
+            // L'aperçu rastérisé au relâchement reste affiché tel quel
+            // (pending_paint) jusqu'à PaintApplied — zéro clignotement.
             if let Some(id) = app.stroke_layer.take()
                 && app.pending_paint.is_none()
                 && points.len() > 1
                 && let Some(layer) = app.layers.iter().find(|l| l.id == id).cloned()
+                && let Some(tex) = tex
             {
                 let pts = points;
+                app.pending_paint = Some(PendingPaint {
+                    layer_id: id,
+                    tex: tex.clone(),
+                });
                 let color = [
                     (app.brush_color.r * 255.0) as u8,
                     (app.brush_color.g * 255.0) as u8,
                     (app.brush_color.b * 255.0) as u8,
                 ];
-                app.pending_paint = Some(PendingPaint {
-                    layer_id: id,
-                    overlay: ui::image_canvas::StrokeOverlay {
-                        points: pts.clone(),
-                        color: app.brush_color,
-                        radius: app.brush_size / 2.0,
-                        opacity: app.brush_opacity,
-                    },
-                });
                 let radius = app.brush_size / 2.0;
                 let opacity = app.brush_opacity;
                 return Task::perform(
@@ -917,15 +951,21 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 );
             }
         }
-        Message::PaintApplied { layer_id, width, height, rgba, preview, thumb } => {
+        Message::PaintApplied {
+            layer_id,
+            width,
+            height,
+            rgba,
+            preview,
+            thumb,
+        } => {
             if let Some(layer) = app.layers.iter_mut().find(|l| l.id == layer_id)
                 && let Some(img) = ::image::RgbaImage::from_raw(width, height, rgba)
             {
                 layer.image = Arc::new(::image::DynamicImage::ImageRgba8(img));
                 layer.handle =
                     iced::widget::image::Handle::from_rgba(preview.0, preview.1, preview.2);
-                layer.thumb =
-                    iced::widget::image::Handle::from_rgba(thumb.0, thumb.1, thumb.2);
+                layer.thumb = iced::widget::image::Handle::from_rgba(thumb.0, thumb.1, thumb.2);
             }
             app.pending_paint = None;
             app.refresh_fallback();
@@ -965,12 +1005,9 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
             );
             match parsed {
                 (Ok(w), Ok(h)) if (1..=10000).contains(&w) && (1..=10000).contains(&h) => {
-                    let white =
-                        ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
-                            w,
-                            h,
-                            ::image::Rgba([255, 255, 255, 255]),
-                        ));
+                    let white = ::image::DynamicImage::ImageRgba8(
+                        ::image::ImageBuffer::from_pixel(w, h, ::image::Rgba([255, 255, 255, 255])),
+                    );
                     let id = app.alloc_layer_id();
                     let layer = Layer::new(id, "Arrière-plan".into(), Arc::new(white));
                     app.layers.clear();
@@ -985,16 +1022,14 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     app.refresh_fallback();
                 }
                 _ => {
-                    app.welcome_error =
-                        Some("Dimensions invalides (1 à 10000 px)".into());
+                    app.welcome_error = Some("Dimensions invalides (1 à 10000 px)".into());
                 }
             }
         }
 
         Message::OpenPreferences => {
             app.show_prefs = true;
-            app.prefs_section =
-                components::preferences::PrefsSection::General;
+            app.prefs_section = components::preferences::PrefsSection::General;
             app.capturing = None;
             // Détection GPU async pour la section Général
             return Task::perform(
@@ -1161,8 +1196,9 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let Some(sel) = app.canvas_selection else {
-                app.image_error =
-                    Some("Rogner : faites d'abord une sélection rectangulaire (outil Sélect)".into());
+                app.image_error = Some(
+                    "Rogner : faites d'abord une sélection rectangulaire (outil Sélect)".into(),
+                );
                 return Task::none();
             };
             let Some(i) = app.layer_index(id) else {
@@ -1300,8 +1336,8 @@ fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
             ui::image_canvas::ImageCanvasEvent::BrushStart { x, y } => {
                 return update(app, Message::BrushStart { x, y });
             }
-            ui::image_canvas::ImageCanvasEvent::BrushEnd { points } => {
-                return update(app, Message::BrushEnd { points });
+            ui::image_canvas::ImageCanvasEvent::BrushEnd { points, tex } => {
+                return update(app, Message::BrushEnd { points, tex });
             }
             ui::image_canvas::ImageCanvasEvent::Viewport(size) => {
                 app.canvas_viewport = size;
@@ -1591,11 +1627,15 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
 
     let task_menu = {
         let items: Vec<iced::Element<'_, Message>> = if app.background_tasks.is_empty() {
-            vec![iced::widget::container(iced::widget::text("Aucun traitement en cours")
-                    .size(12)
-                    .color(ui::theme::colors::TEXT_MUTED))
+            vec![
+                iced::widget::container(
+                    iced::widget::text("Aucun traitement en cours")
+                        .size(12)
+                        .color(ui::theme::colors::TEXT_MUTED),
+                )
                 .padding(iced::Padding::new(8.0).left(10.0).right(10.0))
-                .into()]
+                .into(),
+            ]
         } else {
             app.background_tasks
                 .iter()
@@ -1637,7 +1677,10 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
 
     // Barre d'options contextuelle : contenu selon l'outil sélectionné
     let selected_scale_percent = app.selected_layer.and_then(|id| {
-        app.layers.iter().find(|l| l.id == id).map(|l| l.scale * 100.0)
+        app.layers
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| l.scale * 100.0)
     });
     let options_bar = components::options_bar::render(
         app.selected_tool,
@@ -1678,20 +1721,16 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
             &app.gen_previews,
             app.node_context_menu,
             app.node_context_world,
-            // Overlay figé pendant le commit asynchrone (l'aperçu live
-            // du drag est dessiné par le canvas lui-même)
-            if let Some(p) = &app.pending_paint {
-                Some(p.overlay.clone())
-            } else if app.stroke_layer.is_some() {
-                Some(ui::image_canvas::StrokeOverlay {
-                    points: Vec::new(),
-                    color: app.brush_color,
-                    radius: app.brush_size / 2.0,
-                    opacity: app.brush_opacity,
-                })
-            } else {
-                None
+            ui::image_canvas::BrushStyle {
+                color: [
+                    (app.brush_color.r * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.brush_color.g * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.brush_color.b * 255.0).clamp(0.0, 255.0) as u8,
+                ],
+                radius: app.brush_size / 2.0,
+                opacity: app.brush_opacity,
             },
+            app.pending_paint.as_ref().map(|p| p.tex.clone()),
             &app.new_doc_w,
             &app.new_doc_h,
             app.welcome_error.as_deref(),
@@ -1705,14 +1744,15 @@ fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
         spinner,
     );
 
-
     // Modal Préférences unifiée (Général / Raccourcis clavier / À propos)
     if app.show_prefs {
         let prefs_overlay = iced::widget::stack![
             // Scrim : clic hors modal ferme
             iced::widget::mouse_area(
                 iced::widget::container(
-                    iced::widget::Space::new().width(Length::Fill).height(Length::Fill)
+                    iced::widget::Space::new()
+                        .width(Length::Fill)
+                        .height(Length::Fill)
                 )
                 .style(|_| iced::widget::container::Style {
                     background: Some(ui::theme::colors::CABLE_SHADOW.into()),

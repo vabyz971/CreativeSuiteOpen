@@ -28,12 +28,18 @@ pub fn context_bar<'a>(project_name: Option<&'a str>) -> Element<'a, Message> {
     let name = project_name.unwrap_or("Sans titre");
     let project_selector = button(
         row![
-            text("\u{e2c8}").font(material).size(16).color(colors::TEXT_SECONDARY), // folder
+            text("\u{e2c8}")
+                .font(material)
+                .size(16)
+                .color(colors::TEXT_SECONDARY), // folder
             text(name)
                 .size(12)
                 .font(ui::theme::fonts::SANS_SEMIBOLD)
                 .color(colors::TEXT_PRIMARY),
-            text("\u{e313}").font(material).size(16).color(colors::TEXT_MUTED), // expand_more
+            text("\u{e313}")
+                .font(material)
+                .size(16)
+                .color(colors::TEXT_MUTED), // expand_more
         ]
         .spacing(8)
         .align_y(Alignment::Center),

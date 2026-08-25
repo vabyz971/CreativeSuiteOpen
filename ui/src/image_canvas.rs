@@ -51,25 +51,50 @@ pub enum ImageCanvasEvent {
     /// Début du déplacement du calque sélectionné
     MoveLayerStart,
     /// Déplacement du calque sélectionné (dx/dy en pixels image depuis le début du drag)
-    MoveLayer { dx: f32, dy: f32 },
+    MoveLayer {
+        dx: f32,
+        dy: f32,
+    },
     /// Fin du déplacement — valide le décalage
     MoveLayerEnd,
     /// Début d'un trait de pinceau (coordonnées document)
-    BrushStart { x: f32, y: f32 },
-    /// Fin du trait — transporte la polyligne complète pour le commit pixels
-    BrushEnd { points: Vec<(f32, f32)> },
+    BrushStart {
+        x: f32,
+        y: f32,
+    },
+    /// Fin du trait — polyligne (commit pixels) + texture d'aperçu figée
+    /// jusqu'à l'application effective des pixels.
+    BrushEnd {
+        points: Vec<(f32, f32)>,
+        tex: Option<StrokeTex>,
+    },
 }
 
-/// Aperçu live d'un trait de pinceau dessiné par-dessus les calques.
-/// Les points sont en coordonnées DOCUMENT ; le commit transformera
-/// vers l'espace calque (rotation/échelle inversées).
-#[derive(Clone)]
-pub struct StrokeOverlay {
-    pub points: Vec<(f32, f32)>,
-    pub color: iced::Color,
-    /// Rayon du pinceau en pixels DOCUMENT (= taille / 2)
+/// Style du pinceau pour l'aperçu live (espace document).
+#[derive(Clone, Copy, Debug)]
+pub struct BrushStyle {
+    /// Couleur RGB 0-255
+    pub color: [u8; 3],
+    /// Rayon en pixels DOCUMENT (= taille / 2)
     pub radius: f32,
     pub opacity: f32,
+}
+
+/// Texture RGBA de l'aperçu d'un trait — bbox en coordonnées document.
+///
+/// Pourquoi une texture et pas des cercles vectoriels ? Le moteur iced
+/// impose par couche l'ordre de rendu figé quads -> meshes -> images :
+/// la géométrie vectorielle passerait SOUS les textures des calques.
+/// Une image, elle, est dessinée après les images de calques.
+#[derive(Clone, Debug)]
+pub struct StrokeTex {
+    /// Coin haut-gauche de la bbox (coords document)
+    pub x: f32,
+    pub y: f32,
+    pub w: u32,
+    pub h: u32,
+    /// Pixels RGBA droits (non prémultipliés)
+    pub rgba: Vec<u8>,
 }
 
 /// Un calque affichable sur le canvas — dessiné à SA position monde.
@@ -99,16 +124,14 @@ pub struct ImageCanvas {
     pub zoom: f32,
     pub tool: CanvasTool,
     pub selection: Option<Rectangle>,
-    /// Trait de pinceau en cours (aperçu)
-    pub stroke: Option<StrokeOverlay>,
+    /// Style du pinceau (rastérisation de l'aperçu live)
+    pub brush: BrushStyle,
+    /// Aperçu figé pendant le commit asynchrone (après relâchement)
+    pub pending_preview: Option<StrokeTex>,
 }
 
 impl ImageCanvas {
-    pub fn new(
-        doc_size: Option<Size>,
-        pan: Vector,
-        zoom: f32,
-    ) -> Self {
+    pub fn new(doc_size: Option<Size>, pan: Vector, zoom: f32) -> Self {
         Self {
             layers: Vec::new(),
             doc_size,
@@ -116,18 +139,30 @@ impl ImageCanvas {
             zoom: zoom.clamp(0.08, 6.0),
             tool: CanvasTool::Hand,
             selection: None,
-            stroke: None,
+            brush: BrushStyle {
+                color: [30, 30, 34],
+                radius: 6.0,
+                opacity: 1.0,
+            },
+            pending_preview: None,
         }
     }
-    pub fn with_stroke(mut self, stroke: Option<StrokeOverlay>) -> Self {
-        self.stroke = stroke;
+    pub fn with_brush(mut self, brush: BrushStyle) -> Self {
+        self.brush = brush;
+        self
+    }
+    pub fn with_pending_preview(mut self, preview: Option<StrokeTex>) -> Self {
+        self.pending_preview = preview;
         self
     }
 
     /// Convertit une position écran canvas en coordonnées DOCUMENT
     /// (inverse exact du transform de draw : centre + pan + zoom).
     fn screen_to_doc(&self, p: Point, bounds: Rectangle) -> Point {
-        let center = Point::new(bounds.width / 2.0 + self.pan.x, bounds.height / 2.0 + self.pan.y);
+        let center = Point::new(
+            bounds.width / 2.0 + self.pan.x,
+            bounds.height / 2.0 + self.pan.y,
+        );
         let (hw, hh) = self
             .doc_size
             .map(|s| (s.width / 2.0, s.height / 2.0))
@@ -158,6 +193,8 @@ pub struct State {
     /// pour un aperçu sans aller-retour vers l'application (zéro latence,
     /// redraw explicite à chaque déplacement).
     pub stroke: Vec<(f32, f32)>,
+    /// Version rastérisée du trait (texture doc-space, au-dessus des calques)
+    pub stroke_tex: Option<StrokeTex>,
     pub selecting: Option<(Point, Point)>, // start, current
     /// Modificateurs clavier courants (Alt = zoom inversé avec l'outil loupe)
     pub modifiers: iced::keyboard::Modifiers,
@@ -249,8 +286,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 }
                 if self.tool == CanvasTool::Brush {
                     let points = std::mem::take(&mut state.stroke);
+                    let tex = state.stroke_tex.take();
                     return Some(
-                        canvas::Action::publish(ImageCanvasEvent::BrushEnd { points })
+                        canvas::Action::publish(ImageCanvasEvent::BrushEnd { points, tex })
                             .and_capture(),
                     );
                 }
@@ -272,13 +310,13 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     CanvasTool::Move => {
                         state.dragging = Some((cursor_pos, self.pan));
                         Some(
-                            canvas::Action::publish(ImageCanvasEvent::MoveLayerStart)
-                                .and_capture(),
+                            canvas::Action::publish(ImageCanvasEvent::MoveLayerStart).and_capture(),
                         )
                     }
                     CanvasTool::Brush => {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
                         state.stroke = vec![(doc.x, doc.y)];
+                        state.stroke_tex = None;
                         state.dragging = Some((cursor_pos, self.pan));
                         Some(
                             canvas::Action::publish(ImageCanvasEvent::BrushStart {
@@ -311,10 +349,24 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         // la conversion en pixels image se fait une seule fois au commit.
                         let dx = cursor_pos.x - start.x;
                         let dy = cursor_pos.y - start.y;
-                        return Some(canvas::Action::publish(ImageCanvasEvent::MoveLayer { dx, dy }));
+                        return Some(canvas::Action::publish(ImageCanvasEvent::MoveLayer {
+                            dx,
+                            dy,
+                        }));
                     } else if self.tool == CanvasTool::Brush {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
-                        state.stroke.push((doc.x, doc.y));
+                        let last = *state.stroke.last().unwrap_or(&(doc.x, doc.y));
+                        let dist = ((doc.x - last.0).powi(2) + (doc.y - last.1).powi(2)).sqrt();
+                        // Échantillonnage : un point tous les ~1/3 de rayon
+                        if dist >= (self.brush.radius * 0.35).max(1.0) {
+                            state.stroke.push((doc.x, doc.y));
+                            rasterize_segment(
+                                &mut state.stroke_tex,
+                                last,
+                                (doc.x, doc.y),
+                                &self.brush,
+                            );
+                        }
                         // Aperçu purement local : redraw sans aller-retour app
                         return Some(canvas::Action::request_redraw().and_capture());
                     }
@@ -396,55 +448,23 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             );
         }
 
-        // Aperçu live du trait de pinceau : disques le long des segments
-        // (espace document → écran), sous le curseur quoi qu'il arrive.
-        // Priorité au trait local du drag ; à défaut l'overlay fourni par
-        // l'app (commit en cours, figé jusqu'à PaintApplied).
-        let live_stroke: Option<StrokeOverlay> = if !state.stroke.is_empty() {
-            // Le trait local hérite couleur/rayon/opacité de l'overlay fourni
-            self.stroke
-                .as_ref()
-                .map(|st| StrokeOverlay { points: state.stroke.clone(), ..st.clone() })
-        } else {
-            self.stroke.clone()
-        };
-        if let Some(st) = &live_stroke {
-            if !st.points.is_empty() {
-                let r = (st.radius * self.zoom).max(0.75);
-                let to_screen = |&(dx, dy): &(f32, f32)| {
-                    Point::new(
-                        center.x + (dx - doc_half_w) * self.zoom,
-                        center.y + (dy - doc_half_h) * self.zoom,
-                    )
-                };
-                let alpha = st.opacity.clamp(0.15, 1.0);
-                let col = iced::Color {
-                    a: alpha,
-                    ..st.color
-                };
-                let step = (r * 0.35).max(0.75);
-                let mut prev = to_screen(&st.points[0]);
-                let path = Path::circle(prev, r);
-                frame.fill(&path, col);
-                for p in &st.points[1..] {
-                    let cur = to_screen(p);
-                    let dx = cur.x - prev.x;
-                    let dy = cur.y - prev.y;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    if dist > f32::EPSILON {
-                        let n = (dist / step).ceil() as usize;
-                        for i in 1..=n {
-                            let t = i as f32 / n as f32;
-                            let path = Path::circle(
-                                Point::new(prev.x + dx * t, prev.y + dy * t),
-                                r,
-                            );
-                            frame.fill(&path, col);
-                        }
-                    }
-                    prev = cur;
-                }
-            }
+        // Aperçu pinceau : TEXTURE dessinée après les images de calques.
+        // Ordre figé du moteur iced par couche : quads -> meshes -> images ;
+        // une géométrie vectorielle passerait SOUS les calques.
+        // Priorité au trait live (drag) ; sinon l'aperçu figé du commit.
+        let preview = state.stroke_tex.as_ref().or(self.pending_preview.as_ref());
+        if let Some(t) = preview.filter(|t| t.w > 0 && t.h > 0) {
+            let tl = Point::new(
+                center.x + (t.x - doc_half_w) * self.zoom,
+                center.y + (t.y - doc_half_h) * self.zoom,
+            );
+            frame.draw_image(
+                Rectangle::new(
+                    tl,
+                    Size::new(t.w as f32 * self.zoom, t.h as f32 * self.zoom),
+                ),
+                iced_core::Image::new(image::Handle::from_rgba(t.w, t.h, t.rgba.clone())),
+            );
         }
 
         // Repère document dessiné DANS l'espace monde → insensible au zoom,
@@ -548,6 +568,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn view_with_tool<'a>(
     doc_size: Option<Size>,
     pan: Vector,
@@ -555,15 +576,145 @@ pub fn view_with_tool<'a>(
     tool: CanvasTool,
     selection: Option<Rectangle>,
     layers: Vec<CanvasLayer>,
-    stroke: Option<StrokeOverlay>,
+    brush: BrushStyle,
+    pending_preview: Option<StrokeTex>,
 ) -> iced::Element<'a, ImageCanvasEvent> {
     let program = ImageCanvas::new(doc_size, pan, zoom)
         .with_layers(layers)
         .with_tool(tool)
         .with_selection(selection)
-        .with_stroke(stroke);
+        .with_brush(brush)
+        .with_pending_preview(pending_preview);
     iced::widget::canvas(program)
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
         .into()
+}
+
+// ---------------------------------------------------------------------------
+// Rastérisation de l'aperçu du trait
+// ---------------------------------------------------------------------------
+
+/// Rastérise le segment `from -> to` dans la texture du trait, en agrandissant
+/// la bbox (et le buffer) si nécessaire. Couverture cumulée par MAX d'alpha :
+/// les recouvrements de disques n'assombrissent pas le trait.
+fn rasterize_segment(
+    tex: &mut Option<StrokeTex>,
+    from: (f32, f32),
+    to: (f32, f32),
+    brush: &BrushStyle,
+) {
+    let r = brush.radius.max(0.5);
+    let pad = r + 1.5;
+    let min_x = from.0.min(to.0) - pad;
+    let min_y = from.1.min(to.1) - pad;
+    let max_x = from.0.max(to.0) + pad;
+    let max_y = from.1.max(to.1) + pad;
+
+    match tex {
+        None => {
+            let w = ((max_x - min_x).ceil() as u32).max(1);
+            let h = ((max_y - min_y).ceil() as u32).max(1);
+            let mut t = StrokeTex {
+                x: min_x,
+                y: min_y,
+                w,
+                h,
+                rgba: vec![0; (w * h * 4) as usize],
+            };
+            stamp_segment(&mut t, from, to, brush);
+            *tex = Some(t);
+        }
+        Some(t) => {
+            let grow =
+                min_x < t.x || min_y < t.y || max_x > t.x + t.w as f32 || max_y > t.y + t.h as f32;
+            if !grow {
+                stamp_segment(t, from, to, brush);
+            } else {
+                let nx = min_x.min(t.x);
+                let ny = min_y.min(t.y);
+                let nw = ((max_x.max(t.x + t.w as f32) - nx).ceil() as u32).max(t.w);
+                let nh = ((max_y.max(t.y + t.h as f32) - ny).ceil() as u32).max(t.h);
+                let mut rgba = vec![0u8; (nw * nh * 4) as usize];
+                // Blit des anciennes lignes à leur nouvelle position
+                let dx = (t.x - nx) as usize;
+                let dy = (t.y - ny) as usize;
+                for row in 0..t.h as usize {
+                    let src = row * t.w as usize * 4;
+                    let dst = (row + dy) * nw as usize * 4 + dx * 4;
+                    let len = t.w as usize * 4;
+                    rgba[dst..dst + len].copy_from_slice(&t.rgba[src..src + len]);
+                }
+                let mut nt = StrokeTex {
+                    x: nx,
+                    y: ny,
+                    w: nw,
+                    h: nh,
+                    rgba,
+                };
+                stamp_segment(&mut nt, from, to, brush);
+                *tex = Some(nt);
+            }
+        }
+    }
+}
+
+/// Estampe des disques le long du segment (pas ~ rayon/3 pour un trait continu)
+fn stamp_segment(t: &mut StrokeTex, from: (f32, f32), to: (f32, f32), b: &BrushStyle) {
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
+    let dist = (dx * dx + dy * dy).sqrt();
+    let step = (b.radius * 0.35).max(0.5);
+    let n = ((dist / step).ceil() as usize).max(1);
+    for i in 0..=n {
+        let k = i as f32 / n as f32;
+        stamp_circle(
+            t,
+            from.0 + dx * k - t.x,
+            from.1 + dy * k - t.y,
+            b.radius,
+            b.color,
+            b.opacity,
+        );
+    }
+}
+
+/// Disque avec bord adouci sur 1 px ; alpha final = couverture x opacité
+fn stamp_circle(t: &mut StrokeTex, cx: f32, cy: f32, r: f32, col: [u8; 3], opacity: f32) {
+    let w = t.w as i64;
+    let h = t.h as i64;
+    let x0 = ((cx - r - 1.0).floor() as i64).clamp(0, w.saturating_sub(1));
+    let y0 = ((cy - r - 1.0).floor() as i64).clamp(0, h.saturating_sub(1));
+    let x1 = ((cx + r + 1.0).ceil() as i64).clamp(0, w - 1);
+    let y1 = ((cy + r + 1.0).ceil() as i64).clamp(0, h - 1);
+    if w == 0 || h == 0 {
+        return;
+    }
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let ddx = px as f32 + 0.5 - cx;
+            let ddy = py as f32 + 0.5 - cy;
+            let d = (ddx * ddx + ddy * ddy).sqrt();
+            let cov = if d <= r {
+                255.0
+            } else if d < r + 1.0 {
+                (r + 1.0 - d) * 255.0
+            } else {
+                continue;
+            };
+            let a = ((cov * opacity.clamp(0.0, 1.0)).round() as u32).min(255) as u8;
+            if a == 0 {
+                continue;
+            }
+            let idx = ((py * w + px) * 4) as usize;
+            // Fond transparent : source-over == MAX ; évite l'assombrissement
+            // aux recouvrements de disques successifs.
+            if a > t.rgba[idx + 3] {
+                t.rgba[idx] = col[0];
+                t.rgba[idx + 1] = col[1];
+                t.rgba[idx + 2] = col[2];
+                t.rgba[idx + 3] = a;
+            }
+        }
+    }
 }

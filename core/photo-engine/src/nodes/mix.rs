@@ -20,11 +20,9 @@
 //!
 //! Réutilise la fusion du Calque (modes + alpha compositing).
 
-use super::layer::{apply_effect, mix_socket, MIX_MAX_INPUTS};
+use super::layer::{MIX_MAX_INPUTS, apply_effect, mix_socket};
 use super::{Effect, NodeCtx};
-use datatypes::{
-    NodeCategory, NodeDefinition, NodeId, ParamValue, SocketDef, SocketType,
-};
+use datatypes::{NodeCategory, NodeDefinition, NodeId, ParamValue, SocketDef, SocketType};
 use image::DynamicImage;
 
 pub fn definition() -> NodeDefinition {

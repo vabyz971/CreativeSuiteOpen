@@ -172,11 +172,9 @@ impl Action {
     /// Catégorie (groupement dans les préférences)
     pub fn category(self) -> &'static str {
         match self {
-            Action::NewProject
-            | Action::Open
-            | Action::Save
-            | Action::SaveAs
-            | Action::Quit => "Fichier",
+            Action::NewProject | Action::Open | Action::Save | Action::SaveAs | Action::Quit => {
+                "Fichier"
+            }
             Action::Undo | Action::Redo | Action::Preferences => "Édition",
             Action::ToggleTools | Action::ToggleLayersPanel | Action::TogglePropertiesPanel => {
                 "Affichage"
@@ -322,7 +320,10 @@ fn default_bindings() -> Vec<(Action, Binding)> {
         // Affichage
         (ToggleTools, Binding::new("tab", false, false, false)),
         (ToggleLayersPanel, Binding::new("f7", false, false, false)),
-        (TogglePropertiesPanel, Binding::new("f8", false, false, false)),
+        (
+            TogglePropertiesPanel,
+            Binding::new("f8", false, false, false),
+        ),
         // Calque
         (LayerNew, Binding::new("n", true, true, false)),
         (LayerDuplicate, Binding::new("j", true, false, false)),
@@ -368,9 +369,7 @@ impl Shortcuts {
 
     /// Libellé lisible de l'action ("Ctrl+N") ou vide
     pub fn label(&self, action: Action) -> String {
-        self.binding(action)
-            .map(|b| b.label())
-            .unwrap_or_default()
+        self.binding(action).map(|b| b.label()).unwrap_or_default()
     }
 
     /// Assigne un raccourci. Vole la combinaison à toute autre action qui
@@ -520,42 +519,36 @@ pub fn subscription<Message: Clone + Send + 'static>(
     struct KeyboardShortcuts(bool);
 
     let table = shortcuts.clone();
-    iced_futures::subscription::filter_map(
-        KeyboardShortcuts(capturing),
-        move |event| {
-            let iced_futures::subscription::Event::Interaction {
-                event:
-                    iced::event::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key, modifiers, ..
-                    }),
-                status: iced::event::Status::Ignored,
-                ..
-            } = event
-            else {
-                return None;
-            };
-            let Some(key_str) = key_string(&key) else {
-                return None;
-            };
-            // Ignore les touches modificateurs seules pendant la capture
-            if matches!(
-                key_str.as_str(),
-                "control" | "shift" | "alt" | "meta" | "super"
-            ) {
-                return None;
+    iced_futures::subscription::filter_map(KeyboardShortcuts(capturing), move |event| {
+        let iced_futures::subscription::Event::Interaction {
+            event:
+                iced::event::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key, modifiers, ..
+                }),
+            status: iced::event::Status::Ignored,
+            ..
+        } = event
+        else {
+            return None;
+        };
+        let Some(key_str) = key_string(&key) else {
+            return None;
+        };
+        // Ignore les touches modificateurs seules pendant la capture
+        if matches!(
+            key_str.as_str(),
+            "control" | "shift" | "alt" | "meta" | "super"
+        ) {
+            return None;
+        }
+        let (ctrl, shift, alt) = (modifiers.control(), modifiers.shift(), modifiers.alt());
+        if capturing {
+            // Échap annule la capture
+            if key_str == "escape" && !ctrl && !shift && !alt {
+                return Some(on_captured(None));
             }
-            let (ctrl, shift, alt) =
-                (modifiers.control(), modifiers.shift(), modifiers.alt());
-            if capturing {
-                // Échap annule la capture
-                if key_str == "escape" && !ctrl && !shift && !alt {
-                    return Some(on_captured(None));
-                }
-                return Some(on_captured(Some(Binding::new(
-                    &key_str, ctrl, shift, alt,
-                ))));
-            }
-            table.find(&key_str, ctrl, shift, alt).and_then(&on_action)
-        },
-    )
+            return Some(on_captured(Some(Binding::new(&key_str, ctrl, shift, alt))));
+        }
+        table.find(&key_str, ctrl, shift, alt).and_then(&on_action)
+    })
 }

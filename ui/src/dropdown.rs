@@ -29,11 +29,9 @@ where
     let content = row![
         text(label).size(13),
         Space::new().width(Length::Fill),
-        text(shortcut)
-            .size(12)
-            .style(|_theme: &Theme| text::Style {
-                color: Some(colors::TEXT_MUTED),
-            })
+        text(shortcut).size(12).style(|_theme: &Theme| text::Style {
+            color: Some(colors::TEXT_MUTED),
+        })
     ]
     .align_y(Alignment::Center);
 

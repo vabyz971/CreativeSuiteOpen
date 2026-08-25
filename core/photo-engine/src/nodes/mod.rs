@@ -31,9 +31,9 @@ pub mod output;
 use crate::gpu;
 use datatypes::{NodeDefinition, NodeId};
 use image::DynamicImage;
-use suite_core::Graph;
 use std::collections::HashMap;
 use std::sync::Arc;
+use suite_core::Graph;
 
 /// Contexte passé à chaque effet lors de l'évaluation du graphe
 pub struct NodeCtx<'a> {
@@ -111,6 +111,4 @@ pub fn to_rgba8(img: &DynamicImage) -> image::ImageBuffer<image::Rgba<u8>, Vec<u
     img.to_rgba8()
 }
 
-pub use gpu::{
-    apply_blur_gpu, apply_brightness_contrast_gpu, apply_mix_gpu, apply_saturation_gpu,
-};
+pub use gpu::{apply_blur_gpu, apply_brightness_contrast_gpu, apply_mix_gpu, apply_saturation_gpu};

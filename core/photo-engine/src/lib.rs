@@ -26,4 +26,6 @@ pub mod registry;
 
 pub use gpu::GpuContext;
 pub use processor::{evaluate, evaluate_incremental, evaluate_with_cache, to_handle};
-pub use registry::{all_definitions, create_empty_graph, create_minimal_graph, create_node_for_type, definition_for};
+pub use registry::{
+    all_definitions, create_empty_graph, create_minimal_graph, create_node_for_type, definition_for,
+};

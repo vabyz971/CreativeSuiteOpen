@@ -17,8 +17,8 @@
 //! Graphe nodal interactif - Canvas infini façon Blender + cache Bézier
 //! Optimisé : culling, LOD, cache persistant, grille constante
 
-use suite_core::Graph;
 use datatypes::{NodeId, SocketType, Vec2};
+use suite_core::Graph;
 
 use iced::mouse;
 use iced::widget::canvas::{self, Cache, Frame, Geometry, Path, Text};
@@ -35,11 +35,25 @@ use crate::theme::{colors, metrics};
 #[derive(Debug, Clone)]
 pub enum NodeGraphEvent {
     NodeSelected(NodeId),
-    NodeMoved { id: NodeId, position: Vec2 },
+    NodeMoved {
+        id: NodeId,
+        position: Vec2,
+    },
     PanePan(Vector),
-    GraphZoom { zoom: f32, pan: Vector },
-    Connect { from: NodeId, from_socket: String, to: NodeId, to_socket: String },
-    Disconnect { node: NodeId, socket: String },
+    GraphZoom {
+        zoom: f32,
+        pan: Vector,
+    },
+    Connect {
+        from: NodeId,
+        from_socket: String,
+        to: NodeId,
+        to_socket: String,
+    },
+    Disconnect {
+        node: NodeId,
+        socket: String,
+    },
     TogglePreview(NodeId),
     BackgroundClicked,
     /// Position monde (placement du nœud) + position LOCALE au canvas (ancrage exact du menu)
@@ -91,7 +105,10 @@ fn node_view_from_graph(graph: &Graph, id: NodeId, selected: Option<NodeId>) -> 
     })
 }
 
-fn node_palette(type_id: &str, params: &std::collections::HashMap<String, datatypes::ParamValue>) -> (Color, Vec<(String, SocketType)>, Vec<(String, SocketType)>) {
+fn node_palette(
+    type_id: &str,
+    params: &std::collections::HashMap<String, datatypes::ParamValue>,
+) -> (Color, Vec<(String, SocketType)>, Vec<(String, SocketType)>) {
     match type_id {
         "input_image" => (
             Color::from_rgb(0.25, 0.45, 0.75),
@@ -184,8 +201,16 @@ fn node_bounds(view: &NodeView) -> Rectangle {
 
 fn socket_position(view: &NodeView, index: usize, is_input: bool) -> Point {
     let bounds = node_bounds(view);
-    let y = bounds.y + metrics::NODE_HEADER_HEIGHT + 8.0 + index as f32 * metrics::NODE_ROW_HEIGHT + metrics::NODE_ROW_HEIGHT / 2.0;
-    let x = if is_input { bounds.x } else { bounds.x + bounds.width };
+    let y = bounds.y
+        + metrics::NODE_HEADER_HEIGHT
+        + 8.0
+        + index as f32 * metrics::NODE_ROW_HEIGHT
+        + metrics::NODE_ROW_HEIGHT / 2.0;
+    let x = if is_input {
+        bounds.x
+    } else {
+        bounds.x + bounds.width
+    };
     Point::new(x, y)
 }
 
@@ -200,7 +225,12 @@ fn world_to_screen(world: Point, pan: Vector, zoom: f32) -> Point {
     Point::new(world.x * zoom + pan.x, world.y * zoom + pan.y)
 }
 
-fn find_socket_at(views: &[NodeView], cursor_screen: Point, pan: Vector, zoom: f32) -> Option<(NodeId, String, SocketType, Point, bool)> {
+fn find_socket_at(
+    views: &[NodeView],
+    cursor_screen: Point,
+    pan: Vector,
+    zoom: f32,
+) -> Option<(NodeId, String, SocketType, Point, bool)> {
     for view in views.iter().rev() {
         for (idx, (name, ty)) in view.inputs.iter().enumerate() {
             let p_world = socket_position(view, idx, true);
@@ -304,8 +334,7 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
         // Invalidation du cache quand la structure du graphe change
         // (ouverture d'image, ajout/suppression de calque) — sinon le canvas
         // garde l'ancienne géométrie jusqu'à la prochaine interaction.
-        if self.graph.len() != state.last_len
-            || self.graph.connections.len() != state.last_conn_len
+        if self.graph.len() != state.last_len || self.graph.connections.len() != state.last_conn_len
         {
             state.cache.clear();
             state.last_len = self.graph.len();
@@ -317,33 +346,53 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
                 let views = self.views();
-                if let Some((node, socket, _ty, _pos, is_input)) = find_socket_at(&views, cursor_pos, self.pan, self.zoom)
-                    && is_input {
-                        let has_conn = self.graph.connections.iter().any(|c| c.to_node == node && c.to_socket == socket);
-                        if has_conn {
-                            state.cache.clear();
-                            return Some(canvas::Action::publish(NodeGraphEvent::Disconnect { node, socket }).and_capture());
-                        }
+                if let Some((node, socket, _ty, _pos, is_input)) =
+                    find_socket_at(&views, cursor_pos, self.pan, self.zoom)
+                    && is_input
+                {
+                    let has_conn = self
+                        .graph
+                        .connections
+                        .iter()
+                        .any(|c| c.to_node == node && c.to_socket == socket);
+                    if has_conn {
+                        state.cache.clear();
+                        return Some(
+                            canvas::Action::publish(NodeGraphEvent::Disconnect { node, socket })
+                                .and_capture(),
+                        );
                     }
+                }
                 let world = screen_to_world(cursor_pos, self.pan, self.zoom);
                 state.cache.clear();
-                return Some(canvas::Action::publish(NodeGraphEvent::RequestContextMenu(
-                    Vec2::new(world.x, world.y),
-                    cursor_pos,
-                )).and_capture());
+                return Some(
+                    canvas::Action::publish(NodeGraphEvent::RequestContextMenu(
+                        Vec2::new(world.x, world.y),
+                        cursor_pos,
+                    ))
+                    .and_capture(),
+                );
             }
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let views = self.views();
                 for view in views.iter().rev() {
                     let btn_world = preview_button_rect(view);
                     let sp = world_to_screen(btn_world.position(), self.pan, self.zoom);
-                    let screen_btn = Rectangle::new(sp, Size::new(btn_world.width * self.zoom, btn_world.height * self.zoom));
+                    let screen_btn = Rectangle::new(
+                        sp,
+                        Size::new(btn_world.width * self.zoom, btn_world.height * self.zoom),
+                    );
                     if screen_btn.contains(cursor_pos) {
                         state.cache.clear();
-                        return Some(canvas::Action::publish(NodeGraphEvent::TogglePreview(view.id)).and_capture());
+                        return Some(
+                            canvas::Action::publish(NodeGraphEvent::TogglePreview(view.id))
+                                .and_capture(),
+                        );
                     }
                 }
-                if let Some((node, socket, ty, pos_world, is_input)) = find_socket_at(&views, cursor_pos, self.pan, self.zoom) {
+                if let Some((node, socket, ty, pos_world, is_input)) =
+                    find_socket_at(&views, cursor_pos, self.pan, self.zoom)
+                {
                     let cursor_world = screen_to_world(cursor_pos, self.pan, self.zoom);
                     let is_output = !is_input;
                     state.connecting = Some(Connecting {
@@ -354,7 +403,9 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                         current: cursor_world,
                         is_output,
                     });
-                    return Some(canvas::Action::publish(NodeGraphEvent::NodeSelected(node)).and_capture());
+                    return Some(
+                        canvas::Action::publish(NodeGraphEvent::NodeSelected(node)).and_capture(),
+                    );
                 }
                 for view in views.iter().rev() {
                     let b = node_bounds(view);
@@ -362,26 +413,51 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     if b.contains(cursor_world) {
                         let offset = Vector::new(b.x - cursor_world.x, b.y - cursor_world.y);
                         state.dragging = Some((view.id, offset));
-                        return Some(canvas::Action::publish(NodeGraphEvent::NodeSelected(view.id)).and_capture());
+                        return Some(
+                            canvas::Action::publish(NodeGraphEvent::NodeSelected(view.id))
+                                .and_capture(),
+                        );
                     }
                 }
                 state.panning = Some((cursor_pos, self.pan));
-                return Some(canvas::Action::publish(NodeGraphEvent::BackgroundClicked).and_capture());
+                return Some(
+                    canvas::Action::publish(NodeGraphEvent::BackgroundClicked).and_capture(),
+                );
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 if let Some(conn) = state.connecting.take() {
                     state.cache.clear();
                     let views = self.views();
-                    if let Some((target_node, target_socket, _target_ty, _pos, is_input)) = find_socket_at(&views, cursor_pos, self.pan, self.zoom) {
+                    if let Some((target_node, target_socket, _target_ty, _pos, is_input)) =
+                        find_socket_at(&views, cursor_pos, self.pan, self.zoom)
+                    {
                         let valid = if conn.is_output { is_input } else { !is_input };
                         if valid {
                             let (from, from_sock, to, to_sock) = if conn.is_output {
-                                (conn.from_node, conn.from_socket.clone(), target_node, target_socket.clone())
+                                (
+                                    conn.from_node,
+                                    conn.from_socket.clone(),
+                                    target_node,
+                                    target_socket.clone(),
+                                )
                             } else {
-                                (target_node, target_socket.clone(), conn.from_node, conn.from_socket.clone())
+                                (
+                                    target_node,
+                                    target_socket.clone(),
+                                    conn.from_node,
+                                    conn.from_socket.clone(),
+                                )
                             };
                             if from != to {
-                                return Some(canvas::Action::publish(NodeGraphEvent::Connect { from, from_socket: from_sock, to, to_socket: to_sock }).and_capture());
+                                return Some(
+                                    canvas::Action::publish(NodeGraphEvent::Connect {
+                                        from,
+                                        from_socket: from_sock,
+                                        to,
+                                        to_socket: to_sock,
+                                    })
+                                    .and_capture(),
+                                );
                             }
                         }
                     }
@@ -418,15 +494,22 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     let cursor_world = screen_to_world(cursor_pos, self.pan, self.zoom);
                     let pos = Vec2::new(cursor_world.x + offset.x, cursor_world.y + offset.y);
                     state.cache.clear();
-                    return Some(canvas::Action::publish(NodeGraphEvent::NodeMoved { id, position: pos }).and_capture());
+                    return Some(
+                        canvas::Action::publish(NodeGraphEvent::NodeMoved { id, position: pos })
+                            .and_capture(),
+                    );
                 }
                 if let Some((start, orig_pan)) = state.panning
-                    && state.dragging.is_none() && state.connecting.is_none() {
-                        let delta = Vector::new(cursor_pos.x - start.x, cursor_pos.y - start.y);
-                        let new_pan = Vector::new(orig_pan.x + delta.x, orig_pan.y + delta.y);
-                        state.cache.clear();
-                        return Some(canvas::Action::publish(NodeGraphEvent::PanePan(new_pan)).and_capture());
-                    }
+                    && state.dragging.is_none()
+                    && state.connecting.is_none()
+                {
+                    let delta = Vector::new(cursor_pos.x - start.x, cursor_pos.y - start.y);
+                    let new_pan = Vector::new(orig_pan.x + delta.x, orig_pan.y + delta.y);
+                    state.cache.clear();
+                    return Some(
+                        canvas::Action::publish(NodeGraphEvent::PanePan(new_pan)).and_capture(),
+                    );
+                }
             }
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let delta_y = match delta {
@@ -444,7 +527,13 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     cursor_pos.y - (cursor_pos.y - self.pan.y) * factor_ratio,
                 );
                 state.cache.clear();
-                return Some(canvas::Action::publish(NodeGraphEvent::GraphZoom { zoom: new_zoom, pan: new_pan }).and_capture());
+                return Some(
+                    canvas::Action::publish(NodeGraphEvent::GraphZoom {
+                        zoom: new_zoom,
+                        pan: new_pan,
+                    })
+                    .and_capture(),
+                );
             }
             _ => {}
         }
@@ -495,10 +584,11 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
 
             // Connections avec culling
             for conn in &self.graph.connections {
-                let from_view = match node_view_from_graph(&self.graph, conn.from_node, self.selected) {
-                    Some(v) => v,
-                    None => continue,
-                };
+                let from_view =
+                    match node_view_from_graph(&self.graph, conn.from_node, self.selected) {
+                        Some(v) => v,
+                        None => continue,
+                    };
                 let to_view = match node_view_from_graph(&self.graph, conn.to_node, self.selected) {
                     Some(v) => v,
                     None => continue,
@@ -509,8 +599,16 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                 if !visible_expanded.intersects(&fb) && !visible_expanded.intersects(&tb) {
                     continue;
                 }
-                let from_idx = from_view.outputs.iter().position(|(n, _)| n == &conn.from_socket).unwrap_or(0);
-                let to_idx = to_view.inputs.iter().position(|(n, _)| n == &conn.to_socket).unwrap_or(0);
+                let from_idx = from_view
+                    .outputs
+                    .iter()
+                    .position(|(n, _)| n == &conn.from_socket)
+                    .unwrap_or(0);
+                let to_idx = to_view
+                    .inputs
+                    .iter()
+                    .position(|(n, _)| n == &conn.to_socket)
+                    .unwrap_or(0);
                 let p0 = socket_position(&from_view, from_idx, false);
                 let p1 = socket_position(&to_view, to_idx, true);
                 let dx = (p1.x - p0.x).abs().max(60.0);
@@ -524,8 +622,24 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     let [r, g, b] = conn.socket_type.color();
                     Color::from_rgb(r, g, b)
                 };
-                frame.stroke(&cable, canvas::Stroke { style: canvas::Style::Solid(colors::CABLE_SHADOW), width: (metrics::CABLE_WIDTH + 2.0) / self.zoom, line_cap: canvas::LineCap::Round, ..Default::default() });
-                frame.stroke(&cable, canvas::Stroke { style: canvas::Style::Solid(ty_color), width: metrics::CABLE_WIDTH / self.zoom, line_cap: canvas::LineCap::Round, ..Default::default() });
+                frame.stroke(
+                    &cable,
+                    canvas::Stroke {
+                        style: canvas::Style::Solid(colors::CABLE_SHADOW),
+                        width: (metrics::CABLE_WIDTH + 2.0) / self.zoom,
+                        line_cap: canvas::LineCap::Round,
+                        ..Default::default()
+                    },
+                );
+                frame.stroke(
+                    &cable,
+                    canvas::Stroke {
+                        style: canvas::Style::Solid(ty_color),
+                        width: metrics::CABLE_WIDTH / self.zoom,
+                        line_cap: canvas::LineCap::Round,
+                        ..Default::default()
+                    },
+                );
                 let _ = p0;
             }
 
@@ -539,11 +653,22 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                 if !visible_expanded.intersects(&bounds_n) {
                     continue;
                 }
-                let rect = Path::rounded_rectangle(Point::new(bounds_n.x, bounds_n.y), bounds_n.size(), metrics::RADIUS_NODE.into());
+                let rect = Path::rounded_rectangle(
+                    Point::new(bounds_n.x, bounds_n.y),
+                    bounds_n.size(),
+                    metrics::RADIUS_NODE.into(),
+                );
                 // Nœud désactivé : rendu grisé/translucide (l'effet est bypassé)
                 let dim: f32 = if view.enabled { 1.0 } else { 0.35 };
-                let bg_base = if view.selected { colors::BG_NODE_SELECTED } else { colors::BG_NODE };
-                let bg = Color { a: bg_base.a * dim.max(0.45), ..bg_base };
+                let bg_base = if view.selected {
+                    colors::BG_NODE_SELECTED
+                } else {
+                    colors::BG_NODE
+                };
+                let bg = Color {
+                    a: bg_base.a * dim.max(0.45),
+                    ..bg_base
+                };
                 frame.fill(&rect, bg);
                 let border_color = if !view.enabled {
                     colors::TEXT_MUTED
@@ -552,8 +677,19 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                 } else {
                     colors::BORDER_NODE
                 };
-                let bw = if view.selected { metrics::BORDER_WIDTH_NODE_SELECTED } else { metrics::BORDER_WIDTH_NODE };
-                frame.stroke(&rect, canvas::Stroke { style: canvas::Style::Solid(border_color), width: bw / self.zoom, ..Default::default() });
+                let bw = if view.selected {
+                    metrics::BORDER_WIDTH_NODE_SELECTED
+                } else {
+                    metrics::BORDER_WIDTH_NODE
+                };
+                frame.stroke(
+                    &rect,
+                    canvas::Stroke {
+                        style: canvas::Style::Solid(border_color),
+                        width: bw / self.zoom,
+                        ..Default::default()
+                    },
+                );
                 let header_rect = Path::new(|b| {
                     let r = metrics::RADIUS_NODE;
                     let x = bounds_n.x;
@@ -569,34 +705,124 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     b.arc_to(Point::new(x, y), Point::new(x + r, y), r);
                     b.close();
                 });
-                frame.fill(&header_rect, Color { a: if view.enabled { 1.0 } else { 0.35 }, ..view.header_color });
-                frame.fill_text(Text { content: view.name.clone(), position: Point::new(bounds_n.x + 10.0, bounds_n.y + metrics::NODE_HEADER_HEIGHT / 2.0), color: if view.enabled { Color::WHITE } else { colors::TEXT_MUTED }, size: iced::Pixels(12.0), font: iced::Font::default(), align_x: iced::alignment::Horizontal::Left.into(), align_y: iced::alignment::Vertical::Center, line_height: iced::widget::text::LineHeight::default(), shaping: iced::widget::text::Shaping::Basic, max_width: f32::INFINITY, ..Default::default() });
+                frame.fill(
+                    &header_rect,
+                    Color {
+                        a: if view.enabled { 1.0 } else { 0.35 },
+                        ..view.header_color
+                    },
+                );
+                frame.fill_text(Text {
+                    content: view.name.clone(),
+                    position: Point::new(
+                        bounds_n.x + 10.0,
+                        bounds_n.y + metrics::NODE_HEADER_HEIGHT / 2.0,
+                    ),
+                    color: if view.enabled {
+                        Color::WHITE
+                    } else {
+                        colors::TEXT_MUTED
+                    },
+                    size: iced::Pixels(12.0),
+                    font: iced::Font::default(),
+                    align_x: iced::alignment::Horizontal::Left.into(),
+                    align_y: iced::alignment::Vertical::Center,
+                    line_height: iced::widget::text::LineHeight::default(),
+                    shaping: iced::widget::text::Shaping::Basic,
+                    max_width: f32::INFINITY,
+                    ..Default::default()
+                });
                 if show_details {
                     let btn = preview_button_rect(view);
-                    let eye = if view.preview_enabled { "\u{e8f4}" } else { "\u{e8f5}" };
+                    let eye = if view.preview_enabled {
+                        "\u{e8f4}"
+                    } else {
+                        "\u{e8f5}"
+                    };
                     let btn_bg = Path::circle(btn.center(), 8.0);
-                    frame.fill(&btn_bg, if view.preview_enabled { Color::from_rgb(0.20, 0.45, 0.85) } else { Color::from_rgba(0.0, 0.0, 0.0, 0.25) });
-                    frame.fill_text(Text { content: eye.to_string(), position: btn.center(), color: Color::WHITE, size: iced::Pixels(10.0), font: iced::Font::with_name("Material Icons"), align_x: iced::alignment::Horizontal::Center.into(), align_y: iced::alignment::Vertical::Center, line_height: iced::widget::text::LineHeight::default(), shaping: iced::widget::text::Shaping::Basic, max_width: f32::INFINITY, ..Default::default() });
+                    frame.fill(
+                        &btn_bg,
+                        if view.preview_enabled {
+                            Color::from_rgb(0.20, 0.45, 0.85)
+                        } else {
+                            Color::from_rgba(0.0, 0.0, 0.0, 0.25)
+                        },
+                    );
+                    frame.fill_text(Text {
+                        content: eye.to_string(),
+                        position: btn.center(),
+                        color: Color::WHITE,
+                        size: iced::Pixels(10.0),
+                        font: iced::Font::with_name("Material Icons"),
+                        align_x: iced::alignment::Horizontal::Center.into(),
+                        align_y: iced::alignment::Vertical::Center,
+                        line_height: iced::widget::text::LineHeight::default(),
+                        shaping: iced::widget::text::Shaping::Basic,
+                        max_width: f32::INFINITY,
+                        ..Default::default()
+                    });
                 }
                 // Sockets : toujours dessinés mais labels selon LOD
                 for (idx, (name, ty)) in view.inputs.iter().enumerate() {
                     let p = socket_position(view, idx, true);
                     let c = Path::circle(p, metrics::NODE_SOCKET_RADIUS);
-                    let col = { let [r, g, b] = ty.color(); Color::from_rgb(r, g, b) };
+                    let col = {
+                        let [r, g, b] = ty.color();
+                        Color::from_rgb(r, g, b)
+                    };
                     frame.fill(&c, col);
-                    frame.stroke(&c, canvas::Stroke { style: canvas::Style::Solid(Color::from_rgb(0.05, 0.05, 0.05)), width: 1.2 / self.zoom, ..Default::default() });
+                    frame.stroke(
+                        &c,
+                        canvas::Stroke {
+                            style: canvas::Style::Solid(Color::from_rgb(0.05, 0.05, 0.05)),
+                            width: 1.2 / self.zoom,
+                            ..Default::default()
+                        },
+                    );
                     if show_labels {
-                        frame.fill_text(Text { content: name.clone(), position: Point::new(p.x + 12.0, p.y), color: colors::TEXT_SECONDARY, size: iced::Pixels(10.0), align_x: iced::alignment::Horizontal::Left.into(), align_y: iced::alignment::Vertical::Center, line_height: iced::widget::text::LineHeight::default(), shaping: iced::widget::text::Shaping::Basic, max_width: 120.0, ..Default::default() });
+                        frame.fill_text(Text {
+                            content: name.clone(),
+                            position: Point::new(p.x + 12.0, p.y),
+                            color: colors::TEXT_SECONDARY,
+                            size: iced::Pixels(10.0),
+                            align_x: iced::alignment::Horizontal::Left.into(),
+                            align_y: iced::alignment::Vertical::Center,
+                            line_height: iced::widget::text::LineHeight::default(),
+                            shaping: iced::widget::text::Shaping::Basic,
+                            max_width: 120.0,
+                            ..Default::default()
+                        });
                     }
                 }
                 for (idx, (name, ty)) in view.outputs.iter().enumerate() {
                     let p = socket_position(view, idx, false);
                     let c = Path::circle(p, metrics::NODE_SOCKET_RADIUS);
-                    let col = { let [r, g, b] = ty.color(); Color::from_rgb(r, g, b) };
+                    let col = {
+                        let [r, g, b] = ty.color();
+                        Color::from_rgb(r, g, b)
+                    };
                     frame.fill(&c, col);
-                    frame.stroke(&c, canvas::Stroke { style: canvas::Style::Solid(Color::from_rgb(0.05, 0.05, 0.05)), width: 1.2 / self.zoom, ..Default::default() });
+                    frame.stroke(
+                        &c,
+                        canvas::Stroke {
+                            style: canvas::Style::Solid(Color::from_rgb(0.05, 0.05, 0.05)),
+                            width: 1.2 / self.zoom,
+                            ..Default::default()
+                        },
+                    );
                     if show_labels {
-                        frame.fill_text(Text { content: name.clone(), position: Point::new(p.x - 12.0, p.y), color: colors::TEXT_SECONDARY, size: iced::Pixels(10.0), align_x: iced::alignment::Horizontal::Right.into(), align_y: iced::alignment::Vertical::Center, line_height: iced::widget::text::LineHeight::default(), shaping: iced::widget::text::Shaping::Basic, max_width: 120.0, ..Default::default() });
+                        frame.fill_text(Text {
+                            content: name.clone(),
+                            position: Point::new(p.x - 12.0, p.y),
+                            color: colors::TEXT_SECONDARY,
+                            size: iced::Pixels(10.0),
+                            align_x: iced::alignment::Horizontal::Right.into(),
+                            align_y: iced::alignment::Vertical::Center,
+                            line_height: iced::widget::text::LineHeight::default(),
+                            shaping: iced::widget::text::Shaping::Basic,
+                            max_width: 120.0,
+                            ..Default::default()
+                        });
                     }
                 }
                 if view.preview_enabled && show_previews {
@@ -607,12 +833,45 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     // Limite checker à zoom faible
                     if self.zoom > 0.6 {
                         frame.with_clip(pr, |frame| {
-                            for c in 0..cols { for r in 0..rows { let col = if (c + r) % 2 == 0 { Color::from_rgb(0.22, 0.22, 0.22) } else { Color::from_rgb(0.28, 0.28, 0.28) }; frame.fill_rectangle(Point::new(pr.x + c as f32 * checker, pr.y + r as f32 * checker), Size::new(checker, checker), col); } }
+                            for c in 0..cols {
+                                for r in 0..rows {
+                                    let col = if (c + r) % 2 == 0 {
+                                        Color::from_rgb(0.22, 0.22, 0.22)
+                                    } else {
+                                        Color::from_rgb(0.28, 0.28, 0.28)
+                                    };
+                                    frame.fill_rectangle(
+                                        Point::new(
+                                            pr.x + c as f32 * checker,
+                                            pr.y + r as f32 * checker,
+                                        ),
+                                        Size::new(checker, checker),
+                                        col,
+                                    );
+                                }
+                            }
                         });
                     }
                     let pr_path = Path::rectangle(pr.position(), pr.size());
-                    frame.stroke(&pr_path, canvas::Stroke::default().with_width(1.0 / self.zoom).with_color(Color::from_rgb(0.30, 0.30, 0.30)));
-                    if let Some(handle) = self.previews.get(&view.id) { frame.draw_image(pr, iced_core::Image::new(handle.clone())); } else { frame.fill_text(Text { content: "Aperçu...".into(), position: pr.center(), color: colors::TEXT_MUTED, size: iced::Pixels(9.0), align_x: iced::alignment::Horizontal::Center.into(), align_y: iced::alignment::Vertical::Center, ..Default::default() }); }
+                    frame.stroke(
+                        &pr_path,
+                        canvas::Stroke::default()
+                            .with_width(1.0 / self.zoom)
+                            .with_color(Color::from_rgb(0.30, 0.30, 0.30)),
+                    );
+                    if let Some(handle) = self.previews.get(&view.id) {
+                        frame.draw_image(pr, iced_core::Image::new(handle.clone()));
+                    } else {
+                        frame.fill_text(Text {
+                            content: "Aperçu...".into(),
+                            position: pr.center(),
+                            color: colors::TEXT_MUTED,
+                            size: iced::Pixels(9.0),
+                            align_x: iced::alignment::Horizontal::Center.into(),
+                            align_y: iced::alignment::Vertical::Center,
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         });
@@ -658,17 +917,50 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                 let p0 = conn.from_pos;
                 let p1 = conn.current;
                 let dx = (p1.x - p0.x).abs().max(60.0);
-                let (c0, c1) = if conn.is_output { (Point::new(p0.x + dx * 0.5, p0.y), Point::new(p1.x - dx * 0.5, p1.y)) } else { (Point::new(p0.x - dx * 0.5, p0.y), Point::new(p1.x + dx * 0.5, p1.y)) };
-                let cable = Path::new(|b| { b.move_to(p0); b.bezier_curve_to(c0, c1, p1); });
-                let col = { let [r,g,b] = conn.from_type.color(); Color::from_rgb(r,g,b) };
-                frame.stroke(&cable, canvas::Stroke { style: canvas::Style::Solid(Color::from_rgba(col.r, col.g, col.b, 0.9)), width: metrics::CABLE_WIDTH / self.zoom, line_cap: canvas::LineCap::Round, ..Default::default() });
+                let (c0, c1) = if conn.is_output {
+                    (
+                        Point::new(p0.x + dx * 0.5, p0.y),
+                        Point::new(p1.x - dx * 0.5, p1.y),
+                    )
+                } else {
+                    (
+                        Point::new(p0.x - dx * 0.5, p0.y),
+                        Point::new(p1.x + dx * 0.5, p1.y),
+                    )
+                };
+                let cable = Path::new(|b| {
+                    b.move_to(p0);
+                    b.bezier_curve_to(c0, c1, p1);
+                });
+                let col = {
+                    let [r, g, b] = conn.from_type.color();
+                    Color::from_rgb(r, g, b)
+                };
+                frame.stroke(
+                    &cable,
+                    canvas::Stroke {
+                        style: canvas::Style::Solid(Color::from_rgba(col.r, col.g, col.b, 0.9)),
+                        width: metrics::CABLE_WIDTH / self.zoom,
+                        line_cap: canvas::LineCap::Round,
+                        ..Default::default()
+                    },
+                );
                 let end = Path::circle(p1, 4.0 / self.zoom);
                 frame.fill(&end, col);
                 if let Some(pos) = cursor.position_in(bounds) {
                     let views = self.views();
-                    if let Some((_n,_s,_ty,p,_inp)) = find_socket_at(&views, pos, self.pan, self.zoom) {
+                    if let Some((_n, _s, _ty, p, _inp)) =
+                        find_socket_at(&views, pos, self.pan, self.zoom)
+                    {
                         let hl = Path::circle(p, 8.0);
-                        frame.stroke(&hl, canvas::Stroke { style: canvas::Style::Solid(Color::WHITE), width: 1.5 / self.zoom, ..Default::default() });
+                        frame.stroke(
+                            &hl,
+                            canvas::Stroke {
+                                style: canvas::Style::Solid(Color::WHITE),
+                                width: 1.5 / self.zoom,
+                                ..Default::default()
+                            },
+                        );
                     }
                 }
             }
@@ -684,20 +976,35 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if state.dragging.is_some() { return mouse::Interaction::Grabbing; }
-        if state.connecting.is_some() { return mouse::Interaction::Crosshair; }
+        if state.dragging.is_some() {
+            return mouse::Interaction::Grabbing;
+        }
+        if state.connecting.is_some() {
+            return mouse::Interaction::Crosshair;
+        }
         if let Some(pos) = cursor.position_in(bounds) {
             for view in self.views() {
                 let btn = preview_button_rect(&view);
                 let sp = world_to_screen(btn.position(), self.pan, self.zoom);
-                let screen_btn = Rectangle::new(sp, Size::new(btn.width * self.zoom, btn.height * self.zoom));
-                if screen_btn.contains(pos) { return mouse::Interaction::Pointer; }
+                let screen_btn =
+                    Rectangle::new(sp, Size::new(btn.width * self.zoom, btn.height * self.zoom));
+                if screen_btn.contains(pos) {
+                    return mouse::Interaction::Pointer;
+                }
             }
             let views = self.views();
-            if find_socket_at(&views, pos, self.pan, self.zoom).is_some() { return mouse::Interaction::Crosshair; }
+            if find_socket_at(&views, pos, self.pan, self.zoom).is_some() {
+                return mouse::Interaction::Crosshair;
+            }
             let world = screen_to_world(pos, self.pan, self.zoom);
-            for view in self.views() { if node_bounds(&view).contains(world) { return mouse::Interaction::Grab; } }
-            if state.panning.is_some() { return mouse::Interaction::Grabbing; }
+            for view in self.views() {
+                if node_bounds(&view).contains(world) {
+                    return mouse::Interaction::Grab;
+                }
+            }
+            if state.panning.is_some() {
+                return mouse::Interaction::Grabbing;
+            }
         }
         mouse::Interaction::default()
     }

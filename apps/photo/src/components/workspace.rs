@@ -17,11 +17,11 @@
 use crate::components::{layers_panel, properties, toolpanel};
 use crate::layers::Layer;
 use crate::{Message, PanelType, Tool};
-use suite_core::Graph;
 use datatypes::NodeId;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{button, column, container, image, text, Space};
+use iced::widget::{Space, button, column, container, image, text};
 use iced::{Alignment, Element, Length, Size, Vector};
+use suite_core::Graph;
 use ui::base_panel;
 use ui::dropdown::{dropdown_box, menu_item, menu_separator};
 use ui::theme::colors;
@@ -55,8 +55,9 @@ pub fn render<'a>(
     gen_previews: &std::collections::HashMap<NodeId, image::Handle>,
     node_context_menu: Option<iced::Point>,
     node_context_world: Option<datatypes::Vec2>,
-    // Trait de pinceau en cours (aperçu canvas, style inclus)
-    stroke_overlay: Option<ui::image_canvas::StrokeOverlay>,
+    // Style du pinceau + aperçu figé du commit en cours (texture)
+    brush: ui::image_canvas::BrushStyle,
+    pending_preview: Option<ui::image_canvas::StrokeTex>,
     // Écran d'accueil (aucun document ouvert)
     new_doc_w: &'a str,
     new_doc_h: &'a str,
@@ -64,7 +65,6 @@ pub fn render<'a>(
 ) -> Element<'a, Message> {
     let total_panes = panes.len();
 
-    let stroke_src = &stroke_overlay;
     let pane_grid = PaneGrid::new(panes, |id, panel_type, _is_maximized| {
         let is_focused = focus == Some(id);
 
@@ -77,7 +77,11 @@ pub fn render<'a>(
                     .iter()
                     .any(|l| l.visible && l.opacity > 0.01 && l.blend_mode != "Normal");
                 let preview: Element<'_, Message> = render_canvas_preview(
-                    if needs_fallback { fallback_handle.clone() } else { None },
+                    if needs_fallback {
+                        fallback_handle.clone()
+                    } else {
+                        None
+                    },
                     if needs_fallback { fallback_size } else { None },
                     drag_layer,
                     drag_background.clone(),
@@ -92,7 +96,8 @@ pub fn render<'a>(
                     zoom_level,
                     canvas_selection,
                     canvas_viewport,
-                    stroke_src.clone(),
+                    brush,
+                    pending_preview.clone(),
                     new_doc_w,
                     new_doc_h,
                     welcome_error,
@@ -112,22 +117,32 @@ pub fn render<'a>(
                 let sel = selected_layer.and_then(|id| layers.iter().find(|l| l.id == id));
                 ("Propriétés".to_string(), properties::render(sel))
             }
-            PanelType::Layers => {
-                ("Calques".to_string(), layers_panel::render(layers, selected_layer))
-            }
+            PanelType::Layers => (
+                "Calques".to_string(),
+                layers_panel::render(layers, selected_layer),
+            ),
             PanelType::Generator => {
                 let g_clone = gen_graph.clone();
                 let previews = gen_previews.clone();
                 let busy_empty: std::collections::HashSet<NodeId> = Default::default();
-                let canvas = ui::node_graph::view(g_clone, gen_selected, Vector::new(0.0, 0.0), 1.0, previews, &busy_empty)
-                    .map(Message::NodeGraphEvent);
+                let canvas = ui::node_graph::view(
+                    g_clone,
+                    gen_selected,
+                    Vector::new(0.0, 0.0),
+                    1.0,
+                    previews,
+                    &busy_empty,
+                )
+                .map(Message::NodeGraphEvent);
 
                 // Menu contextuel ancré dans les coordonnées LOCALES du canvas
                 let content: Element<'_, Message> = if let Some(local) = node_context_menu {
                     let world = node_context_world.unwrap_or(datatypes::Vec2::new(0.0, 0.0));
                     let node_menu = build_node_context_menu(local, world);
                     let outside = iced::widget::mouse_area(
-                        iced::widget::Space::new().width(Length::Fill).height(Length::Fill),
+                        iced::widget::Space::new()
+                            .width(Length::Fill)
+                            .height(Length::Fill),
                     )
                     .on_press(Message::CloseNodeContextMenu);
                     let menu_pos = container(node_menu)
@@ -136,7 +151,12 @@ pub fn render<'a>(
                         .padding(iced::Padding::default().top(local.y).left(local.x))
                         .align_x(iced::alignment::Horizontal::Left)
                         .align_y(iced::alignment::Vertical::Top);
-                    iced::widget::stack![container(canvas).width(Length::Fill).height(Length::Fill), outside, menu_pos].into()
+                    iced::widget::stack![
+                        container(canvas).width(Length::Fill).height(Length::Fill),
+                        outside,
+                        menu_pos
+                    ]
+                    .into()
                 } else {
                     container(canvas).padding(0).clip(true).into()
                 };
@@ -172,22 +192,45 @@ pub fn render<'a>(
     grid_container.into()
 }
 
-fn build_node_context_menu<'a>(click_pos: iced::Point, world: datatypes::Vec2) -> Element<'a, Message> {
+fn build_node_context_menu<'a>(
+    click_pos: iced::Point,
+    world: datatypes::Vec2,
+) -> Element<'a, Message> {
     let categories: Vec<(&str, Vec<(&str, &str)>)> = vec![
-        ("Couleur", vec![("Luminosité / Contraste", "brightness_contrast"), ("Correction Couleur", "color_correct")]),
+        (
+            "Couleur",
+            vec![
+                ("Luminosité / Contraste", "brightness_contrast"),
+                ("Correction Couleur", "color_correct"),
+            ],
+        ),
         ("Filtre", vec![("Flou", "blur")]),
         ("Compositing", vec![("Mélange", "mix")]),
         ("Sortie", vec![("Sortie", "output")]),
     ];
 
-    let mut col = column![container(text("Ajouter un nœud générateur").size(13).color(colors::TEXT_PRIMARY)).padding(iced::Padding::new(4.0).left(8.0))].spacing(2);
+    let mut col = column![
+        container(
+            text("Ajouter un nœud générateur")
+                .size(13)
+                .color(colors::TEXT_PRIMARY)
+        )
+        .padding(iced::Padding::new(4.0).left(8.0))
+    ]
+    .spacing(2);
     for (cat_label, nodes) in categories {
-        col = col.push(container(text(cat_label).size(11).color(colors::TEXT_MUTED)).padding(iced::Padding::new(2.0).left(8.0)));
+        col = col.push(
+            container(text(cat_label).size(11).color(colors::TEXT_MUTED))
+                .padding(iced::Padding::new(2.0).left(8.0)),
+        );
         for (label, type_id) in nodes {
             col = col.push(menu_item(
                 label,
                 "",
-                Message::AddNodeAt { type_id: type_id.to_string(), world_pos: world },
+                Message::AddNodeAt {
+                    type_id: type_id.to_string(),
+                    world_pos: world,
+                },
             ));
         }
         col = col.push(menu_separator());
@@ -213,7 +256,8 @@ fn render_canvas_preview<'a>(
     zoom_level: u32,
     canvas_selection: Option<iced::Rectangle>,
     _viewport: Size,
-    stroke_overlay: Option<ui::image_canvas::StrokeOverlay>,
+    brush: ui::image_canvas::BrushStyle,
+    pending_preview: Option<ui::image_canvas::StrokeTex>,
     new_doc_w: &'a str,
     new_doc_h: &'a str,
     welcome_error: Option<&'a str>,
@@ -278,7 +322,8 @@ fn render_canvas_preview<'a>(
             },
         );
     }
-    if dragging && has_drag_bg
+    if dragging
+        && has_drag_bg
         && let Some(l) = drag_layer.and_then(|id| layers.iter().find(|l| l.id == id))
         && l.visible
     {
@@ -321,23 +366,36 @@ fn render_canvas_preview<'a>(
             scale: 1.0,
         }];
         let canvas = ui::image_canvas::view_with_tool(
-            doc_size, canvas_pan, zoom, canvas_tool, canvas_selection, ls, None,
+            doc_size,
+            canvas_pan,
+            zoom,
+            canvas_tool,
+            canvas_selection,
+            ls,
+            brush,
+            None,
         )
         .map(Message::ImageCanvasEvent);
-        container(canvas).width(Length::Fill).height(Length::Fill).clip(true).into()
+        container(canvas)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true)
+            .into()
     } else {
         let canvas = ui::image_canvas::view_with_tool(
-            doc_size, canvas_pan, zoom, canvas_tool, canvas_selection, canvas_layers,
-            stroke_overlay,
+            doc_size,
+            canvas_pan,
+            zoom,
+            canvas_tool,
+            canvas_selection,
+            canvas_layers,
+            brush,
+            pending_preview,
         )
         .map(Message::ImageCanvasEvent);
         if layers.is_empty() && doc_size.is_none() {
             // Écran d'accueil : créer/ouvrir un document
-            let welcome = crate::components::welcome::render(
-                new_doc_w,
-                new_doc_h,
-                welcome_error,
-            );
+            let welcome = crate::components::welcome::render(new_doc_w, new_doc_h, welcome_error);
             iced::widget::stack![
                 container(canvas).width(Length::Fill).height(Length::Fill),
                 container(welcome)
@@ -348,7 +406,11 @@ fn render_canvas_preview<'a>(
             ]
             .into()
         } else {
-            container(canvas).width(Length::Fill).height(Length::Fill).clip(true).into()
+            container(canvas)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true)
+                .into()
         }
     };
 
@@ -374,15 +436,16 @@ fn render_canvas_preview<'a>(
             .padding(iced::Padding::default().top(14.0).left(14.0))
             .into()
     } else {
-        Space::new().width(Length::Fixed(0.0)).height(Length::Fixed(0.0)).into()
+        Space::new()
+            .width(Length::Fixed(0.0))
+            .height(Length::Fixed(0.0))
+            .into()
     };
 
-    container(
-        iced::widget::stack![
-            container(content).width(Length::Fill).height(Length::Fill),
-            floating_tools,
-        ]
-    )
+    container(iced::widget::stack![
+        container(content).width(Length::Fill).height(Length::Fill),
+        floating_tools,
+    ])
     .width(Length::Fill)
     .height(Length::Fill)
     .clip(true)

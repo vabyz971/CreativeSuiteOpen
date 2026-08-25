@@ -24,9 +24,9 @@ pub mod node_registry {
 }
 pub mod layers_panel;
 pub mod options_bar;
-pub mod properties;
 pub mod preferences;
+pub mod properties;
+pub mod toolbar;
 pub mod toolpanel;
 pub mod welcome;
-pub mod toolbar;
 pub mod workspace;

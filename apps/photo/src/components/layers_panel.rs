@@ -19,9 +19,11 @@
 //! - Liste (haut de pile en premier) : miniature, nom, œil de visibilité
 //! - Barre bas : ajouter, dupliquer, supprimer, monter/descendre
 
-use crate::layers::{Layer, BLEND_MODES};
 use crate::Message;
-use iced::widget::{button, column, container, image, pick_list, row, scrollable, slider, text, text_input, Space};
+use crate::layers::{BLEND_MODES, Layer};
+use iced::widget::{
+    Space, button, column, container, image, pick_list, row, scrollable, slider, text, text_input,
+};
 use iced::{Alignment, Element, Length, Padding};
 use ui::theme::{colors, metrics};
 
@@ -34,10 +36,7 @@ const ICON_DOWN: &str = "\u{e313}"; // arrow_downward
 const ICON_VISIBLE: &str = "\u{e8f4}"; // visibility
 const ICON_HIDDEN: &str = "\u{e8f5}"; // visibility_off
 
-pub fn render<'a>(
-    layers: &'a [Layer],
-    selected: Option<u64>,
-) -> Element<'a, Message> {
+pub fn render<'a>(layers: &'a [Layer], selected: Option<u64>) -> Element<'a, Message> {
     let sel_layer = selected.and_then(|id| layers.iter().find(|l| l.id == id));
 
     // --- En-tête : mode de fusion + opacité ---
@@ -52,10 +51,16 @@ pub fn render<'a>(
                 text("Fusion").size(11).color(colors::TEXT_MUTED),
                 Space::new().width(Length::Fill),
                 pick_list(
-                    BLEND_MODES.iter().map(|s| s.to_string()).collect::<Vec<String>>(),
+                    BLEND_MODES
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
                     Some(blend),
                     move |m: String| {
-                        Message::SetLayerBlend { id: selected.unwrap_or(0), mode: m }
+                        Message::SetLayerBlend {
+                            id: selected.unwrap_or(0),
+                            mode: m,
+                        }
                     },
                 )
                 .width(Length::Fixed(130.0))
@@ -118,7 +123,10 @@ pub fn render<'a>(
         .padding(12)
         .into()
     } else {
-        scrollable(list).width(Length::Fill).height(Length::Fill).into()
+        scrollable(list)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     };
 
     // --- Barre d'actions ---
@@ -130,7 +138,7 @@ pub fn render<'a>(
             colors::TEXT_MUTED
         }))
         .padding(4);
-        
+
         if enabled {
             b.on_press(msg).style(move |_t, s| {
                 let mut st = button::Style::default();
@@ -150,8 +158,18 @@ pub fn render<'a>(
     let has_sel = sel_layer.is_some();
     let actions = container(
         row![
-            action_btn(ICON_ADD, "Nouveau calque vide", Message::AddEmptyLayer, true),
-            action_btn(ICON_IMAGE, "Calque depuis une image", Message::OpenImage, true),
+            action_btn(
+                ICON_ADD,
+                "Nouveau calque vide",
+                Message::AddEmptyLayer,
+                true
+            ),
+            action_btn(
+                ICON_IMAGE,
+                "Calque depuis une image",
+                Message::OpenImage,
+                true
+            ),
             action_btn(
                 ICON_DUPLICATE,
                 "Dupliquer",
@@ -203,14 +221,18 @@ fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
     let id = layer.id;
 
     let eye = button(
-        text(if layer.visible { ICON_VISIBLE } else { ICON_HIDDEN })
-            .font(material)
-            .size(15)
-            .color(if layer.visible {
-                colors::TEXT_SECONDARY
-            } else {
-                colors::TEXT_MUTED
-            }),
+        text(if layer.visible {
+            ICON_VISIBLE
+        } else {
+            ICON_HIDDEN
+        })
+        .font(material)
+        .size(15)
+        .color(if layer.visible {
+            colors::TEXT_SECONDARY
+        } else {
+            colors::TEXT_MUTED
+        }),
     )
     .padding(2)
     .style(move |_t, s| {
@@ -275,7 +297,5 @@ fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
     })
     .on_press(Message::SelectLayer(id));
 
-    container(row_btn)
-        .width(Length::Fill)
-        .into()
+    container(row_btn).width(Length::Fill).into()
 }

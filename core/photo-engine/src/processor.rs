@@ -18,12 +18,12 @@
 //! Évaluation topologique avec cache ; les nœuds désactivés (`enabled = false`)
 //! sont bypassés : leur première entrée image traverse telle quelle.
 
-use suite_core::Graph;
+use crate::nodes::{self, NodeCtx};
 use datatypes::NodeId;
 use image::DynamicImage;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use crate::nodes::{self, NodeCtx};
+use suite_core::Graph;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -104,7 +104,13 @@ pub fn evaluate(
     original: &DynamicImage,
     sources: &HashMap<NodeId, Arc<DynamicImage>>,
 ) -> Option<DynamicImage> {
-    evaluate_incremental(graph, original, sources, &Default::default(), &Default::default())
+    evaluate_incremental(
+        graph,
+        original,
+        sources,
+        &Default::default(),
+        &Default::default(),
+    )
 }
 
 /// Évaluation incrémentale : réutilise `prev_cache` sauf pour les nœuds de
@@ -118,7 +124,14 @@ pub fn evaluate_incremental(
 ) -> Option<DynamicImage> {
     let base = valid_base(graph, prev_cache, affected);
     let mut cache = HashMap::new();
-    run(graph, original, sources, &base, &mut cache, Mode::OutputOnly);
+    run(
+        graph,
+        original,
+        sources,
+        &base,
+        &mut cache,
+        Mode::OutputOnly,
+    );
     cache.get(&graph.find_output_node()?).cloned()
 }
 
@@ -131,7 +144,14 @@ pub fn evaluate_with_cache(
 ) -> HashMap<NodeId, DynamicImage> {
     let empty = HashMap::new();
     let mut cache = HashMap::new();
-    run(graph, original, sources, &empty, &mut cache, Mode::WithPreviews);
+    run(
+        graph,
+        original,
+        sources,
+        &empty,
+        &mut cache,
+        Mode::WithPreviews,
+    );
     cache
 }
 
@@ -146,7 +166,14 @@ pub fn evaluate_with_cache_incremental(
 ) -> HashMap<NodeId, DynamicImage> {
     let base: HashMap<NodeId, DynamicImage> = valid_base(graph, prev_cache, affected);
     let mut cache = HashMap::new();
-    run(graph, original, sources, &base, &mut cache, Mode::WithPreviews);
+    run(
+        graph,
+        original,
+        sources,
+        &base,
+        &mut cache,
+        Mode::WithPreviews,
+    );
     cache
 }
 

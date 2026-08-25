@@ -18,9 +18,9 @@
 //! traînée) et barre de progression indéterminée. L'animation est pilotée
 //! par l'app via un angle mis à jour par abonnement (`time::every`).
 
+use crate::theme::colors;
 use iced::widget::canvas::{self, Frame, Geometry, Path};
 use iced::{Element, Length, Point};
-use crate::theme::colors;
 
 /// Spinner circulaire — 8 points autour d'un cercle, opacité décroissante
 /// derrière l'angle courant (traînée façon Material).
@@ -90,11 +90,7 @@ impl<Message> canvas::Program<Message> for IndeterminateBar {
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
         // Piste
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            colors::SURFACE_CONTAINER_HIGH,
-        );
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), colors::SURFACE_CONTAINER_HIGH);
         // Segment mobile : position sinusoïdale (va-et-vient fluide)
         let t = (self.angle_deg.to_radians().sin() * 0.5 + 0.5).clamp(0.0, 1.0);
         let seg_w = (bounds.width * 0.35).max(24.0);
@@ -116,7 +112,7 @@ pub fn progress_bar<Message: 'static>(
     height: f32,
 ) -> Element<'static, Message> {
     iced::widget::canvas(IndeterminateBar { angle_deg })
-    .width(Length::Fixed(width))
-    .height(Length::Fixed(height))
-    .into()
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(height))
+        .into()
 }

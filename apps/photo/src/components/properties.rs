@@ -17,9 +17,9 @@
 //! Panneau Propriétés : réglages du calque sélectionné
 //! (nom, opacité, mode de fusion, décalage, infos image).
 
-use crate::layers::Layer;
 use crate::Message;
-use iced::widget::{column, container, row, scrollable, slider, text, text_input, Space};
+use crate::layers::Layer;
+use iced::widget::{Space, column, container, row, scrollable, slider, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use ui::theme::{colors, fonts};
 
@@ -27,7 +27,10 @@ pub fn render<'a>(layer: Option<&'a Layer>) -> Element<'a, Message> {
     let Some(layer) = layer else {
         return container(
             column![
-                text("Propriétés").size(14).font(fonts::SANS_SEMIBOLD).color(colors::TEXT_PRIMARY),
+                text("Propriétés")
+                    .size(14)
+                    .font(fonts::SANS_SEMIBOLD)
+                    .color(colors::TEXT_PRIMARY),
                 Space::new().height(Length::Fixed(12.0)),
                 text("Aucun calque sélectionné")
                     .size(13)
@@ -55,7 +58,9 @@ pub fn render<'a>(layer: Option<&'a Layer>) -> Element<'a, Message> {
         container(
             column![
                 name_field,
-                text(format!("Calque #{}", id)).size(11).color(colors::TEXT_MUTED),
+                text(format!("Calque #{}", id))
+                    .size(11)
+                    .color(colors::TEXT_MUTED),
             ]
             .spacing(2),
         )
@@ -83,14 +88,20 @@ pub fn render<'a>(layer: Option<&'a Layer>) -> Element<'a, Message> {
         row![
             text("Mode").size(11).color(colors::TEXT_MUTED),
             Space::new().width(Length::Fill),
-            text(if is_rgba8 { "8-bit / canal · RGBA" } else { "16/32-bit" })
-                .size(11)
-                .color(colors::TEXT_PRIMARY),
+            text(if is_rgba8 {
+                "8-bit / canal · RGBA"
+            } else {
+                "16/32-bit"
+            })
+            .size(11)
+            .color(colors::TEXT_PRIMARY),
         ],
         row![
             text("Source").size(11).color(colors::TEXT_MUTED),
             Space::new().width(Length::Fill),
-            text(path.to_string()).size(11).color(colors::TEXT_SECONDARY),
+            text(path.to_string())
+                .size(11)
+                .color(colors::TEXT_SECONDARY),
         ],
     ]
     .spacing(4);
@@ -100,20 +111,33 @@ pub fn render<'a>(layer: Option<&'a Layer>) -> Element<'a, Message> {
             Message::SetLayerOpacity { id, opacity: v }
         }),
         blend_mode_buttons(layer),
-        offset_row("Décalage X", layer.offset_x, move |v| Message::SetLayerOffset {
-            id,
-            axis: crate::OffsetAxis::X,
-            value: v
+        offset_row("Décalage X", layer.offset_x, move |v| {
+            Message::SetLayerOffset {
+                id,
+                axis: crate::OffsetAxis::X,
+                value: v,
+            }
         }),
-        offset_row("Décalage Y", layer.offset_y, move |v| Message::SetLayerOffset {
-            id,
-            axis: crate::OffsetAxis::Y,
-            value: v
+        offset_row("Décalage Y", layer.offset_y, move |v| {
+            Message::SetLayerOffset {
+                id,
+                axis: crate::OffsetAxis::Y,
+                value: v,
+            }
         }),
         // Échelle uniforme — appliquée au draw (GPU), zéro régénération
-        param_slider("Échelle (%)", layer.scale * 100.0, 5.0..=800.0, 1.0, move |v| {
-            Message::SetLayerScale { id, scale: v / 100.0 }
-        }),
+        param_slider(
+            "Échelle (%)",
+            layer.scale * 100.0,
+            5.0..=800.0,
+            1.0,
+            move |v| {
+                Message::SetLayerScale {
+                    id,
+                    scale: v / 100.0,
+                }
+            }
+        ),
         Space::new().height(Length::Fixed(10.0)),
         info,
     ]
@@ -131,7 +155,10 @@ pub fn render<'a>(layer: Option<&'a Layer>) -> Element<'a, Message> {
         ),
     ];
 
-    scrollable(content).width(Length::Fill).height(Length::Fill).into()
+    scrollable(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 fn blend_mode_buttons<'a>(layer: &'a Layer) -> Element<'a, Message> {
@@ -156,7 +183,10 @@ fn blend_mode_buttons<'a>(layer: &'a Layer) -> Element<'a, Message> {
                 st.border.radius = ui::theme::metrics::RADIUS_BUTTON.into();
                 st
             })
-            .on_press(Message::SetLayerBlend { id, mode: label.to_string() })
+            .on_press(Message::SetLayerBlend {
+                id,
+                mode: label.to_string(),
+            })
             .into()
     };
     column![
@@ -203,17 +233,21 @@ fn param_slider<'a>(
         row![
             text(label).size(12).color(colors::ON_SURFACE),
             Space::new().width(Length::Fill),
-            container(text(format!("{:.2}", value)).size(11).color(colors::TEXT_PRIMARY))
-                .padding(4)
-                .style(|_t| container::Style {
-                    background: Some(colors::SURFACE_CONTAINER_HIGH.into()),
-                    border: iced::Border {
-                        radius: ui::theme::metrics::RADIUS_BUTTON.into(),
-                        width: 1.0,
-                        color: colors::BORDER_PANEL,
-                    },
-                    ..Default::default()
-                })
+            container(
+                text(format!("{:.2}", value))
+                    .size(11)
+                    .color(colors::TEXT_PRIMARY)
+            )
+            .padding(4)
+            .style(|_t| container::Style {
+                background: Some(colors::SURFACE_CONTAINER_HIGH.into()),
+                border: iced::Border {
+                    radius: ui::theme::metrics::RADIUS_BUTTON.into(),
+                    width: 1.0,
+                    color: colors::BORDER_PANEL,
+                },
+                ..Default::default()
+            })
         ]
         .align_y(Alignment::Center),
         slider(*range.start()..=*range.end(), value, on_change).step(step),

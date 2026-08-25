@@ -23,7 +23,7 @@ use ui::shortcuts::{Action, Shortcuts};
 use ui::theme::{colors, fonts, metrics};
 
 use crate::Message;
-use iced::widget::{button, column, container, row, scrollable, Space, text};
+use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length, Padding};
 
 /// Sections de la sidebar Préférences
@@ -168,7 +168,11 @@ pub fn view<'a>(
 // ---------------------------------------------------------------------------
 
 fn general_view<'a>(gpu_info: Option<String>, gpu_available: bool) -> Element<'a, Message> {
-    let status = if gpu_available { "WGPU Direct" } else { "CPU Fallback" };
+    let status = if gpu_available {
+        "WGPU Direct"
+    } else {
+        "CPU Fallback"
+    };
     let status_color = if gpu_available {
         colors::SUCCESS
     } else {
@@ -202,20 +206,24 @@ fn general_view<'a>(gpu_info: Option<String>, gpu_available: bool) -> Element<'a
                 ..Default::default()
             }),
             Space::new().height(Length::Fixed(10.0)),
-            button(text("Relancer la détection").size(12).color(colors::TEXT_ON_ACCENT))
-                .padding(Padding::new(6.0).left(10.0).right(10.0))
-                .style(|_, s| {
-                    let mut st = button::Style::default();
-                    st.background = Some(if s == button::Status::Hovered {
-                        colors::ACCENT_HOVER.into()
-                    } else {
-                        colors::ACCENT.into()
-                    });
-                    st.text_color = colors::TEXT_ON_ACCENT;
-                    st.border.radius = metrics::RADIUS_BUTTON.into();
-                    st
-                })
-                .on_press(Message::DetectGpu),
+            button(
+                text("Relancer la détection")
+                    .size(12)
+                    .color(colors::TEXT_ON_ACCENT)
+            )
+            .padding(Padding::new(6.0).left(10.0).right(10.0))
+            .style(|_, s| {
+                let mut st = button::Style::default();
+                st.background = Some(if s == button::Status::Hovered {
+                    colors::ACCENT_HOVER.into()
+                } else {
+                    colors::ACCENT.into()
+                });
+                st.text_color = colors::TEXT_ON_ACCENT;
+                st.border.radius = metrics::RADIUS_BUTTON.into();
+                st
+            })
+            .on_press(Message::DetectGpu),
         ]
         .spacing(4),
     )
@@ -262,93 +270,84 @@ fn centered_note<'a>(title: &'a str, body: &'a str) -> Element<'a, Message> {
 // Section Raccourcis clavier
 // ---------------------------------------------------------------------------
 
-fn shortcuts_view<'a>(
-    shortcuts: &'a Shortcuts,
-    capturing: Option<Action>,
-) -> Element<'a, Message> {
+fn shortcuts_view<'a>(shortcuts: &'a Shortcuts, capturing: Option<Action>) -> Element<'a, Message> {
     // Ligne d'action : libellé | chip combinaison | Modifier | Défaut
-    let action_row =
-        |action: Action| -> Element<'a, Message> {
-            let is_capturing = capturing == Some(action);
-            let current = shortcuts.label(action);
-            let binding_label = if is_capturing {
-                "Appuyez sur une touche… (Échap annule)".to_string()
-            } else if current.is_empty() {
-                "—".to_string()
-            } else {
-                current.clone()
-            };
-
-            let capturing_flag = is_capturing;
-            let chip = container(
-                text(binding_label)
-                    .size(11)
-                    .color(if is_capturing {
-                        colors::ACCENT
-                    } else if current.is_empty() {
-                        colors::TEXT_MUTED
-                    } else {
-                        colors::TEXT_PRIMARY
-                    }),
-            )
-            .padding(Padding::new(4.0).left(8.0).right(8.0))
-            .style(move |_| container::Style {
-                background: Some(if capturing_flag {
-                    colors::BG_NODE_SELECTED.into()
-                } else {
-                    colors::SURFACE_CONTAINER_HIGH.into()
-                }),
-                border: iced::Border {
-                    width: if capturing_flag { 1.0 } else { 0.0 },
-                    color: colors::ACCENT,
-                    radius: metrics::RADIUS_BUTTON.into(),
-                },
-                ..Default::default()
-            });
-
-            let small_btn = |label: &'a str, msg: Message, enabled: bool| {
-                let b = button(text(label).size(11))
-                    .padding(Padding::new(3.0).left(8.0).right(8.0));
-                if enabled {
-                    b.on_press(msg).style(|_, s| {
-                        let mut st = button::Style::default();
-                        st.background = Some(if s == button::Status::Hovered {
-                            colors::ACCENT.into()
-                        } else {
-                            colors::SURFACE_CONTAINER_HIGH.into()
-                        });
-                        st.text_color = if s == button::Status::Hovered {
-                            colors::TEXT_ON_ACCENT
-                        } else {
-                            colors::TEXT_SECONDARY
-                        };
-                        st.border.radius = metrics::RADIUS_BUTTON.into();
-                        st
-                    })
-                } else {
-                    b.style(|_, _| button::Style::default())
-                }
-            };
-
-            row![
-                text(action.label()).size(12).color(colors::TEXT_PRIMARY),
-                Space::new().width(Length::Fill),
-                chip,
-                small_btn(
-                    "Modifier",
-                    Message::ShortcutCapture(action),
-                    capturing.is_none(),
-                ),
-                small_btn(
-                    "Défaut",
-                    Message::ShortcutReset(action),
-                    capturing.is_none(),
-                ),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(8)
-            .into()
+    let action_row = |action: Action| -> Element<'a, Message> {
+        let is_capturing = capturing == Some(action);
+        let current = shortcuts.label(action);
+        let binding_label = if is_capturing {
+            "Appuyez sur une touche… (Échap annule)".to_string()
+        } else if current.is_empty() {
+            "—".to_string()
+        } else {
+            current.clone()
         };
+
+        let capturing_flag = is_capturing;
+        let chip = container(text(binding_label).size(11).color(if is_capturing {
+            colors::ACCENT
+        } else if current.is_empty() {
+            colors::TEXT_MUTED
+        } else {
+            colors::TEXT_PRIMARY
+        }))
+        .padding(Padding::new(4.0).left(8.0).right(8.0))
+        .style(move |_| container::Style {
+            background: Some(if capturing_flag {
+                colors::BG_NODE_SELECTED.into()
+            } else {
+                colors::SURFACE_CONTAINER_HIGH.into()
+            }),
+            border: iced::Border {
+                width: if capturing_flag { 1.0 } else { 0.0 },
+                color: colors::ACCENT,
+                radius: metrics::RADIUS_BUTTON.into(),
+            },
+            ..Default::default()
+        });
+
+        let small_btn = |label: &'a str, msg: Message, enabled: bool| {
+            let b = button(text(label).size(11)).padding(Padding::new(3.0).left(8.0).right(8.0));
+            if enabled {
+                b.on_press(msg).style(|_, s| {
+                    let mut st = button::Style::default();
+                    st.background = Some(if s == button::Status::Hovered {
+                        colors::ACCENT.into()
+                    } else {
+                        colors::SURFACE_CONTAINER_HIGH.into()
+                    });
+                    st.text_color = if s == button::Status::Hovered {
+                        colors::TEXT_ON_ACCENT
+                    } else {
+                        colors::TEXT_SECONDARY
+                    };
+                    st.border.radius = metrics::RADIUS_BUTTON.into();
+                    st
+                })
+            } else {
+                b.style(|_, _| button::Style::default())
+            }
+        };
+
+        row![
+            text(action.label()).size(12).color(colors::TEXT_PRIMARY),
+            Space::new().width(Length::Fill),
+            chip,
+            small_btn(
+                "Modifier",
+                Message::ShortcutCapture(action),
+                capturing.is_none(),
+            ),
+            small_btn(
+                "Défaut",
+                Message::ShortcutReset(action),
+                capturing.is_none(),
+            ),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8)
+        .into()
+    };
 
     let mut list = column![].spacing(6);
     let mut last_cat = "";

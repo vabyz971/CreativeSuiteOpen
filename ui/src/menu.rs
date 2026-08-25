@@ -85,7 +85,12 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                 .items
                 .iter()
                 .map(|item| match item {
-                    Item::Action { label, shortcut, checked, message } => {
+                    Item::Action {
+                        label,
+                        shortcut,
+                        checked,
+                        message,
+                    } => {
                         let content = if shortcut.is_empty() {
                             if *checked {
                                 format!("✓ {}", label)
@@ -129,55 +134,67 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                             }),
                     ),
                     Item::SubMenu { label, items } => {
-                        let sub_items: Vec<AwItem<'a, Message, iced::Theme, iced::Renderer>> = items
-                            .iter()
-                            .map(|sub| match sub {
-                                Item::Action { label, shortcut, checked, message } => {
-                                    let content = if shortcut.is_empty() {
-                                        if *checked {
-                                            format!("✓ {}", label)
+                        let sub_items: Vec<AwItem<'a, Message, iced::Theme, iced::Renderer>> =
+                            items
+                                .iter()
+                                .map(|sub| match sub {
+                                    Item::Action {
+                                        label,
+                                        shortcut,
+                                        checked,
+                                        message,
+                                    } => {
+                                        let content = if shortcut.is_empty() {
+                                            if *checked {
+                                                format!("✓ {}", label)
+                                            } else {
+                                                format!("   {}", label)
+                                            }
+                                        } else if *checked {
+                                            format!("✓ {}  {}", label, shortcut)
                                         } else {
-                                            format!("   {}", label)
-                                        }
-                                    } else if *checked {
-                                        format!("✓ {}  {}", label, shortcut)
-                                    } else {
-                                        format!("   {}  {}", label, shortcut)
-                                    };
-                                    AwItem::new(
-                                        button(text(content).size(13))
-                                            .width(Length::Fill)
-                                            .padding(iced::Padding::new(6.0).left(10.0).right(8.0))
-                                            .style(|_, s| {
-                                                let mut st = button::Style::default();
-                                                let hovered = s == iced::widget::button::Status::Hovered;
-                                                st.background = Some(if hovered {
-                                                    colors::ACCENT.into()
-                                                } else {
-                                                    iced::Color::TRANSPARENT.into()
-                                                });
-                                                st.text_color = if hovered {
-                                                    colors::TEXT_ON_ACCENT
-                                                } else {
-                                                    colors::ON_SURFACE
-                                                };
-                                                st.border.radius = metrics::RADIUS_BUTTON.into();
-                                                st
-                                            })
-                                            .on_press(message.clone()),
-                                    )
-                                }
-                                Item::Separator => AwItem::new(
-                                    container(Space::new().height(Length::Fixed(1.0)))
-                                        .padding(iced::Padding::new(1.0).left(6.0).right(6.0))
-                                        .style(|_| container::Style {
-                                            background: Some(colors::BORDER_PANEL.into()),
-                                            ..Default::default()
-                                        }),
-                                ),
-                                Item::SubMenu { .. } => unreachable!("sous-menu imbriqué non supporté"),
-                            })
-                            .collect();
+                                            format!("   {}  {}", label, shortcut)
+                                        };
+                                        AwItem::new(
+                                            button(text(content).size(13))
+                                                .width(Length::Fill)
+                                                .padding(
+                                                    iced::Padding::new(6.0).left(10.0).right(8.0),
+                                                )
+                                                .style(|_, s| {
+                                                    let mut st = button::Style::default();
+                                                    let hovered =
+                                                        s == iced::widget::button::Status::Hovered;
+                                                    st.background = Some(if hovered {
+                                                        colors::ACCENT.into()
+                                                    } else {
+                                                        iced::Color::TRANSPARENT.into()
+                                                    });
+                                                    st.text_color = if hovered {
+                                                        colors::TEXT_ON_ACCENT
+                                                    } else {
+                                                        colors::ON_SURFACE
+                                                    };
+                                                    st.border.radius =
+                                                        metrics::RADIUS_BUTTON.into();
+                                                    st
+                                                })
+                                                .on_press(message.clone()),
+                                        )
+                                    }
+                                    Item::Separator => AwItem::new(
+                                        container(Space::new().height(Length::Fixed(1.0)))
+                                            .padding(iced::Padding::new(1.0).left(6.0).right(6.0))
+                                            .style(|_| container::Style {
+                                                background: Some(colors::BORDER_PANEL.into()),
+                                                ..Default::default()
+                                            }),
+                                    ),
+                                    Item::SubMenu { .. } => {
+                                        unreachable!("sous-menu imbriqué non supporté")
+                                    }
+                                })
+                                .collect();
                         let sub_menu = AwMenu::new(sub_items).width(200.0).offset(4.0).spacing(2.0);
                         AwItem::with_menu(
                             button(
@@ -212,7 +229,10 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                 })
                 .collect();
 
-            let aw_menu = AwMenu::new(aw_sub_items).width(240.0).offset(6.0).spacing(2.0);
+            let aw_menu = AwMenu::new(aw_sub_items)
+                .width(240.0)
+                .offset(6.0)
+                .spacing(2.0);
             AwItem::with_menu(
                 button(text(m.label.clone()).size(12).center())
                     .width(Length::Fixed(SLOT_WIDTH))

@@ -77,8 +77,7 @@ pub fn paint_stroke_rgba(
                 let dx = px as f32 + 0.5 - cx;
                 let dy = py as f32 + 0.5 - cy;
                 if dx * dx + dy * dy <= r2 {
-                    let mi =
-                        ((py - by0 as i64) as usize) * bw + ((px - bx0 as i64) as usize);
+                    let mi = ((py - by0 as i64) as usize) * bw + ((px - bx0 as i64) as usize);
                     mask[mi] = 255;
                 }
             }
@@ -126,11 +125,15 @@ pub fn paint_stroke_rgba(
             if out_a <= 0.0 {
                 continue;
             }
-            rgba[idx] = ((cr * a + sr * sa * (1.0 - a)) / out_a).round().clamp(0.0, 255.0) as u8;
-            rgba[idx + 1] =
-                ((cg * a + sg * sa * (1.0 - a)) / out_a).round().clamp(0.0, 255.0) as u8;
-            rgba[idx + 2] =
-                ((cb * a + sb * sa * (1.0 - a)) / out_a).round().clamp(0.0, 255.0) as u8;
+            rgba[idx] = ((cr * a + sr * sa * (1.0 - a)) / out_a)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            rgba[idx + 1] = ((cg * a + sg * sa * (1.0 - a)) / out_a)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            rgba[idx + 2] = ((cb * a + sb * sa * (1.0 - a)) / out_a)
+                .round()
+                .clamp(0.0, 255.0) as u8;
             rgba[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
@@ -187,8 +190,9 @@ pub fn commit_stroke(
 
     let mut rgba = base.to_rgba8().into_raw();
     paint_stroke_rgba(&mut rgba, lw, lh, &pts, radius, color, opacity);
-    let painted =
-        ::image::DynamicImage::ImageRgba8(::image::RgbaImage::from_raw(lw, lh, rgba.clone()).expect("taille inchangée"));
+    let painted = ::image::DynamicImage::ImageRgba8(
+        ::image::RgbaImage::from_raw(lw, lh, rgba.clone()).expect("taille inchangée"),
+    );
 
     StrokeCommit {
         width: lw,
@@ -208,7 +212,15 @@ mod tests {
         let w = 16u32;
         let h = 16u32;
         let mut rgba = vec![0u8; (w * h * 4) as usize];
-        paint_stroke_rgba(&mut rgba, w, h, &[(4.0, 8.0), (12.0, 8.0)], 2.0, [255, 0, 0], 1.0);
+        paint_stroke_rgba(
+            &mut rgba,
+            w,
+            h,
+            &[(4.0, 8.0), (12.0, 8.0)],
+            2.0,
+            [255, 0, 0],
+            1.0,
+        );
         // Centre du trait : rouge opaque
         let idx = ((8 * w + 8) * 4) as usize;
         assert_eq!(rgba[idx], 255);

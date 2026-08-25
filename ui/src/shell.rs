@@ -24,7 +24,7 @@ pub use suite_shell::{AppKind, ShellState};
 const TITLE_RESERVED: f32 = 190.0;
 
 use crate::theme::{colors, fonts, metrics};
-use iced::widget::{container, row, text, Space};
+use iced::widget::{Space, container, row, text};
 use iced::{Alignment, Color, Element, Font, Length, Padding};
 
 /// Barre supérieure façon Lumina Creative : logo + titre (largeur réservée),
@@ -36,20 +36,25 @@ where
     let material = Font::with_name("Material Icons");
 
     let icon_btn = |codepoint: &'a str| {
-        container(text(codepoint).font(material).size(20).color(colors::TEXT_SECONDARY))
-            .width(Length::Fixed(30.0))
-            .height(Length::Fixed(30.0))
-            .center_x(Length::Fixed(30.0))
-            .center_y(Length::Fixed(30.0))
-            .style(|_| container::Style {
-                background: Some(colors::HOVER_OVERLAY.into()),
-                border: iced::Border {
-                    width: 0.0,
-                    color: Color::TRANSPARENT,
-                    radius: (metrics::RADIUS_DROPDOWN).into(),
-                },
-                ..Default::default()
-            })
+        container(
+            text(codepoint)
+                .font(material)
+                .size(20)
+                .color(colors::TEXT_SECONDARY),
+        )
+        .width(Length::Fixed(30.0))
+        .height(Length::Fixed(30.0))
+        .center_x(Length::Fixed(30.0))
+        .center_y(Length::Fixed(30.0))
+        .style(|_| container::Style {
+            background: Some(colors::HOVER_OVERLAY.into()),
+            border: iced::Border {
+                width: 0.0,
+                color: Color::TRANSPARENT,
+                radius: (metrics::RADIUS_DROPDOWN).into(),
+            },
+            ..Default::default()
+        })
     };
 
     container(
@@ -57,16 +62,20 @@ where
             // Logo + titre : largeur réservée (esthétique)
             container(
                 row![
-                    container(Space::new().width(Length::Fixed(10.0)).height(Length::Fixed(10.0)))
-                        .style(|_| container::Style {
-                            background: Some(colors::ACCENT.into()),
-                            border: iced::Border {
-                                width: 0.0,
-                                color: Color::TRANSPARENT,
-                                radius: 9999.0.into(),
-                            },
-                            ..Default::default()
-                        }),
+                    container(
+                        Space::new()
+                            .width(Length::Fixed(10.0))
+                            .height(Length::Fixed(10.0))
+                    )
+                    .style(|_| container::Style {
+                        background: Some(colors::ACCENT.into()),
+                        border: iced::Border {
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                            radius: 9999.0.into(),
+                        },
+                        ..Default::default()
+                    }),
                     text(title)
                         .size(13)
                         .font(fonts::SANS_BOLD)
@@ -111,16 +120,20 @@ where
 {
     let title_zone = container(
         row![
-            container(Space::new().width(Length::Fixed(10.0)).height(Length::Fixed(10.0)))
-                .style(|_| container::Style {
-                    background: Some(colors::ACCENT.into()),
-                    border: iced::Border {
-                        width: 0.0,
-                        color: Color::TRANSPARENT,
-                        radius: 9999.0.into(),
-                    },
-                    ..Default::default()
-                }),
+            container(
+                Space::new()
+                    .width(Length::Fixed(10.0))
+                    .height(Length::Fixed(10.0))
+            )
+            .style(|_| container::Style {
+                background: Some(colors::ACCENT.into()),
+                border: iced::Border {
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                    radius: 9999.0.into(),
+                },
+                ..Default::default()
+            }),
             text(title)
                 .size(13)
                 .font(fonts::SANS_BOLD)
@@ -159,29 +172,32 @@ where
 /// Actions globales de droite : spinner d'activité (traitements en
 /// arrière-plan) puis notifications. `spinner` = `Some(élément animé)`
 /// produit par l'app (`ui::spinner::circle`) quand un traitement tourne.
-pub fn global_actions<'a, Message>(
-    spinner: Option<Element<'a, Message>>,
-) -> Element<'a, Message>
+pub fn global_actions<'a, Message>(spinner: Option<Element<'a, Message>>) -> Element<'a, Message>
 where
     Message: 'a,
 {
     let material = Font::with_name("Material Icons");
 
     let icon_btn = |codepoint: &'a str| {
-        container(text(codepoint).font(material).size(20).color(colors::TEXT_SECONDARY))
-            .width(Length::Fixed(28.0))
-            .height(Length::Fixed(28.0))
-            .center_x(Length::Fixed(28.0))
-            .center_y(Length::Fixed(28.0))
-            .style(|_| container::Style {
-                background: Some(colors::HOVER_OVERLAY.into()),
-                border: iced::Border {
-                    width: 0.0,
-                    color: Color::TRANSPARENT,
-                    radius: (metrics::RADIUS_DROPDOWN).into(),
-                },
-                ..Default::default()
-            })
+        container(
+            text(codepoint)
+                .font(material)
+                .size(20)
+                .color(colors::TEXT_SECONDARY),
+        )
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(28.0))
+        .center_x(Length::Fixed(28.0))
+        .center_y(Length::Fixed(28.0))
+        .style(|_| container::Style {
+            background: Some(colors::HOVER_OVERLAY.into()),
+            border: iced::Border {
+                width: 0.0,
+                color: Color::TRANSPARENT,
+                radius: (metrics::RADIUS_DROPDOWN).into(),
+            },
+            ..Default::default()
+        })
     };
 
     let mut actions = row![].align_y(Alignment::Center).spacing(10);
@@ -200,9 +216,7 @@ where
 }
 
 /// Rail gauche icon-only 48px (outils), collapsible
-pub fn left_rail<'a, Message>(
-    content: impl Into<Element<'a, Message>>,
-) -> Element<'a, Message>
+pub fn left_rail<'a, Message>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message>
 where
     Message: 'a,
 {
@@ -232,11 +246,7 @@ pub fn minimalist_layout_with_menus<'a, Message>(
 where
     Message: 'a,
 {
-    let top = top_bar_with_menus(
-        title,
-        menu_buttons,
-        global_actions(None),
-    );
+    let top = top_bar_with_menus(title, menu_buttons, global_actions(None));
     let left = left_rail(left_rail_content);
     let center = container(central.into())
         .width(Length::Fill)
@@ -249,7 +259,9 @@ where
 
     iced::widget::column![
         top,
-        iced::widget::row![left, center].spacing(4).height(Length::Fill)
+        iced::widget::row![left, center]
+            .spacing(4)
+            .height(Length::Fill)
     ]
     .width(Length::Fill)
     .height(Length::Fill)
@@ -305,7 +317,9 @@ where
 
     iced::widget::column![
         top,
-        iced::widget::row![left, center].spacing(4).height(Length::Fill)
+        iced::widget::row![left, center]
+            .spacing(4)
+            .height(Length::Fill)
     ]
     .width(Length::Fill)
     .height(Length::Fill)

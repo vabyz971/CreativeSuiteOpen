@@ -128,7 +128,9 @@ pub fn detect_gpu_info_sync() -> String {
         s.push_str("Backends: Vulkan/Metal/DX12/WGL (auto)\n");
         s.push_str("Traitement nodal: GPU compute (branché) + fallback CPU rayon\n");
         s.push_str("Rendu canvas: WGPU via iced_wgpu (textures + shaders)\n");
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         s.push_str(&format!("CPU cores: {} (rayon global pool)\n", cores));
         // Force rayon pool à utiliser tous les cœurs
         s.push_str(&format!(
@@ -139,9 +141,14 @@ pub fn detect_gpu_info_sync() -> String {
     } else {
         let mut s = String::new();
         s.push_str("GPU: non disponible - CPU seul\n");
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         s.push_str(&format!("CPU cores: {} (rayon)\n", cores));
-        s.push_str(&format!("Rayon threads: {}\n", rayon::current_num_threads()));
+        s.push_str(&format!(
+            "Rayon threads: {}\n",
+            rayon::current_num_threads()
+        ));
         s
     }
 }
@@ -223,11 +230,13 @@ fn run_compute(
         return None; // -> fallback CPU (ou bandes via run_compute_banded)
     }
     // src buffer
-    let src_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("src"),
-        contents: bytemuck::cast_slice(src_floats),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
+    let src_buf = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("src"),
+            contents: bytemuck::cast_slice(src_floats),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
     let dst_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("dst"),
         size: src_size,
@@ -242,11 +251,13 @@ fn run_compute(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let params_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("params"),
-        contents: params_bytes,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
+    let params_buf = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("params"),
+            contents: params_bytes,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
     let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("bg"),
         layout: &pipeline.get_bind_group_layout(0),
@@ -265,9 +276,11 @@ fn run_compute(
             },
         ],
     });
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("encoder"),
-    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("encoder"),
+        });
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("compute"),
@@ -357,7 +370,11 @@ fn run_compute_banded(
     Some(out)
 }
 
-pub fn apply_brightness_contrast_gpu(img: &DynamicImage, brightness: f32, contrast: f32) -> Option<DynamicImage> {
+pub fn apply_brightness_contrast_gpu(
+    img: &DynamicImage,
+    brightness: f32,
+    contrast: f32,
+) -> Option<DynamicImage> {
     let gpu = GpuContext::get()?;
     // Optimisation : petites images < 256x256 restent CPU (overhead GPU)
     if img.width() * img.height() < 65536 {
@@ -366,22 +383,40 @@ pub fn apply_brightness_contrast_gpu(img: &DynamicImage, brightness: f32, contra
     let (floats, w, h) = image_to_floats(img);
     // Convertit brightness/contrast CPU -> GPU
     // CPU: b = brightness*2.55, contrast_factor = 1+contrast/100 ou 1+contrast/50
-    let contrast_factor = if contrast < 0.0 { 1.0 + contrast / 100.0 } else { 1.0 + contrast / 50.0 };
+    let contrast_factor = if contrast < 0.0 {
+        1.0 + contrast / 100.0
+    } else {
+        1.0 + contrast / 50.0
+    };
     let brightness_norm = brightness * 0.01; // 2.55/255 =0.01
     // Bandes de lignes : supporte les très grandes résolutions sans dépasser les limites wgpu
     let out = run_compute_banded(&gpu, &gpu.pipeline_bc, &floats, w, h, |bw, bh| {
-        bytemuck::bytes_of(&ParamsBc { width: bw, height: bh, brightness: brightness_norm, contrast: contrast_factor }).to_vec()
+        bytemuck::bytes_of(&ParamsBc {
+            width: bw,
+            height: bh,
+            brightness: brightness_norm,
+            contrast: contrast_factor,
+        })
+        .to_vec()
     })?;
     Some(floats_to_image(&out, w, h))
 }
 
 pub fn apply_saturation_gpu(img: &DynamicImage, sat: f32) -> Option<DynamicImage> {
     let gpu = GpuContext::get()?;
-    if img.width() * img.height() < 65536 { return None; }
+    if img.width() * img.height() < 65536 {
+        return None;
+    }
     let (floats, w, h) = image_to_floats(img);
     let sat_clamped = sat.clamp(0.0, 3.0);
     let out = run_compute_banded(&gpu, &gpu.pipeline_sat, &floats, w, h, |bw, bh| {
-        bytemuck::bytes_of(&ParamsSat { width: bw, height: bh, sat: sat_clamped, _pad: 0.0 }).to_vec()
+        bytemuck::bytes_of(&ParamsSat {
+            width: bw,
+            height: bh,
+            sat: sat_clamped,
+            _pad: 0.0,
+        })
+        .to_vec()
     })?;
     Some(floats_to_image(&out, w, h))
 }
@@ -395,12 +430,28 @@ pub fn apply_mix_gpu(a: &DynamicImage, b: &DynamicImage, factor: f32) -> Option<
 
 pub fn apply_blur_gpu(img: &DynamicImage, radius: f32) -> Option<DynamicImage> {
     let gpu = GpuContext::get()?;
-    if radius <= 0.1 { return Some(img.clone()); }
-    if img.width() * img.height() < 65536 { return None; }
+    if radius <= 0.1 {
+        return Some(img.clone());
+    }
+    if img.width() * img.height() < 65536 {
+        return None;
+    }
     let r = (radius as i32).clamp(1, 50);
     let (floats, w, h) = image_to_floats(img);
-    let params = ParamsBlur { width: w, height: h, radius: r, _pad: 0 };
-    let out = run_compute(&gpu, &gpu.pipeline_blur, &floats, w, h, bytemuck::bytes_of(&params))?;
+    let params = ParamsBlur {
+        width: w,
+        height: h,
+        radius: r,
+        _pad: 0,
+    };
+    let out = run_compute(
+        &gpu,
+        &gpu.pipeline_blur,
+        &floats,
+        w,
+        h,
+        bytemuck::bytes_of(&params),
+    )?;
     Some(floats_to_image(&out, w, h))
 }
 
@@ -427,41 +478,73 @@ fn run_compute2(
         return None; // -> fallback CPU
     }
 
-    let buf_a = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("srcA"), contents: bytemuck::cast_slice(src_a),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-    let buf_b = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("srcB"), contents: bytemuck::cast_slice(src_b),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
+    let buf_a = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("srcA"),
+            contents: bytemuck::cast_slice(src_a),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+    let buf_b = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("srcB"),
+            contents: bytemuck::cast_slice(src_b),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
     let dst = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("dst"), size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        label: Some("dst"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"), size,
+        label: Some("readback"),
+        size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let params_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("params"), contents: params_bytes,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
+    let params_buf = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("params"),
+            contents: params_bytes,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
     let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("bg2"),
         layout: &pipeline.get_bind_group_layout(0),
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: dst.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: params_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buf_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buf_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: dst.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params_buf.as_entire_binding(),
+            },
         ],
     });
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("enc2") });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("enc2"),
+        });
     {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("compute2"), timestamp_writes: None });
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("compute2"),
+            timestamp_writes: None,
+        });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
@@ -469,13 +552,25 @@ fn run_compute2(
     encoder.copy_buffer_to_buffer(&dst, 0, &readback, 0, size);
     gpu.queue.submit(Some(encoder.finish()));
     let (tx, rx) = std::sync::mpsc::channel();
-    readback.slice(..).map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).ok();
-    if rx.recv().ok()?.is_err() { return None; }
+    readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    let _ = gpu
+        .device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .ok();
+    if rx.recv().ok()?.is_err() {
+        return None;
+    }
     let data = readback.slice(..).get_mapped_range().ok()?.to_vec();
     readback.unmap();
     let floats: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&data).to_vec();
-    if floats.len() != src_a.len() { return None; }
+    if floats.len() != src_a.len() {
+        return None;
+    }
     Some(floats)
 }
 
@@ -507,14 +602,19 @@ pub fn apply_blend_gpu(
         return None;
     }
     let gpu = GpuContext::get()?;
-    if base.width() * base.height() < 65536 { return None; }
+    if base.width() * base.height() < 65536 {
+        return None;
+    }
     let (a_floats, w, h) = image_to_floats(base);
     let (mut b_floats, w2, h2) = image_to_floats(top);
     if w != w2 || h != h2 {
         // resize_exact : `resize` préserve le ratio et donnerait une taille
         // différente de w×h → slices hors bornes plus bas (crash).
-        let t_img = floats_to_image(&b_floats, w2, h2)
-            .resize_exact(w, h, ::image::imageops::FilterType::Triangle);
+        let t_img = floats_to_image(&b_floats, w2, h2).resize_exact(
+            w,
+            h,
+            ::image::imageops::FilterType::Triangle,
+        );
         b_floats = image_to_floats(&t_img).0;
     }
     // Garde-fou : tailles strictement identiques, sinon fallback CPU
@@ -524,7 +624,9 @@ pub fn apply_blend_gpu(
     let op = (opacity_pct / 100.0).clamp(0.0, 1.0);
 
     let row_bytes = (w as u64) * 16;
-    if row_bytes == 0 { return None; }
+    if row_bytes == 0 {
+        return None;
+    }
     let budget = limits_min(&gpu).min(BLEND_BUDGET_BYTES);
     let rows_per_band = (budget / row_bytes).max(1) as usize;
     let floats_per_row = (w as usize) * 4;
@@ -544,7 +646,12 @@ pub fn apply_blend_gpu(
             offset_y: 0.0,
         };
         let band_out = run_compute2(
-            &gpu, &gpu.pipeline_blend, &a_floats[lo..hi], &b_floats[lo..hi], w, rows as u32,
+            &gpu,
+            &gpu.pipeline_blend,
+            &a_floats[lo..hi],
+            &b_floats[lo..hi],
+            w,
+            rows as u32,
             bytemuck::bytes_of(&params),
         )?;
         out[lo..hi].copy_from_slice(&band_out);
@@ -679,4 +786,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 "#;
 
 // Pour compat avec ancien code qui appelle evaluate_gpu_available
-pub fn evaluate_gpu_available() -> bool { GpuContext::is_available() }
+pub fn evaluate_gpu_available() -> bool {
+    GpuContext::is_available()
+}

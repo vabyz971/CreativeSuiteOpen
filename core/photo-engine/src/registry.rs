@@ -18,8 +18,8 @@
 //! Ajouter un effet : créer `nodes/mon_effet.rs` puis l'ajouter à `nodes::all()`.
 
 use crate::nodes;
-use suite_core::{Graph, Node};
 use datatypes::{NodeDefinition, NodeId, SocketType, Vec2};
+use suite_core::{Graph, Node};
 
 pub fn all_definitions() -> Vec<NodeDefinition> {
     nodes::all().into_iter().map(|e| e.definition).collect()
@@ -37,14 +37,22 @@ pub fn create_empty_graph() -> Graph {
 /// Crée le graphe minimal Input -> Output utilisé à l'ouverture d'une image
 pub fn create_minimal_graph() -> Graph {
     let mut g = Graph::new();
-    let input = g.add_node(node_from_def("input_image", NodeId(0), Vec2::new(40.0, 120.0)));
+    let input = g.add_node(node_from_def(
+        "input_image",
+        NodeId(0),
+        Vec2::new(40.0, 120.0),
+    ));
     let output = g.add_node(Node {
         params: Default::default(),
         preview_enabled: true,
         ..node_from_def("output", NodeId(0), Vec2::new(400.0, 120.0))
     });
     let _ = g.connect(suite_core::Connection::new(
-        input, "image", output, "image", SocketType::Image,
+        input,
+        "image",
+        output,
+        "image",
+        SocketType::Image,
     ));
     g
 }

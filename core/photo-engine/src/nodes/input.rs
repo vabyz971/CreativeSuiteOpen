@@ -33,9 +33,11 @@ fn apply(ctx: &NodeCtx, id: NodeId) -> Option<DynamicImage> {
     }
     // Pas d'image assignée : transparent aux dimensions de l'original (évite de réafficher la 1ère image)
     let (w, h) = (ctx.original.width().max(1), ctx.original.height().max(1));
-    Some(DynamicImage::ImageRgba8(
-        image::ImageBuffer::from_pixel(w, h, image::Rgba([0, 0, 0, 0])),
-    ))
+    Some(DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+        w,
+        h,
+        image::Rgba([0, 0, 0, 0]),
+    )))
 }
 
 pub fn effect() -> Effect {

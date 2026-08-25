@@ -212,11 +212,12 @@ fn move_section<'a>(
     let scale_slider: Element<'a, Message> = match selected_scale_percent {
         Some(pct) => row![
             field_label("Échelle"),
-            iced::widget::slider(
-                5.0..=800.0,
-                pct.clamp(5.0, 800.0),
-                move |v| Message::SetLayerScale { id, scale: v / 100.0 },
-            )
+            iced::widget::slider(5.0..=800.0, pct.clamp(5.0, 800.0), move |v| {
+                Message::SetLayerScale {
+                    id,
+                    scale: v / 100.0,
+                }
+            },)
             .width(Length::Fixed(110.0)),
             value_label(format!("{:.0}%", pct)),
         ]
@@ -235,30 +236,47 @@ fn move_section<'a>(
         icon_btn(
             ICON_ROTATE_LEFT,
             "Rotation -90°",
-            Message::RotateLayer90 { id, clockwise: false },
+            Message::RotateLayer90 {
+                id,
+                clockwise: false
+            },
             has_layer,
         ),
         icon_btn(
             ICON_ROTATE_RIGHT,
             "Rotation +90°",
-            Message::RotateLayer90 { id, clockwise: true },
+            Message::RotateLayer90 {
+                id,
+                clockwise: true
+            },
             has_layer,
         ),
         icon_btn(
             ICON_FLIP,
             "Flip H",
-            Message::FlipLayer { id, horizontal: true },
+            Message::FlipLayer {
+                id,
+                horizontal: true
+            },
             has_layer,
         ),
         icon_btn(
             ICON_FLIP,
             "Flip V",
-            Message::FlipLayer { id, horizontal: false },
+            Message::FlipLayer {
+                id,
+                horizontal: false
+            },
             has_layer,
         ),
         scale_slider,
         separator(),
-        icon_btn(ICON_RESET, "Réinitialiser", Message::ResetLayerTransform(id), has_layer),
+        icon_btn(
+            ICON_RESET,
+            "Réinitialiser",
+            Message::ResetLayerTransform(id),
+            has_layer
+        ),
         icon_btn(
             ICON_CROP,
             "Rogner à la sélection",

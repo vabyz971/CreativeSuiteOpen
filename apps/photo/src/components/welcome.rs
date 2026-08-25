@@ -18,7 +18,7 @@
 //! dimensions choisies ou ouvrir une image existante.
 
 use crate::Message;
-use iced::widget::{button, column, container, row, text, text_input, Space};
+use iced::widget::{Space, button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use ui::theme::{colors, fonts, metrics};
 
@@ -44,33 +44,32 @@ pub fn render<'a>(
         .color(colors::TEXT_SECONDARY);
 
     // Dimensions : deux champs px + presets
-    let dim_input =
-        |placeholder: &'a str, value: &'a str, on_input: fn(String) -> Message| {
-            text_input(placeholder, value)
-                .on_input(on_input)
-                .width(Length::Fixed(90.0))
-                .size(13)
-                .padding(Padding::new(6.0).left(10.0).right(6.0))
-                .style(|_t, s| {
-                    let focused = matches!(s, text_input::Status::Focused { .. });
-                    iced::widget::text_input::Style {
-                        background: colors::SURFACE_CONTAINER_LOWEST.into(),
-                        border: iced::Border {
-                            width: if focused { 1.5 } else { 1.0 },
-                            color: if focused {
-                                colors::ACCENT
-                            } else {
-                                colors::BORDER_PANEL
-                            },
-                            radius: metrics::RADIUS_BUTTON.into(),
+    let dim_input = |placeholder: &'a str, value: &'a str, on_input: fn(String) -> Message| {
+        text_input(placeholder, value)
+            .on_input(on_input)
+            .width(Length::Fixed(90.0))
+            .size(13)
+            .padding(Padding::new(6.0).left(10.0).right(6.0))
+            .style(|_t, s| {
+                let focused = matches!(s, text_input::Status::Focused { .. });
+                iced::widget::text_input::Style {
+                    background: colors::SURFACE_CONTAINER_LOWEST.into(),
+                    border: iced::Border {
+                        width: if focused { 1.5 } else { 1.0 },
+                        color: if focused {
+                            colors::ACCENT
+                        } else {
+                            colors::BORDER_PANEL
                         },
-                        icon: colors::TEXT_MUTED,
-                        placeholder: colors::TEXT_MUTED,
-                        value: colors::TEXT_PRIMARY,
-                        selection: colors::ACCENT,
-                    }
-                })
-        };
+                        radius: metrics::RADIUS_BUTTON.into(),
+                    },
+                    icon: colors::TEXT_MUTED,
+                    placeholder: colors::TEXT_MUTED,
+                    value: colors::TEXT_PRIMARY,
+                    selection: colors::ACCENT,
+                }
+            })
+    };
 
     let dims = row![
         field_label("Largeur"),
@@ -99,10 +98,7 @@ pub fn render<'a>(
                     st.border.color = colors::BORDER_SUBTLE;
                     st
                 })
-                .on_press(Message::SetDocPreset {
-                    w: *w,
-                    h: *h,
-                })
+                .on_press(Message::SetDocPreset { w: *w, h: *h })
         })
         .collect::<Vec<_>>();
 
@@ -139,7 +135,9 @@ pub fn render<'a>(
                 .font(ui::icon_button::MATERIAL_ICONS)
                 .size(15)
                 .color(colors::TEXT_PRIMARY),
-            text("Ouvrir une image…").size(13).color(colors::TEXT_PRIMARY),
+            text("Ouvrir une image…")
+                .size(13)
+                .color(colors::TEXT_PRIMARY),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -174,7 +172,9 @@ pub fn render<'a>(
             Space::new().height(Length::Fixed(8.0)),
             presets_row,
             Space::new().height(Length::Fixed(22.0)),
-            row![create_btn, open_btn].spacing(10).align_y(Alignment::Center),
+            row![create_btn, open_btn]
+                .spacing(10)
+                .align_y(Alignment::Center),
             Space::new().height(Length::Fixed(10.0)),
             error_line,
         ]
