@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use iced::widget::pane_grid;
-use iced::{Task, Vector};
+use iced::{Size, Task, Vector};
 use uuid::Uuid;
 
 use crate::components;
@@ -35,7 +35,9 @@ use photo_engine::{Command, UndoAction};
 pub fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
     let task = dispatch(app, message);
     app.preview_cache.sync(&app.doc);
-    task
+    // Le fallback périmé est recalculé HORS thread UI — jamais de gel.
+    let fallback = app.take_fallback_task();
+    Task::batch([task, fallback.unwrap_or_else(Task::none)])
 }
 
 fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
@@ -87,7 +89,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.canvas_selection = None;
             app.welcome_error = None;
             app.history.reset();
-            app.refresh_fallback();
+            app.invalidate_fallback();
         }
         Message::ProjectOpened(Err(e)) => {
             app.background_tasks.clear();
@@ -203,7 +205,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             let new_id = node.id();
             app.doc.push_layer(node);
             app.selected_layer = Some(new_id);
-            app.refresh_fallback();
+            app.invalidate_fallback();
         }
         Message::ImageDecoded(Err(e)) => {
             app.background_tasks.clear();
@@ -292,7 +294,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     .set_source_image(layer_id, ::image::DynamicImage::ImageRgba8(img));
             }
             app.pending_paint = None;
-            app.refresh_fallback();
+            app.invalidate_fallback();
         }
 
         Message::SetBrushColor(color) => {
@@ -343,7 +345,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     app.welcome_error = None;
                     app.project_path = None;
                     app.history.reset();
-                    app.refresh_fallback();
+                    app.invalidate_fallback();
                 }
                 _ => {
                     app.welcome_error = Some("Dimensions invalides (1 à 10000 px)".into());
@@ -418,7 +420,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 };
                 app.history.push_command_immediate(cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::SetLayerOpacity { id, opacity } => {
@@ -433,6 +435,10 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 // Geste continu (slider) : une seule entrée fusionnée
                 app.history.push_command(coalesce_key(id, 1), cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
+                // L'opacité est CUITE dans la composite fallback → à chaque
+                // tick le dirty-flag redéclenchera un calcul async (coalescé
+                // par le mécanisme in-flight, jamais bloquant)
+                app.invalidate_fallback();
             }
         }
         Message::SetLayerBlend { id, mode } => {
@@ -447,7 +453,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 app.history.push_command_immediate(cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
                 // Bascule chemin rapide ↔ fallback selon le mode
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::RenameLayer { id, name } => {
@@ -477,7 +483,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 app.history.push_command(coalesce_key(id, 2), cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
                 // Le composite fallback cuit les offsets → recomposite
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::SetLayerRotation { id, degrees } => {
@@ -493,6 +499,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 };
                 app.history.push_command(coalesce_key(id, 3), cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
+                app.invalidate_fallback();
             }
         }
         Message::RotateLayer90 { id, clockwise } => {
@@ -513,6 +520,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 };
                 app.history.push_command_immediate(cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
+                app.invalidate_fallback();
             }
         }
         Message::FlipLayer { id, horizontal } => {
@@ -523,7 +531,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     Ok(()) => app.history.push_snapshot(pre),
                     Err(e) => app.image_error = Some(e),
                 }
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::RotateLayer { id, delta } => {
@@ -544,6 +552,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 };
                 app.history.push_command_immediate(cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
+                app.invalidate_fallback();
             }
         }
         Message::SetLayerScale { id, scale } => {
@@ -558,6 +567,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 };
                 app.history.push_command(coalesce_key(id, 4), cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
+                app.invalidate_fallback();
             }
         }
         Message::ResetLayerTransform(id) => {
@@ -576,6 +586,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 };
                 app.history.push_command_immediate(cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
+                app.invalidate_fallback();
             }
         }
         Message::CropLayerToSelection => {
@@ -592,7 +603,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     rename_duplicate_suffix(&mut app.doc, new_id);
                     app.selected_layer = Some(new_id);
                     app.history.push_snapshot(pre);
-                    app.refresh_fallback();
+                    app.invalidate_fallback();
                 }
             }
         }
@@ -606,7 +617,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     // Réparation de sélection : dernier calque pixels restant
                     app.selected_layer = app.doc.iter_pixels().last().map(|l| l.id);
                     app.history.push_snapshot(pre);
-                    app.refresh_fallback();
+                    app.invalidate_fallback();
                 }
             }
         }
@@ -614,14 +625,14 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             if app.doc.move_up(id) {
                 let pre = app.snapshot();
                 app.history.push_snapshot(pre);
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::MoveLayerDown(id) => {
             if app.doc.move_down(id) {
                 let pre = app.snapshot();
                 app.history.push_snapshot(pre);
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::GroupLayers(id) => {
@@ -629,7 +640,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             if let Some(gid) = app.doc.group(&[id]) {
                 app.selected_layer = Some(gid);
                 app.history.push_snapshot(pre);
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::UngroupLayers(id) => {
@@ -637,7 +648,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             if let Some(freed) = app.doc.ungroup(id) {
                 app.selected_layer = freed.first().copied();
                 app.history.push_snapshot(pre);
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::ToggleGroupCollapsed(id) => {
@@ -651,7 +662,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 let pre = app.snapshot();
                 if app.doc.add_filter(id, filter).is_some() {
                     app.history.push_snapshot(pre);
-                    app.refresh_fallback();
+                    app.invalidate_fallback();
                 }
             }
         }
@@ -662,7 +673,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             let pre = app.snapshot();
             if app.doc.remove_filter(layer_id, filter_id).is_some() {
                 app.history.push_snapshot(pre);
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
         Message::SetFilterParam {
@@ -675,7 +686,6 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             // Calque pixels : l'apparence se recalcule seule via le cache
             // de versions (zéro recomposite global). Ajustement : le blend
             // global change → recomposite.
-            let is_adjustment = matches!(app.doc.find(layer_id), Some(LayerNode::Adjustment(_)));
             let old_value = app
                 .doc
                 .find(layer_id)
@@ -701,9 +711,9 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     app.doc.set_filter_param(layer_id, filter_id, key, value);
                 }
             }
-            if is_adjustment {
-                app.refresh_fallback();
-            }
+            // Cuit dans la composite fallback si elle est active ;
+            // en chemin rapide c'est un simple flag sans coût.
+            app.invalidate_fallback();
         }
         Message::ToggleFilterEnabled {
             layer_id,
@@ -720,7 +730,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     .unwrap_or(false)
             }) {
                 app.history.push_snapshot(pre);
-                app.refresh_fallback();
+                app.invalidate_fallback();
             }
         }
 
@@ -803,11 +813,15 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                         .map(|l| (l.id, l.transform));
                     if let Some((id, anchor_t)) = anchor {
                         app.move_anchor = Some((id, anchor_t));
-                        // Fallback (blending inter-calques) : pré-calcule UNE FOIS le
-                        // fond sans le sous-arbre déplacé — coût unique au début du
-                        // drag, ensuite zéro recomposite pendant tout le geste
-                        if app.needs_fallback() {
-                            app.prepare_drag_background(id);
+                        // Fallback (blending inter-calques) : demande le fond
+                        // SANS ce sous-arbre en tâche de fond. Pendant les
+                        // quelques ms de calcul, le drag s'affiche déjà en
+                        // dessin calque-par-calque (approximation), puis le
+                        // fond exact arrive sans jamais geler l'UI.
+                        if app.needs_fallback()
+                            && let Some(task) = app.drag_background_task(id)
+                        {
+                            return task;
                         }
                     }
                 }
@@ -834,6 +848,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 }
             }
             ui_kit::image_canvas::ImageCanvasEvent::MoveLayerEnd => {
+                app.drag_bg_in_flight = None;
                 // Fin du geste : UNE commande légère ancre→final remplace
                 // l'ancien snapshot de début de drag. Drag immobile = pas
                 // d'entrée d'historique du tout.
@@ -854,7 +869,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 app.drag_background = None;
                 app.drag_background_size = None;
                 if was_fallback {
-                    app.refresh_fallback();
+                    app.invalidate_fallback();
                 }
             }
         },
@@ -885,16 +900,49 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     app.drag_background_size = None;
                     app.pending_paint = None;
                     app.stroke_layer = None;
-                    app.refresh_fallback();
+                    app.invalidate_fallback();
                 }
                 Some(UndoAction::Applied(cmd)) if cmd.affects_composite() => {
                     // Invalidation ciblée : recomposite UNIQUEMENT si le
                     // blending global dépend du nœud touché
-                    app.refresh_fallback();
+                    app.invalidate_fallback();
                 }
                 Some(UndoAction::Applied(_)) | None => {}
             }
         }
+        Message::FallbackComputed { generation, result } => {
+            app.fallback_in_flight = false;
+            if generation != app.fallback_generation {
+                // Résultat périmé : le document a changé pendant le calcul.
+                // take_fallback_task réémettra car dirty est encore vrai.
+                return Task::batch([
+                    Task::none(),
+                    app.take_fallback_task().unwrap_or_else(Task::none),
+                ]);
+            }
+            match result {
+                Ok(Some((rgba, w, h))) => {
+                    app.fallback_size = Some(Size::new(w as f32, h as f32));
+                    app.fallback_handle = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
+                }
+                Ok(None) => {
+                    app.fallback_handle = None;
+                    app.fallback_size = None;
+                }
+                Err(e) => app.image_error = Some(e),
+            }
+        }
+        Message::DragBackgroundComputed { layer_id, result } => {
+            app.drag_bg_in_flight = None;
+            // N'applique que si on drague TOUJOURS le même sous-arbre
+            if app.move_anchor.map(|(id, _)| id) == Some(layer_id)
+                && let Some((rgba, w, h)) = result
+            {
+                app.drag_background = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
+                app.drag_background_size = Some(Size::new(w as f32, h as f32));
+            }
+        }
+
         Message::ZoomInPressed => {
             app.zoom_level = (app.zoom_level + 10).clamp(5, 1600);
         }
@@ -1079,7 +1127,7 @@ fn add_empty_layer(app: &mut PhotoApp) {
     if inserted {
         app.selected_layer = Some(new_id);
         app.history.push_snapshot(pre);
-        app.refresh_fallback();
+        app.invalidate_fallback();
     }
 }
 
@@ -1133,7 +1181,7 @@ fn crop_layer_to_selection(app: &mut PhotoApp) {
         Ok(()) => {
             app.history.push_snapshot(pre);
             app.image_error = None;
-            app.refresh_fallback();
+            app.invalidate_fallback();
         }
         Err(e) => app.image_error = Some(e),
     }

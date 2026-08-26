@@ -214,6 +214,16 @@ pub enum Message {
     ImageExported(Result<String, String>),
     /// Tick d'animation (spinner / barre de progression)
     TickFrame,
+    /// Composite fallback calculée HORS thread UI (génération : anti-désync)
+    FallbackComputed {
+        generation: u64,
+        result: Result<Option<(Vec<u8>, u32, u32)>, String>,
+    },
+    /// Fond de drag (composite sans le sous-arbre déplacé) prêt
+    DragBackgroundComputed {
+        layer_id: Uuid,
+        result: Option<(Vec<u8>, u32, u32)>,
+    },
     /// Ouvre/ferme le menu des traitements en arrière-plan
     ToggleTaskMenu,
 

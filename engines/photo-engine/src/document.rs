@@ -870,8 +870,28 @@ impl Document {
     /// Le document reste centré (comme Affinity/Photoshop) et les calques
     /// hors document restent visibles. Retourne None si rien n'est visible.
     pub fn composite_preview(&self) -> Option<DynamicImage> {
+        self.composite_scope(&self.root)
+    }
+
+    /// Composite du plan infini SANS le sous-arbre donné — utilisé pour le
+    /// fond pré-calculé pendant un drag. Réutilise le CACHE D'APPARENCES de
+    /// CE document : tous les calques restants produisent des HIT, le coût
+    /// se limite au blend lui-même (contrairement à un clonage dans un
+    /// document neuf dont le cache est froid).
+    pub fn composite_preview_without(&self, exclude_id: Uuid) -> Option<DynamicImage> {
+        // Clone structurel bon marché (Arcs partagés), sous-arbre masqué,
+        // puis composite via LE MÊME cache que le document vivant.
+        let mut hidden = self.root.clone();
+        hide_subtree(find_in_mut(&mut hidden, exclude_id));
+        if hidden.is_empty() {
+            return None;
+        }
+        self.composite_scope(&hidden)
+    }
+
+    fn composite_scope(&self, nodes: &[LayerNode]) -> Option<DynamicImage> {
         let resolver = |id: Uuid| self.appearance_image(id);
-        let (half_w, half_h) = scope_half_extents(&self.root, self.width, self.height, &resolver);
+        let (half_w, half_h) = scope_half_extents(nodes, self.width, self.height, &resolver);
         // Clamp pour éviter OOM (16384 ≈ 1 Go RGBA)
         let w = ((half_w * 2.0).clamp(1.0, 16384.0)) as u32;
         let h = ((half_h * 2.0).clamp(1.0, 16384.0)) as u32;
@@ -879,7 +899,7 @@ impl Document {
         // Origine monde (0,0) = coin du buffer moins demi-tailles
         let origin_x = half_w - self.width as f32 / 2.0;
         let origin_y = half_h - self.height as f32 / 2.0;
-        if !fold_scope(&self.root, &mut acc, origin_x, origin_y, &resolver) {
+        if !fold_scope(nodes, &mut acc, origin_x, origin_y, &resolver) {
             return None; // aucun calque visible/contribuant
         }
         Some(DynamicImage::ImageRgba8(acc))
@@ -895,6 +915,13 @@ impl Document {
         let x = w.saturating_sub(self.width) / 2;
         let y = h.saturating_sub(self.height) / 2;
         Some(img.crop_imm(x, y, self.width.max(1), self.height.max(1)))
+    }
+
+    /// Statistiques du renderer — instrumentation des tests (cache chaud).
+    #[cfg(test)]
+    pub fn renderer_stats(&self) -> (u64, u64) {
+        let r = self.cache.borrow();
+        (r.hits(), r.misses())
     }
 }
 
@@ -939,6 +966,17 @@ fn find_owner_list(nodes: &mut Vec<LayerNode>, id: Uuid) -> Option<(&mut Vec<Lay
         }
     }
     None
+}
+
+/// Masque récursivement un sous-arbre (drag d'un groupe = tout le groupe).
+fn hide_subtree(node: Option<&mut LayerNode>) {
+    let Some(node) = node else { return };
+    node.set_visible(false);
+    if let LayerNode::Group(g) = node {
+        for child in &mut g.children {
+            hide_subtree(Some(child));
+        }
+    }
 }
 
 fn collect_pixels<'a>(nodes: &'a [LayerNode], out: &mut Vec<&'a PixelLayer>) {
@@ -1582,6 +1620,44 @@ mod tests {
         let out = doc.composite().expect("composite");
         // Groupe Normal 50 % sur rouge : mix (200,0,0)/(0,0,200) → (100,0,100)
         assert_close(px(&out, 0, 0), [100, 0, 100, 255]);
+    }
+
+    #[test]
+    fn composite_sans_sous_arbre_reste_en_cache_chaud() {
+        // Deux calques filtrés : le premier warm-up paie les MISS, ensuite
+        // une composite EXCLUANT un sous-arbre ne doit générer AUCUN nouveau
+        // miss — c'est ce qui rend le fond de drag instantané.
+        use datatypes::ParamValue;
+        let img = solid(2, 2, [120, 120, 120, 255]);
+        let mut doc = Document::new(2, 2);
+        for name in ["a", "b"] {
+            let mut l = PixelLayer::new(name, arc(&img));
+            let mut f = FilterNode::new("brightness_contrast");
+            f.params
+                .insert("brightness".into(), ParamValue::Float(10.0));
+            l.live_filters.push(f);
+            doc.push_layer(LayerNode::Pixel(l));
+        }
+        let id_b = doc.root[1].id();
+
+        let _ = doc.composite_preview(); // warm-up : remplit le cache
+        let (hits0, misses0) = doc.renderer_stats();
+        assert_eq!(misses0, 2, "warm-up = un miss par calque filtré");
+
+        let bg = doc
+            .composite_preview_without(id_b)
+            .expect("composite d'exclusion");
+        let p = px(&bg, 0, 0);
+        // Le calque b est masqué : seul a (+ son filtre) reste → 120+25 = 145
+        assert_close(p, [145, 145, 145, 255]);
+
+        // ZÉRO nouveau miss : tout est servi depuis le cache chaud
+        let (_, misses1) = doc.renderer_stats();
+        assert_eq!(misses1, misses0, "composite d'exclusion sans recalcul");
+        assert!(
+            doc.renderer_stats().0 > hits0,
+            "les résolutions sont des hits"
+        );
     }
 
     #[test]

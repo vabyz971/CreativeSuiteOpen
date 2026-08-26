@@ -35,6 +35,16 @@ pub struct PhotoApp {
     /// Composite CPU unique — UNIQUEMENT si l'arbre exige du blending
     /// inter-calques (sinon chemin rapide par calque, zéro recomposite)
     pub fallback_handle: Option<iced_image::Handle>,
+    // ---- Pipeline fallback ASYNCHRONE ----
+    /// Compteur d'invalidations : un résultat calculé avec une génération
+    /// antérieure est jeté (le document a changé entre-temps).
+    pub(crate) fallback_generation: u64,
+    /// Une composite est en cours hors thread UI — on n'en relance pas deux.
+    pub(crate) fallback_in_flight: bool,
+    /// Le rendu affiché est périmé : une nouvelle composite est requise.
+    pub(crate) fallback_dirty: bool,
+    /// Fond de drag déjà demandé pour ce sous-arbre (évite les doublons).
+    pub(crate) drag_bg_in_flight: Option<Uuid>,
     pub image_path: Option<String>,
     pub image_error: Option<String>,
     // Canvas interaction (outil Main + pan/zoom)
@@ -184,64 +194,78 @@ impl PhotoApp {
         self.doc.needs_fallback()
     }
 
-    /// Composite CPU — UNIQUEMENT quand l'arbre exige du blending
-    /// inter-calques (le chemin rapide par calque couvre le reste sans
-    /// recomposite).
-    pub(crate) fn refresh_fallback(&mut self) {
-        if !self.needs_fallback() {
-            self.fallback_handle = None;
-            self.fallback_size = None;
-            return;
-        }
-        if let Some(img) = self.doc.composite_preview() {
-            let (w, h) = (img.width() as f32, img.height() as f32);
-            let rgba = img.to_rgba8();
-            self.fallback_size = Some(Size::new(w, h));
-            self.fallback_handle = Some(iced_image::Handle::from_rgba(
-                rgba.width(),
-                rgba.height(),
-                rgba.into_raw(),
-            ));
+    /// Marque le fallback PÉRIMÉ. Zéro travail bloquant : la composite
+    /// sera produite hors thread UI par [`Self::take_fallback_task`] au
+    /// prochain passage de boucle. Si le chemin rapide suffit, on purge
+    /// simplement les handles.
+    pub(crate) fn invalidate_fallback(&mut self) {
+        if self.needs_fallback() {
+            self.fallback_dirty = true;
         } else {
-            self.fallback_size = None;
+            self.fallback_dirty = false;
             self.fallback_handle = None;
+            self.fallback_size = None;
         }
+    }
+
+    /// Si une composite est requise et aucune n'est en vol : lance le
+    /// calcul HORS thread UI (jamais sur le thread interface). Le résultat
+    /// revient par [`Message::FallbackComputed`] avec sa génération —
+    /// un résultat périmé est jeté et une nouvelle tournée repart.
+    pub(crate) fn take_fallback_task(&mut self) -> Option<Task<Message>> {
+        if !self.fallback_dirty || self.fallback_in_flight || !self.needs_fallback() {
+            return None;
+        }
+        self.fallback_generation = self.fallback_generation.wrapping_add(1);
+        let generation = self.fallback_generation;
+        self.fallback_in_flight = true;
+        self.fallback_dirty = false;
+
+        let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
+        doc_copy.restore_snapshot(self.doc.snapshot());
+
+        Some(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || match doc_copy.composite_preview() {
+                    Some(img) => Ok(Some((img.to_rgba8().into_raw(), img.width(), img.height()))),
+                    None => Ok(None),
+                })
+                .await
+                .map_err(|e| format!("Tâche annulée : {e}"))?
+            },
+            move |result| Message::FallbackComputed { generation, result },
+        ))
     }
 
     /// Pré-calcule le fond composite SANS le sous-arbre sur le point d'être
-    /// déplacé — appelé UNE FOIS au début du drag (MoveLayerStart).
-    /// Pendant tout le drag, ce fond est dessiné tel quel + le calque
-    /// déplacé par-dessus : zéro recomposite.
-    pub(crate) fn prepare_drag_background(&mut self, exclude_id: Uuid) {
-        self.drag_background = None;
-        self.drag_background_size = None;
-        // Clone structurel bon marché (Arcs partagés), sous-arbre masqué,
-        // composite dédiée. Coût unique au DÉBUT du geste.
-        let mut temp = photo_engine::Document::new(self.doc.width, self.doc.height);
-        temp.root.clone_from(&self.doc.root);
-        hide_subtree(temp.find_mut(exclude_id));
-        let Some(img) = temp.composite_preview() else {
-            return;
-        };
-        let (w, h) = (img.width() as f32, img.height() as f32);
-        let rgba = img.to_rgba8();
-        self.drag_background_size = Some(Size::new(w, h));
-        self.drag_background = Some(iced_image::Handle::from_rgba(
-            rgba.width(),
-            rgba.height(),
-            rgba.into_raw(),
-        ));
-    }
-}
-
-/// Masque récursivement un sous-arbre (drag d'un groupe = tout le groupe).
-fn hide_subtree(node: Option<&mut photo_engine::LayerNode>) {
-    let Some(node) = node else { return };
-    node.set_visible(false);
-    if let photo_engine::LayerNode::Group(g) = node {
-        for child in &mut g.children {
-            hide_subtree(Some(child));
+    /// déplacé — HORS thread UI également. Pendant les quelques millisecondes
+    /// de calcul, le drag s'affiche déjà en dessin calque-par-calque
+    /// (approximation), puis le fond exact remplace l'approximation.
+    pub(crate) fn drag_background_task(&mut self, exclude_id: Uuid) -> Option<Task<Message>> {
+        debug_assert!(self.needs_fallback());
+        if self.drag_bg_in_flight.is_some() {
+            return None;
         }
+        self.drag_bg_in_flight = Some(exclude_id);
+
+        let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
+        doc_copy.restore_snapshot(self.doc.snapshot());
+
+        Some(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    doc_copy
+                        .composite_preview_without(exclude_id)
+                        .map(|img| (img.to_rgba8().into_raw(), img.width(), img.height()))
+                })
+                .await
+                .unwrap_or(None)
+            },
+            move |result| Message::DragBackgroundComputed {
+                layer_id: exclude_id,
+                result,
+            },
+        ))
     }
 }
 
@@ -272,6 +296,10 @@ impl Default for PhotoApp {
             selected_layer: None,
             fallback_size: None,
             fallback_handle: None,
+            fallback_generation: 0,
+            fallback_in_flight: false,
+            fallback_dirty: false,
+            drag_bg_in_flight: None,
             image_path: None,
             image_error: None,
             selected_tool: Tool::Hand,
