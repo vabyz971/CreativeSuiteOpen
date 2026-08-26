@@ -259,7 +259,9 @@ impl Graph {
         while let Some(n) = q.pop_front() {
             order.push(n);
             for c in self.connections.iter().filter(|c| c.from_node == n) {
-                let e = indeg_mut.get_mut(&c.to_node).unwrap();
+                let Some(e) = indeg_mut.get_mut(&c.to_node) else {
+                    continue;
+                };
                 *e -= 1;
                 if *e == 0 {
                     q.push_back(c.to_node);

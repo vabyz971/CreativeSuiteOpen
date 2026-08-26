@@ -18,6 +18,7 @@
 //! Chaque effet expose :
 //!  - `definition()` : sa définition (sockets + params) pour le registre UI
 //!  - `apply(ctx, id)` : son évaluation image -> image
+//!
 //! Ajouter un nouvel effet = créer un fichier ici + l'enregistrer dans `all()`.
 
 pub mod blur;

@@ -49,17 +49,20 @@ pub fn render<'a>(
     brush_opacity: f32,
     color_picker_open: bool,
 ) -> Element<'a, Message> {
-    let content: Element<'a, Message> = match tool {
-        Tool::Brush => brush_section(brush_color, brush_size, brush_opacity, color_picker_open),
-        Tool::Eraser => eraser_section(brush_size, brush_opacity),
-        Tool::Move => move_section(selected_layer, selected_scale_percent, has_selection),
-        _ => {
-            // Aucun réglage pour cet outil : hauteur nulle
-            return iced::widget::Space::new()
-                .width(Length::Fill)
-                .height(Length::Fixed(0.0))
-                .into();
-        }
+    let Some(content) = tool_controls(
+        tool,
+        selected_layer,
+        selected_scale_percent,
+        has_selection,
+        brush_color,
+        brush_size,
+        brush_opacity,
+        color_picker_open,
+    ) else {
+        return iced::widget::Space::new()
+            .width(Length::Fill)
+            .height(Length::Fixed(0.0))
+            .into();
     };
 
     container(
@@ -79,6 +82,37 @@ pub fn render<'a>(
         ..Default::default()
     })
     .into()
+}
+
+/// Contrôles bruts du tool sans fond ni container — pour intégration dans
+/// la barre haute à droite d'Exporter (`toolbar::context_bar`). Retourne `None`
+/// si l'outil n'a pas de réglages.
+#[allow(clippy::too_many_arguments)]
+pub fn tool_controls<'a>(
+    tool: Tool,
+    selected_layer: Option<Uuid>,
+    selected_scale_percent: Option<f32>,
+    has_selection: bool,
+    brush_color: iced::Color,
+    brush_size: f32,
+    brush_opacity: f32,
+    color_picker_open: bool,
+) -> Option<Element<'a, Message>> {
+    match tool {
+        Tool::Brush => Some(brush_section(
+            brush_color,
+            brush_size,
+            brush_opacity,
+            color_picker_open,
+        )),
+        Tool::Eraser => Some(eraser_section(brush_size, brush_opacity)),
+        Tool::Move => Some(move_section(
+            selected_layer,
+            selected_scale_percent,
+            has_selection,
+        )),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

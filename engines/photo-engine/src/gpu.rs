@@ -226,7 +226,8 @@ fn floats_to_image(floats: &[f32], w: u32, h: u32) -> DynamicImage {
     for &f in floats {
         raw.push((f.clamp(0.0, 1.0) * 255.0) as u8);
     }
-    let buf = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, raw).unwrap();
+    let buf = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, raw)
+        .expect("floats_to_image: dimensions invalides");
     DynamicImage::ImageRgba8(buf)
 }
 
@@ -323,14 +324,17 @@ fn run_compute(
             timeout: None,
         })
         .ok();
-    if rx.recv().unwrap().is_err() {
+    let Ok(map_res) = rx.recv() else {
+        return None;
+    };
+    if map_res.is_err() {
         return None;
     }
-    let data = readback
-        .slice(..)
-        .get_mapped_range()
-        .expect("get_mapped_range failed")
-        .to_vec();
+    let Ok(mapped) = readback.slice(..).get_mapped_range() else {
+        return None;
+    };
+    let data = mapped.to_vec();
+    drop(mapped);
     readback.unmap();
     let floats: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&data).to_vec();
     // s'assurer que la taille correspond

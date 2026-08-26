@@ -74,8 +74,9 @@ impl SocketType {
 // Valeurs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum DataValue {
+    #[default]
     None,
     Float(f32),
     Color([f32; 4]),
@@ -89,12 +90,6 @@ pub struct ImageMeta {
     pub width: u32,
     pub height: u32,
     pub path: Option<String>,
-}
-
-impl Default for DataValue {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl DataValue {

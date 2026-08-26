@@ -294,6 +294,10 @@ pub struct State {
     /// Version rastérisée du trait (texture doc-space, au-dessus des calques)
     pub stroke_tex: Option<StrokeTex>,
     pub selecting: Option<(Point, Point)>, // start, current
+    /// Drag scrubby zoom — ancre écran + zoom/pan de départ
+    pub zoom_dragging: Option<(Point, f32, Vector)>,
+    /// Position écran du curseur pour aperçu taille d'outil
+    pub cursor_pos: Option<Point>,
     /// Modificateurs clavier courants (Alt = zoom inversé avec l'outil loupe)
     pub modifiers: iced::keyboard::Modifiers,
     /// Dernière taille de viewport publiée (évite spam d'événements)
@@ -331,8 +335,37 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         // (la souris est capturée pendant un drag) — sinon l'état de drag
         // reste armé et les événements de déplacement continuent d'arriver.
         if let canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) = event {
-            if let Some((start, end)) = state.selecting.take() {
+            if let Some((anchor, start_zoom, start_pan)) = state.zoom_dragging.take() {
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
+                    return Some(canvas::Action::capture());
+                };
+                let dx = cursor_pos.x - anchor.x;
+                let dy = cursor_pos.y - anchor.y;
+                let drag_dist = (dx * dx + dy * dy).sqrt();
+                // Clic sans déplacement significatif = zoom ponctuel sur l'ancre
+                if drag_dist < 4.0 {
+                    let base_factor = 1.4_f32;
+                    let factor = if state.modifiers.alt() {
+                        1.0 / base_factor
+                    } else {
+                        base_factor
+                    };
+                    let new_zoom = (start_zoom * factor).clamp(0.08, 6.0);
+                    let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+                    let factor_ratio = new_zoom / start_zoom;
+                    let new_pan = Vector::new(
+                        anchor.x - center.x - (anchor.x - center.x - start_pan.x) * factor_ratio,
+                        anchor.y - center.y - (anchor.y - center.y - start_pan.y) * factor_ratio,
+                    );
+                    return Some(canvas::Action::publish(ImageCanvasEvent::ZoomAt {
+                        zoom: new_zoom,
+                        pan: new_pan,
+                    }));
+                }
+                return Some(canvas::Action::capture());
+            }
+            if let Some((start, end)) = state.selecting.take() {
+                let Some(_cursor_pos) = cursor.position_in(bounds) else {
                     // Relâché hors du canvas : annule la sélection
                     return Some(canvas::Action::publish(ImageCanvasEvent::SelectRect(None)));
                 };
@@ -349,32 +382,8 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     return Some(canvas::Action::publish(ImageCanvasEvent::SelectRect(Some(
                         norm,
                     ))));
-                } else if self.tool == CanvasTool::Zoom {
-                    // Clic sans drag = zoom sur point (Alt = zoom arrière)
-                    let base_factor = 1.4_f32;
-                    let factor = if state.modifiers.alt() {
-                        1.0 / base_factor
-                    } else {
-                        base_factor
-                    };
-                    let new_zoom = (self.zoom * factor).clamp(0.08, 6.0);
-                    let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
-                    let factor_ratio = new_zoom / self.zoom;
-                    let new_pan = Vector::new(
-                        cursor_pos.x
-                            - center.x
-                            - (cursor_pos.x - center.x - self.pan.x) * factor_ratio,
-                        cursor_pos.y
-                            - center.y
-                            - (cursor_pos.y - center.y - self.pan.y) * factor_ratio,
-                    );
-                    return Some(canvas::Action::publish(ImageCanvasEvent::ZoomAt {
-                        zoom: new_zoom,
-                        pan: new_pan,
-                    }));
-                } else {
-                    return Some(canvas::Action::publish(ImageCanvasEvent::SelectRect(None)));
                 }
+                return Some(canvas::Action::publish(ImageCanvasEvent::SelectRect(None)));
             }
             if let Some((_start, _orig_pan)) = state.dragging.take() {
                 if self.tool == CanvasTool::Move {
@@ -427,14 +436,38 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                             .and_capture(),
                         )
                     }
-                    CanvasTool::Zoom | CanvasTool::Select => {
-                        // Clic simple zoom ou début sélection rect
+                    CanvasTool::Zoom => {
+                        // Début scrubby zoom — ancre = point de clic
+                        state.zoom_dragging = Some((cursor_pos, self.zoom, self.pan));
+                        Some(canvas::Action::capture())
+                    }
+                    CanvasTool::Select => {
                         state.selecting = Some((cursor_pos, cursor_pos));
                         Some(canvas::Action::capture())
                     }
                 }
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // Met à jour aperçu taille outil et scrubby zoom
+                state.cursor_pos = Some(cursor_pos);
+                if let Some((anchor, start_zoom, start_pan)) = state.zoom_dragging {
+                    // Scrubby zoom : vertical = avance/recule, ancré sur le point de clic
+                    let dy = anchor.y - cursor_pos.y; // monter = zoom +
+                    let dx = cursor_pos.x - anchor.x;
+                    let delta = dy + dx * 0.5; // influence horizontale douce
+                    let factor = (1.008_f32).powf(delta);
+                    let new_zoom = (start_zoom * factor).clamp(0.08, 6.0);
+                    let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+                    let ratio = new_zoom / start_zoom;
+                    let new_pan = Vector::new(
+                        anchor.x - center.x - (anchor.x - center.x - start_pan.x) * ratio,
+                        anchor.y - center.y - (anchor.y - center.y - start_pan.y) * ratio,
+                    );
+                    return Some(canvas::Action::publish(ImageCanvasEvent::ZoomAt {
+                        zoom: new_zoom,
+                        pan: new_pan,
+                    }));
+                }
                 if let Some((start, _)) = state.selecting {
                     state.selecting = Some((start, cursor_pos));
                     // preview via request_redraw
@@ -471,6 +504,10 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         // Aperçu purement local : redraw sans aller-retour app
                         return Some(canvas::Action::request_redraw().and_capture());
                     }
+                }
+                // Survol pinceau/gomme : redessine pour déplacer le cercle d'aperçu
+                if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) {
+                    return Some(canvas::Action::request_redraw().and_capture());
                 }
                 None
             }
@@ -634,6 +671,104 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     .with_width(1.0)
                     .with_color(colors::SELECTION_STROKE),
             );
+        }
+
+        // Aperçu taille d'outil — IMAGE au-dessus des calques (vectoriel passerait dessous)
+        if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser)
+            && let Some(pos) = state.cursor_pos
+            && bounds.contains(pos)
+        {
+            let r = (self.brush.radius * self.zoom).max(2.0);
+            // Génère une petite texture RGBA avec cercle gris — dessinée en IMAGE
+            // pour passer au-dessus des calques (ordre iced: quads->meshes->images)
+            let size = ((r * 2.0 + 6.0).ceil() as u32).clamp(8, 512);
+            let mut rgba = vec![0u8; (size * size * 4) as usize];
+            let cx = size as f32 / 2.0;
+            let cy = size as f32 / 2.0;
+            let thickness = if self.brush.erase {
+                (r * 0.18).max(1.5)
+            } else {
+                1.4
+            };
+            for y in 0..size {
+                for x in 0..size {
+                    let dx = x as f32 + 0.5 - cx;
+                    let dy = y as f32 + 0.5 - cy;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    let (inner, outer) = if self.brush.erase {
+                        let inner = (r - thickness).max(0.0);
+                        (inner, r)
+                    } else {
+                        (r - thickness, r)
+                    };
+                    let cov = if d >= inner - 0.5 && d <= outer + 0.5 {
+                        if d < inner {
+                            (d - (inner - 0.5)).clamp(0.0, 1.0)
+                        } else if d > outer {
+                            (outer + 0.5 - d).clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        continue;
+                    };
+                    if cov <= 0.01 {
+                        continue;
+                    }
+                    let idx = ((y * size + x) * 4) as usize;
+                    // Gris moyen 0.5 visible sur blanc et noir + alpha par couverture
+                    let a = (cov * 230.0).round() as u8;
+                    rgba[idx] = 128;
+                    rgba[idx + 1] = 128;
+                    rgba[idx + 2] = 128;
+                    rgba[idx + 3] = a;
+                    // Liseré blanc/noir adouci via alpha déjà — le gris reste lisible
+                }
+            }
+            // Point central pour pinceau
+            if !self.brush.erase {
+                let dot_r = 1.2;
+                for y in 0..size {
+                    for x in 0..size {
+                        let dx = x as f32 + 0.5 - cx;
+                        let dy = y as f32 + 0.5 - cy;
+                        if (dx * dx + dy * dy).sqrt() <= dot_r {
+                            let idx = ((y * size + x) * 4) as usize;
+                            rgba[idx] = 128;
+                            rgba[idx + 1] = 128;
+                            rgba[idx + 2] = 128;
+                            rgba[idx + 3] = 255;
+                        }
+                    }
+                }
+            }
+            let handle = image::Handle::from_rgba(size, size, rgba);
+            let tl = Point::new(pos.x - cx, pos.y - cy);
+            frame.draw_image(
+                Rectangle::new(tl, Size::new(size as f32, size as f32)),
+                iced_core::Image::new(handle),
+            );
+            let label = format!("{} px", (self.brush.radius * 2.0).round() as u32);
+            let label_pos = Point::new(pos.x, pos.y - r - 10.0);
+            // Fond semi-transparent derrière label pour lisibilité sur blanc/noir
+            let label_bg = Rectangle::new(
+                Point::new(label_pos.x - 22.0, label_pos.y - 7.0),
+                Size::new(44.0, 14.0),
+            );
+            frame.fill_rectangle(
+                label_bg.position(),
+                label_bg.size(),
+                iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+            );
+            frame.fill_text(iced::widget::canvas::Text {
+                content: label,
+                position: label_pos,
+                color: iced::Color::from_rgba(0.95, 0.95, 0.95, 1.0),
+                size: iced::Pixels(10.0),
+                align_x: iced::alignment::Horizontal::Center.into(),
+                align_y: iced::alignment::Vertical::Center,
+                ..Default::default()
+            });
         }
 
         vec![frame.into_geometry()]

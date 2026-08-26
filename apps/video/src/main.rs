@@ -17,10 +17,12 @@
 use iced::{Element, Length, Task};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Message {
     Mock,
 }
 
+#[allow(dead_code)]
 struct VideoApp {
     zoom: f32,
 }
@@ -31,19 +33,18 @@ impl Default for VideoApp {
     }
 }
 
-fn update(app: &mut VideoApp, msg: Message) -> Task<Message> {
+fn update(_app: &mut VideoApp, msg: Message) -> Task<Message> {
     match msg {
         Message::Mock => {}
     }
     Task::none()
 }
 
-fn view(app: &VideoApp) -> Element<'_, Message> {
-    let central = iced::widget::container("Working progess")
+fn view(_app: &VideoApp) -> Element<'_, Message> {
+    iced::widget::container("Working progess")
         .width(Length::Fill)
         .height(Length::Fill)
-        .into();
-    central
+        .into()
 }
 
 pub fn main() -> iced::Result {

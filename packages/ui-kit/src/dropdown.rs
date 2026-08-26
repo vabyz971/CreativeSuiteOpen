@@ -87,7 +87,6 @@ fn dropdown_container_style(_theme: &Theme) -> container::Style {
             width: 1.0,
             color: colors::BORDER_SUBTLE,
             radius: metrics::RADIUS_DROPDOWN.into(),
-            ..Default::default()
         },
         shadow: shadows::dropdown(),
         ..Default::default()

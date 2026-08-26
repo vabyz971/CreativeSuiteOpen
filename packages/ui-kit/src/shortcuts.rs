@@ -537,9 +537,7 @@ pub fn subscription<Message: Clone + Send + 'static>(
         else {
             return None;
         };
-        let Some(key_str) = key_string(&key) else {
-            return None;
-        };
+        let key_str = key_string(&key)?;
         // Ignore les touches modificateurs seules pendant la capture
         if matches!(
             key_str.as_str(),

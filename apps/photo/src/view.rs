@@ -116,11 +116,11 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             .into(),
     );
 
-    // Barre d'options contextuelle : contenu selon l'outil sélectionné
+    // Barre haute : Export + menu du tool à sa droite, sans fond
     let selected_scale_percent = app
         .selected_layer
         .and_then(|id| app.doc.pixel_layer(id).map(|l| l.transform.scale * 100.0));
-    let options_bar = components::options_bar::render(
+    let context_bar = components::toolbar::context_bar(
         app.selected_tool,
         app.selected_layer,
         selected_scale_percent,
@@ -132,8 +132,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     );
 
     let central = iced::widget::column![
-        components::toolbar::context_bar(),
-        options_bar,
+        context_bar,
         components::workspace::render(
             &app.panes,
             app.focus,

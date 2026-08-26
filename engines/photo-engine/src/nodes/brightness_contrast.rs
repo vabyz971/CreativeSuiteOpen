@@ -50,11 +50,11 @@ pub fn apply_effect(img: &DynamicImage, brightness: f32, contrast: f32) -> Dynam
         .samples
         .par_chunks_mut(4)
         .for_each(|px| {
-            for c in 0..3 {
-                let mut v = px[c] as f32;
+            for c in px.iter_mut().take(3) {
+                let mut v = *c as f32;
                 v = (v - 128.0) * contrast_factor + 128.0;
                 v += b as f32;
-                px[c] = v.clamp(0.0f32, 255.0f32) as u8;
+                *c = v.clamp(0.0f32, 255.0f32) as u8;
             }
         });
     DynamicImage::ImageRgba8(out)

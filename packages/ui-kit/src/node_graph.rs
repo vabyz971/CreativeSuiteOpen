@@ -77,6 +77,7 @@ pub enum NodeGraphEvent {
 struct NodeView {
     id: NodeId,
     name: String,
+    #[allow(dead_code)]
     type_id: String,
     pos: Vec2,
     header_color: Color,
@@ -105,10 +106,12 @@ fn node_view_from_graph(graph: &Graph, id: NodeId, selected: Option<NodeId>) -> 
     })
 }
 
+type SocketList = Vec<(String, SocketType)>;
+
 fn node_palette(
     type_id: &str,
     params: &std::collections::HashMap<String, datatypes::ParamValue>,
-) -> (Color, Vec<(String, SocketType)>, Vec<(String, SocketType)>) {
+) -> (Color, SocketList, SocketList) {
     match type_id {
         "input_image" => (
             colors::NODE_INPUT_IMAGE,
@@ -730,7 +733,6 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                     line_height: iced::widget::text::LineHeight::default(),
                     shaping: iced::widget::text::Shaping::Basic,
                     max_width: f32::INFINITY,
-                    ..Default::default()
                 });
                 if show_details {
                     let btn = preview_button_rect(view);
@@ -759,7 +761,6 @@ impl canvas::Program<NodeGraphEvent> for NodeGraph {
                         line_height: iced::widget::text::LineHeight::default(),
                         shaping: iced::widget::text::Shaping::Basic,
                         max_width: f32::INFINITY,
-                        ..Default::default()
                     });
                 }
                 // Sockets : toujours dessinés mais labels selon LOD

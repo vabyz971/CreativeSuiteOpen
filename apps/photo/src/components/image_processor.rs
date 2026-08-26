@@ -20,18 +20,97 @@
 //! - `rayon` pour tous les ops point (brightness/contrast/saturation/mix) → 4-8× plus rapide sur 2560×1440
 //! - Blur reste CPU optimisé, futur GPU via `gpu.rs` compute shader
 
-use suite_core::Graph;
+use crate::components::gpu;
 use datatypes::NodeId;
 use image::{DynamicImage, ImageBuffer, Rgba};
 use rayon::prelude::*;
-use crate::components::gpu;
+use std::collections::{HashMap, HashSet};
+use suite_core::Graph;
+
+// ---------------------------------------------------------------------------
+// Helpers partagés — factorisent les 3 fonctions evaluate* (évite triplication)
+// ---------------------------------------------------------------------------
+
+#[inline]
+fn param_float(node: &suite_core::Node, key: &str, default: f32) -> f32 {
+    node.params.get(key).and_then(|v| v.as_float()).unwrap_or(default)
+}
+
+fn find_input_image<'a>(
+    graph: &Graph,
+    cache: &'a HashMap<NodeId, DynamicImage>,
+    node_id: NodeId,
+    socket: &str,
+) -> Option<&'a DynamicImage> {
+    let conn = graph
+        .connections
+        .iter()
+        .find(|c| c.to_node == node_id && c.to_socket == socket)?;
+    cache.get(&conn.from_node)
+}
+
+/// Évalue un nœud connu (brightness, blur, mix, color_correct). Retourne None
+/// si le type est inconnu ou si l'entrée requise manque — l'appelant décide
+/// du fallback (original.clone() vs skip).
+fn eval_known(
+    node: &suite_core::Node,
+    graph: &Graph,
+    cache: &HashMap<NodeId, DynamicImage>,
+) -> Option<DynamicImage> {
+    match node.type_id.as_str() {
+        "brightness_contrast" => {
+            let input = find_input_image(graph, cache, node.id, "image")?;
+            let b = param_float(node, "brightness", 0.0);
+            let c = param_float(node, "contrast", 0.0);
+            Some(apply_brightness_contrast(input, b, c))
+        }
+        "blur" => {
+            let input = find_input_image(graph, cache, node.id, "image")?;
+            let r = param_float(node, "radius", 5.0);
+            Some(apply_blur(input, r))
+        }
+        "mix" | "blend" => {
+            let a = find_input_image(graph, cache, node.id, "image_a");
+            let b = find_input_image(graph, cache, node.id, "image_b");
+            let factor = param_float(node, "factor", 0.5);
+            match (a, b) {
+                (Some(a), Some(b)) => Some(apply_mix(a, b, factor)),
+                // Entrée manquante : propage l'autre côté — sera géré par fallback appelant
+                _ => None,
+            }
+        }
+        "color_correct" => {
+            let input = find_input_image(graph, cache, node.id, "image")?;
+            let s = param_float(node, "saturation", 1.0);
+            Some(apply_saturation(input, s))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_mix_fallback(
+    graph: &Graph,
+    cache: &HashMap<NodeId, DynamicImage>,
+    node_id: NodeId,
+    original: &DynamicImage,
+) -> DynamicImage {
+    let a = find_input_image(graph, cache, node_id, "image_a");
+    let b = find_input_image(graph, cache, node_id, "image_b");
+    match (a, b) {
+        (Some(a), Some(_)) | (Some(a), None) => a.clone(),
+        (None, Some(b)) => b.clone(),
+        (None, None) => original.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// API publique
+// ---------------------------------------------------------------------------
 
 /// Évalue le graphe de façon topologique et applique les effets
 /// Retourne l'image du node Output, ou None si pas d'input
 pub fn evaluate(graph: &Graph, original: &DynamicImage) -> Option<DynamicImage> {
     let order = graph.topological_order().ok()?;
-    use std::collections::HashMap;
-    // GIMP/GEGL-like : ne traite que les ancêtres de l'Output (évite recalcul si nœud déconnecté)
     let ancestors = graph.output_ancestors();
     let filtered_order: Vec<NodeId> = order.into_iter().filter(|id| ancestors.contains(id)).collect();
     let mut cache: HashMap<NodeId, DynamicImage> = HashMap::new();
@@ -40,127 +119,72 @@ pub fn evaluate(graph: &Graph, original: &DynamicImage) -> Option<DynamicImage> 
         let node = graph.get(id)?;
         let img = match node.type_id.as_str() {
             "input_image" => original.clone(),
-            "output" => {
-                // Output prend son entrée image
-                let input = find_input_image(graph, &cache, id, "image")?;
-                input.clone()
-            }
-            "brightness_contrast" => {
-                let input = find_input_image(graph, &cache, id, "image")?;
-                let b = node.params.get("brightness").and_then(|v| v.as_float()).unwrap_or(0.0);
-                let c = node.params.get("contrast").and_then(|v| v.as_float()).unwrap_or(0.0);
-                apply_brightness_contrast(input, b, c)
-            }
-            "blur" => {
-                let input = find_input_image(graph, &cache, id, "image")?;
-                let r = node.params.get("radius").and_then(|v| v.as_float()).unwrap_or(5.0);
-                apply_blur(input, r)
-            }
-            "mix" | "blend" => {
-                // Mix a deux entrées + facteur
-                let a = find_input_image(graph, &cache, id, "image_a");
-                let b = find_input_image(graph, &cache, id, "image_b");
-                let factor = node.params.get("factor").and_then(|v| v.as_float()).unwrap_or(0.5);
-                match (a, b) {
-                    (Some(a), Some(b)) => apply_mix(a, b, factor),
-                    (Some(a), None) => a.clone(),
-                    (None, Some(b)) => b.clone(),
-                    (None, None) => original.clone(),
-                }
-            }
-            "color_correct" => {
-                let input = find_input_image(graph, &cache, id, "image")?;
-                let s = node.params.get("saturation").and_then(|v| v.as_float()).unwrap_or(1.0);
-                apply_saturation(input, s)
-            }
+            "output" => find_input_image(graph, &cache, id, "image")?.clone(),
             _ => {
-                // Node inconnu : propage l'entrée si existe
-                if let Some(inp) = find_input_image(graph, &cache, id, "image")
-                    .or_else(|| find_input_image(graph, &cache, id, "in"))
-                {
-                    inp.clone()
+                if let Some(img) = eval_known(node, graph, &cache) {
+                    img
+                } else if node.type_id == "mix" || node.type_id == "blend" {
+                    // Cas mix avec entrée manquante : propage l'entrée existante
+                    let factor = param_float(node, "factor", 0.5);
+                    let a = find_input_image(graph, &cache, id, "image_a");
+                    let b = find_input_image(graph, &cache, id, "image_b");
+                    match (a, b) {
+                        (Some(a), Some(b)) => apply_mix(a, b, factor),
+                        _ => resolve_mix_fallback(graph, &cache, id, original),
+                    }
                 } else {
-                    original.clone()
+                    // Node inconnu : propage l'entrée si existe
+                    find_input_image(graph, &cache, id, "image")
+                        .or_else(|| find_input_image(graph, &cache, id, "in"))
+                        .cloned()
+                        .unwrap_or_else(|| original.clone())
                 }
             }
         };
         cache.insert(id, img);
     }
 
-    if let Some(out_id) = graph.find_output_node() {
-        cache.get(&out_id).cloned()
-    } else {
-        None
-    }
+    cache.get(&graph.find_output_node()?).cloned()
 }
 
-/// Évaluation incrémentale : ne recalcule que les nœuds affectés (descendants du nœud modifié)
+/// Évaluation incrémentale : ne recalcule que les nœuds affectés
 pub fn evaluate_incremental(
     graph: &Graph,
     original: &DynamicImage,
-    prev_cache: &std::collections::HashMap<NodeId, DynamicImage>,
-    affected: &std::collections::HashSet<NodeId>,
+    prev_cache: &HashMap<NodeId, DynamicImage>,
+    affected: &HashSet<NodeId>,
 ) -> Option<DynamicImage> {
     let order = graph.topological_order().ok()?;
     let ancestors = graph.output_ancestors();
-    // Si l'affecté ne touche pas la sortie, inutile
-    let mut cache: std::collections::HashMap<NodeId, DynamicImage> = prev_cache.clone();
-    // On ne garde que les ancêtres dans le cache
-    // Recalcule uniquement les nœuds affectés qui sont aussi ancêtres de l'output
+    let mut cache: HashMap<NodeId, DynamicImage> = prev_cache.clone();
     for id in order {
         if !ancestors.contains(&id) {
             continue;
         }
-        if !affected.contains(&id) {
-            // réutilise le cache précédent si présent
-            if cache.contains_key(&id) {
-                continue;
-            }
-            // sinon doit quand même calculer (première fois)
+        if !affected.contains(&id) && cache.contains_key(&id) {
+            continue;
         }
         let node = graph.get(id)?;
-        // Supprime l'ancienne entrée pour recalcul
         cache.remove(&id);
         let img = match node.type_id.as_str() {
             "input_image" => original.clone(),
-            "output" => {
-                let input = find_input_image(graph, &cache, id, "image")?;
-                input.clone()
-            }
-            "brightness_contrast" => {
-                let input = find_input_image(graph, &cache, id, "image")?;
-                let b = node.params.get("brightness").and_then(|v| v.as_float()).unwrap_or(0.0);
-                let c = node.params.get("contrast").and_then(|v| v.as_float()).unwrap_or(0.0);
-                apply_brightness_contrast(input, b, c)
-            }
-            "blur" => {
-                let input = find_input_image(graph, &cache, id, "image")?;
-                let r = node.params.get("radius").and_then(|v| v.as_float()).unwrap_or(5.0);
-                apply_blur(input, r)
-            }
-            "mix" | "blend" => {
-                let a = find_input_image(graph, &cache, id, "image_a");
-                let b = find_input_image(graph, &cache, id, "image_b");
-                let factor = node.params.get("factor").and_then(|v| v.as_float()).unwrap_or(0.5);
-                match (a, b) {
-                    (Some(a), Some(b)) => apply_mix(a, b, factor),
-                    (Some(a), None) => a.clone(),
-                    (None, Some(b)) => b.clone(),
-                    (None, None) => original.clone(),
-                }
-            }
-            "color_correct" => {
-                let input = find_input_image(graph, &cache, id, "image")?;
-                let s = node.params.get("saturation").and_then(|v| v.as_float()).unwrap_or(1.0);
-                apply_saturation(input, s)
-            }
+            "output" => find_input_image(graph, &cache, id, "image")?.clone(),
             _ => {
-                if let Some(inp) = find_input_image(graph, &cache, id, "image")
-                    .or_else(|| find_input_image(graph, &cache, id, "in"))
-                {
-                    inp.clone()
+                if let Some(img) = eval_known(node, graph, &cache) {
+                    img
+                } else if node.type_id == "mix" || node.type_id == "blend" {
+                    let factor = param_float(node, "factor", 0.5);
+                    let a = find_input_image(graph, &cache, id, "image_a");
+                    let b = find_input_image(graph, &cache, id, "image_b");
+                    match (a, b) {
+                        (Some(a), Some(b)) => apply_mix(a, b, factor),
+                        _ => resolve_mix_fallback(graph, &cache, id, original),
+                    }
                 } else {
-                    original.clone()
+                    find_input_image(graph, &cache, id, "image")
+                        .or_else(|| find_input_image(graph, &cache, id, "in"))
+                        .cloned()
+                        .unwrap_or_else(|| original.clone())
                 }
             }
         };
@@ -169,20 +193,18 @@ pub fn evaluate_incremental(
     cache.get(&graph.find_output_node()?).cloned()
 }
 
-/// Évalue tous les nœuds ancêtres et retourne le cache complet (pour previews Blender-like)
+/// Évalue tous les nœuds ancêtres et retourne le cache complet (pour previews)
 pub fn evaluate_with_cache(
     graph: &Graph,
     original: &DynamicImage,
-) -> std::collections::HashMap<NodeId, DynamicImage> {
-    let mut cache = std::collections::HashMap::new();
+) -> HashMap<NodeId, DynamicImage> {
+    let mut cache = HashMap::new();
     let Ok(order) = graph.topological_order() else {
         return cache;
     };
     let ancestors = graph.output_ancestors();
-    // Inclut aussi les nœuds avec preview_enabled même si déconnectés (pour aperçu)
     for id in order {
         if !ancestors.contains(&id) {
-            // Garde les nœuds déconnectés avec preview pour leur propre aperçu (original)
             if let Some(node) = graph.get(id) {
                 if !node.preview_enabled {
                     continue;
@@ -199,25 +221,10 @@ pub fn evaluate_with_cache(
                 Some(inp) => inp.clone(),
                 None => continue,
             },
-            "brightness_contrast" => {
-                let Some(inp) = find_input_image(graph, &cache, id, "image") else {
-                    continue;
-                };
-                let b = node.params.get("brightness").and_then(|v| v.as_float()).unwrap_or(0.0);
-                let c = node.params.get("contrast").and_then(|v| v.as_float()).unwrap_or(0.0);
-                apply_brightness_contrast(inp, b, c)
-            }
-            "blur" => {
-                let Some(inp) = find_input_image(graph, &cache, id, "image") else {
-                    continue;
-                };
-                let r = node.params.get("radius").and_then(|v| v.as_float()).unwrap_or(5.0);
-                apply_blur(inp, r)
-            }
             "mix" | "blend" => {
                 let a = find_input_image(graph, &cache, id, "image_a");
                 let b = find_input_image(graph, &cache, id, "image_b");
-                let f = node.params.get("factor").and_then(|v| v.as_float()).unwrap_or(0.5);
+                let f = param_float(node, "factor", 0.5);
                 match (a, b) {
                     (Some(a), Some(b)) => apply_mix(a, b, f),
                     (Some(a), None) => a.clone(),
@@ -225,38 +232,21 @@ pub fn evaluate_with_cache(
                     (None, None) => original.clone(),
                 }
             }
-            "color_correct" => {
-                let Some(inp) = find_input_image(graph, &cache, id, "image") else {
-                    continue;
-                };
-                let s = node.params.get("saturation").and_then(|v| v.as_float()).unwrap_or(1.0);
-                apply_saturation(inp, s)
-            }
-            _ => continue,
+            _ => match eval_known(node, graph, &cache) {
+                Some(img) => img,
+                None => continue,
+            },
         };
         cache.insert(id, img);
     }
     cache
 }
 
-fn find_input_image<'a>(
-    graph: &Graph,
-    cache: &'a std::collections::HashMap<NodeId, DynamicImage>,
-    node_id: NodeId,
-    socket: &str,
-) -> Option<&'a DynamicImage> {
-    let conn = graph
-        .connections
-        .iter()
-        .find(|c| c.to_node == node_id && c.to_socket == socket)?;
-    cache.get(&conn.from_node)
-}
-
 // ---------------------------------------------------------------------------
 // Effets - utilisation directe de `image` crate (native)
 // ---------------------------------------------------------------------------
 
-const TILE: u32 = 512; // GEGL-like tuile, 2560×1440 → 5×3 tuiles
+const TILE: u32 = 512;
 
 fn apply_brightness_contrast(img: &DynamicImage, brightness: f32, contrast: f32) -> DynamicImage {
     if let Some(gpu_out) = gpu::apply_brightness_contrast_gpu(img, brightness, contrast) {
@@ -269,13 +259,12 @@ fn apply_brightness_contrast(img: &DynamicImage, brightness: f32, contrast: f32)
         1.0 + contrast / 50.0
     };
     let mut out = img.to_rgba8();
-    // Utilise tous les cœurs : par_chunks_mut sur flat samples
     out.as_flat_samples_mut().samples.par_chunks_mut(4).for_each(|px| {
-        for c in 0..3 {
-            let mut v = px[c] as f32;
+        for c in px.iter_mut().take(3) {
+            let mut v = *c as f32;
             v = (v - 128.0) * contrast_factor + 128.0;
             v += b as f32;
-            px[c] = v.clamp(0.0f32, 255.0f32) as u8;
+            *c = v.clamp(0.0f32, 255.0f32) as u8;
         }
     });
     DynamicImage::ImageRgba8(out)
@@ -288,7 +277,6 @@ fn apply_blur(img: &DynamicImage, radius: f32) -> DynamicImage {
     if let Some(gpu_out) = gpu::apply_blur_gpu(img, radius) {
         return gpu_out;
     }
-    // Fallback CPU - on force l'utilisation de tous les cœurs via un warmup rayon
     let mut dummy = img.to_rgba8();
     dummy.as_flat_samples_mut().samples.par_chunks_mut(4).for_each(|_| {});
     img.blur(radius)

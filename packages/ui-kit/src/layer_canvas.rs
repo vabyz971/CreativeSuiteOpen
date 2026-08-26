@@ -491,8 +491,8 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
 @group(0) @binding(1) var acc_samp: sampler;
 @group(0) @binding(4) var<uniform> pp: Params;
 
-const GRID_BG = vec3<f32>(0.055, 0.055, 0.055);   // #0E0E0E
-const GRID_DOT = vec3<f32>(0.208, 0.208, 0.204);  // #353534
+const GRID_BG = vec3<f32>(0.0549, 0.0549, 0.0549);   // theme::SURFACE_CONTAINER_LOWEST #0E0E0E
+const GRID_DOT = vec3<f32>(0.2078, 0.2078, 0.2039);  // theme::SURFACE_CONTAINER_HIGHEST #353534
 
 @fragment
 fn fs_present(in: VOut) -> @location(0) vec4<f32> {
