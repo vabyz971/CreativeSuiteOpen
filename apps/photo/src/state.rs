@@ -71,8 +71,8 @@ pub struct PhotoApp {
     pub task_menu_open: bool,
     /// Angle du spinner d'activité (animé par TickFrame)
     pub spinner_angle: f32,
-    /// Table de raccourcis clavier (persistée en JSON)
-    pub shortcuts: ui_kit::shortcuts::Shortcuts,
+    /// Résolveur de raccourcis construit depuis les préférences persistantes
+    pub resolver: preferences::KeybindingResolver,
     /// Fenêtre principale — son Id (ouverte au boot)
     pub main_window: Option<iced::window::Id>,
     // ---- Historique (undo/redo) ----
@@ -99,12 +99,12 @@ pub struct PhotoApp {
     pub new_doc_h: String,
     pub welcome_error: Option<String>,
 
-    /// Modal Préférences ouverte
-    pub show_prefs: bool,
-    /// Section active dans la fenêtre Préférences
-    pub prefs_section: components::preferences::PrefsSection,
-    /// Capture de touche en cours (action en attente d'un nouveau raccourci)
-    pub capturing: Option<ui_kit::shortcuts::Action>,
+    /// Fenêtre de préférences FLOTTANTE ouverte (non bloquante)
+    pub preferences_open: bool,
+    /// État interne de la fenêtre (brouillon de préférences)
+    pub preferences_window: Option<crate::preferences_window::PreferencesWindow>,
+    /// Préférences persistantes chargées au démarrage
+    pub preferences: preferences::Preferences,
     // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
     pub gen_graph: suite_core::Graph,
     pub gen_selected_node: Option<datatypes::NodeId>,
@@ -148,44 +148,6 @@ impl PhotoApp {
     /// Snapshot complet du document pour l'historique (pixels partagés via Arc).
     pub(crate) fn snapshot(&self) -> photo_engine::history::Snapshot {
         self.doc.snapshot()
-    }
-
-    /// Raccourci clavier → Message applicatif.
-    /// SEULE correspondance action ↔ logique : ajouter une action ici la
-    /// branche au clavier partout.
-    pub(crate) fn message_for(action: ui_kit::shortcuts::Action) -> Option<Message> {
-        use ui_kit::shortcuts::Action;
-        let sel: Option<Uuid> = None; // sélection courante indisponible hors update (abonnement statique)
-        match action {
-            Action::NewProject => Some(Message::NewProject),
-            Action::Open => Some(Message::OpenProject),
-            Action::Save => Some(Message::SaveProject),
-            Action::SaveAs => Some(Message::SaveProjectAs),
-            Action::Quit => Some(Message::Quit),
-            Action::Undo => Some(Message::Undo),
-            Action::Redo => Some(Message::Redo),
-            Action::Preferences => Some(Message::OpenPreferences),
-            Action::ToggleTools => Some(Message::ToggleToolsPanel),
-            Action::ToggleLayersPanel => Some(Message::TogglePanel(PanelType::Layers)),
-            Action::TogglePropertiesPanel => Some(Message::TogglePanel(PanelType::Properties)),
-            Action::LayerNew => Some(Message::AddEmptyLayer),
-            Action::LayerDuplicate => sel.map(Message::DuplicateLayer),
-            Action::LayerDelete => sel.map(Message::DeleteLayer),
-            Action::LayerMoveUp => sel.map(Message::MoveLayerUp),
-            Action::LayerMoveDown => sel.map(Message::MoveLayerDown),
-            Action::Rotate90 => sel.map(|id| Message::RotateLayer { id, delta: 90.0 }),
-            Action::Rotate180 => sel.map(|id| Message::RotateLayer { id, delta: 180.0 }),
-            Action::RotateN90 => sel.map(|id| Message::RotateLayer { id, delta: -90.0 }),
-            Action::RotateN180 => sel.map(|id| Message::RotateLayer { id, delta: -180.0 }),
-            Action::ResetTransform => sel.map(Message::ResetLayerTransform),
-            Action::CropToSelection => Some(Message::CropLayerToSelection),
-            Action::ToolBrush => Some(Message::SelectTool(Tool::Brush)),
-            Action::ToolEraser => Some(Message::SelectTool(Tool::Eraser)),
-            Action::ToolHand => Some(Message::SelectTool(Tool::Hand)),
-            Action::ZoomIn => Some(Message::ZoomInPressed),
-            Action::ZoomOut => Some(Message::ZoomOutPressed),
-            Action::FitToScreen => Some(Message::CanvasFit),
-        }
     }
 
     /// L'arbre exige-t-il la composite CPU ? (groupes en mode non-Normal,
@@ -314,7 +276,9 @@ impl Default for PhotoApp {
             background_tasks: Vec::new(),
             task_menu_open: false,
             spinner_angle: 0.0,
-            shortcuts: ui_kit::shortcuts::Shortcuts::load(),
+            resolver: preferences::KeybindingResolver::from_bindings(
+                &preferences::Preferences::load("photo").keybindings.bindings,
+            ),
             main_window: None,
             history: photo_engine::history::History::new(),
             project_path: None,
@@ -327,9 +291,9 @@ impl Default for PhotoApp {
             new_doc_w: "1920".to_string(),
             new_doc_h: "1080".to_string(),
             welcome_error: None,
-            show_prefs: false,
-            prefs_section: components::preferences::PrefsSection::Shortcuts,
-            capturing: None,
+            preferences_open: false,
+            preferences_window: None,
+            preferences: preferences::Preferences::load("photo"),
             gen_graph: components::node_registry::create_empty_graph(),
             gen_selected_node: None,
             gen_previews: Default::default(),

@@ -354,52 +354,119 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
 
         Message::OpenPreferences => {
-            app.show_prefs = true;
-            app.prefs_section = components::preferences::PrefsSection::General;
-            app.capturing = None;
-            // Détection GPU async pour la section Général
-            return Task::perform(
-                async { components::gpu::detect_gpu_info().await },
-                Message::GpuDetected,
-            );
+            app.preferences_open = true;
+            let mut tasks = Vec::new();
+            if app.preferences_window.is_none() {
+                let window =
+                    crate::preferences_window::PreferencesWindow::new(app.preferences.clone());
+                app.preferences_window = Some(window);
+            }
+            // Détection matérielle HORS thread UI pour la section Hardware
+            tasks.push(Task::perform(
+                async { preferences::HardwareReport::detect().await },
+                Message::HardwareDetected,
+            ));
+            return Task::batch(tasks);
         }
-        Message::ClosePreferences => {
-            app.show_prefs = false;
-            app.capturing = None;
+        Message::Event(event) => {
+            // 1) Capture de raccourci en cours : la fenêtre consomme la touche
+            if app.preferences_open
+                && app
+                    .preferences_window
+                    .as_ref()
+                    .is_some_and(crate::preferences_window::PreferencesWindow::is_capturing)
+                && let Some(window) = &mut app.preferences_window
+                && let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    ..
+                }) = event
+            {
+                window.key_event(key, modifiers);
+                return Task::none();
+            }
+            // 2) Résolution globale : l'abonnement ne livre que les touches
+            // NON consommées par un widget (les champs texte sont donc sûrs)
+            if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key, modifiers, ..
+            }) = event
+                && let Some(action) = app.resolver.resolve(&key, modifiers)
+            {
+                return dispatch(app, Message::ExecuteAction(action));
+            }
         }
-        Message::PrefsSection(section) => {
-            app.prefs_section = section;
-        }
-        Message::ShortcutCapture(action) => {
-            app.capturing = Some(action);
-        }
-        Message::ShortcutCaptured(binding) => {
-            if let Some(action) = app.capturing {
-                if let Some(b) = binding {
-                    app.shortcuts.set(action, b);
-                    app.shortcuts.save();
+        Message::ExecuteAction(action) => {
+            // Pont unique action typée → messages existants (réutilisation
+            // intégrale des handlers, zéro duplication de logique)
+            use preferences::PhotoAction;
+            let target = || app.selected_layer.unwrap_or_else(uuid::Uuid::nil);
+            let msg = match action {
+                PhotoAction::ToolBrush => Message::SelectTool(crate::message::Tool::Brush),
+                PhotoAction::ToolEraser => Message::SelectTool(crate::message::Tool::Eraser),
+                PhotoAction::ToolEyedropper => Message::SelectTool(crate::message::Tool::Select),
+                PhotoAction::ToolMove => Message::SelectTool(crate::message::Tool::Move),
+                PhotoAction::ToolHand => Message::SelectTool(crate::message::Tool::Hand),
+                PhotoAction::ToolZoom => Message::SelectTool(crate::message::Tool::Zoom),
+                PhotoAction::Undo => Message::Undo,
+                PhotoAction::Redo => Message::Redo,
+                PhotoAction::DeleteLayer => Message::DeleteLayer(target()),
+                PhotoAction::NewProject => Message::NewProject,
+                PhotoAction::Open => Message::OpenProject,
+                PhotoAction::Save => Message::SaveProject,
+                PhotoAction::SaveAs => Message::SaveProjectAs,
+                PhotoAction::Export => Message::ExportImage,
+                PhotoAction::ZoomIn => Message::ZoomInPressed,
+                PhotoAction::ZoomOut => Message::ZoomOutPressed,
+                PhotoAction::ZoomFit => Message::CanvasFit,
+                PhotoAction::Zoom100 => {
+                    app.zoom_level = 100;
+                    app.canvas_pan = Vector::new(0.0, 0.0);
+                    app.canvas_selection = None;
+                    return Task::none();
                 }
-                app.capturing = None;
+                PhotoAction::ToggleLayersPanel => Message::TogglePanel(PanelType::Layers),
+                PhotoAction::ToggleToolsPanel => Message::ToggleToolsPanel,
+                PhotoAction::NewLayer => Message::AddEmptyLayer,
+                PhotoAction::DuplicateLayer => Message::DuplicateLayer(target()),
+                PhotoAction::OpenPreferences => Message::OpenPreferences,
+            };
+            return dispatch(app, msg);
+        }
+
+        Message::PreferencesMsg(msg) => {
+            if let Some(window) = &mut app.preferences_window {
+                match msg {
+                    crate::preferences_window::Message::Close => {
+                        app.preferences_open = false;
+                        app.preferences_window = None;
+                    }
+                    crate::preferences_window::Message::Apply
+                    | crate::preferences_window::Message::SaveAndClose => {
+                        app.resolver = preferences::KeybindingResolver::from_bindings(
+                            &window.draft.keybindings.bindings,
+                        );
+                        app.preferences = window.draft.clone();
+                        // Persistance déjà faite par la fenêtre ; on recharge
+                        // et on referme.
+                        window.update(crate::preferences_window::Message::SaveAndClose);
+                        app.preferences = app
+                            .preferences_window
+                            .as_ref()
+                            .map(|w| w.draft.clone())
+                            .unwrap_or_default();
+                        app.preferences_open = false;
+                        app.preferences_window = None;
+                    }
+                    inner => window.update(inner),
+                }
             }
         }
-        Message::ShortcutCancelCapture => {
-            app.capturing = None;
-        }
-        Message::ShortcutReset(action) => {
-            app.shortcuts.reset(action);
-            app.shortcuts.save();
-        }
-        Message::ShortcutResetAll => {
-            app.shortcuts.reset_all();
-            app.shortcuts.save();
-        }
-        Message::ShortcutAction(action) => {
-            // Résolution action → Message (déléguée, une seule place)
-            if let Some(msg) = PhotoApp::message_for(action) {
-                // Re-dispatch récursif : réutilise tous les handlers existants
-                return dispatch(app, msg);
+        Message::HardwareDetected(report) => {
+            if let Some(window) = &mut app.preferences_window {
+                window.set_hardware(report);
             }
         }
+
         Message::TickFrame => {
             // Animation du spinner (~30 fps)
             app.spinner_angle = (app.spinner_angle + 24.0) % 360.0;

@@ -214,6 +214,14 @@ pub enum Message {
     ImageExported(Result<String, String>),
     /// Tick d'animation (spinner / barre de progression)
     TickFrame,
+    /// Événement plateforme (clavier…) filtré « non consommé » par un widget
+    Event(iced::Event),
+    /// Action raccourci résolue → dispatch vers les messages existants
+    ExecuteAction(preferences::PhotoAction),
+    /// Message interne de la fenêtre de préférences flottante
+    PreferencesMsg(crate::preferences_window::Message),
+    /// Rapport matériel calculé hors thread UI
+    HardwareDetected(preferences::HardwareReport),
     /// Composite fallback calculée HORS thread UI (génération : anti-désync)
     FallbackComputed {
         generation: u64,
@@ -227,22 +235,8 @@ pub enum Message {
     /// Ouvre/ferme le menu des traitements en arrière-plan
     ToggleTaskMenu,
 
-    // Raccourcis clavier (préférences)
-    /// Ouvre la fenêtre Préférences → Raccourcis
+    /// Ouvre la fenêtre de préférences flottante
     OpenPreferences,
-    ClosePreferences,
-    /// Démarre la capture d'une nouvelle combinaison pour l'action
-    ShortcutCapture(ui_kit::shortcuts::Action),
-    /// Touche capturée (None = Échap → annule)
-    ShortcutCaptured(Option<ui_kit::shortcuts::Binding>),
-    /// Annule la capture en cours
-    ShortcutCancelCapture,
-    /// Remet le raccourci par défaut d'une action
-    ShortcutReset(ui_kit::shortcuts::Action),
-    /// Remet toute la table par défaut
-    ShortcutResetAll,
-    /// Raccourci clavier résolu → action sémantique
-    ShortcutAction(ui_kit::shortcuts::Action),
 
     // ---- Pinceau / Gomme ----
     /// Début d'un trait (coordonnées document)
@@ -283,8 +277,6 @@ pub enum Message {
     },
     /// Crée le document : fond blanc plein cadre + calque sélectionné
     CreateDocument,
-    /// Section active dans la fenêtre Préférences
-    PrefsSection(crate::components::preferences::PrefsSection),
 
     // Générateur de textures (graphe nodal)
     NodeGraphEvent(ui_kit::node_graph::NodeGraphEvent),

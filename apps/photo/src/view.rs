@@ -166,52 +166,52 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     );
 
     // Modal Préférences unifiée (Général / Raccourcis clavier / À propos)
-    if app.show_prefs {
-        let prefs_overlay = iced::widget::stack![
-            // Scrim : clic hors modal ferme
-            iced::widget::mouse_area(
-                iced::widget::container(
-                    iced::widget::Space::new()
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                )
-                .style(|_| iced::widget::container::Style {
-                    background: Some(ui_kit::theme::colors::CABLE_SHADOW.into()),
-                    ..Default::default()
-                })
-                .width(Length::Fill)
-                .height(Length::Fill)
-            )
-            .on_press(Message::ClosePreferences),
-            components::preferences::view(
-                &app.shortcuts,
-                app.capturing,
-                app.prefs_section,
-                app.gpu_info.clone(),
-                app.gpu_available,
-            ),
-        ];
-        return iced::widget::stack![base_layout, prefs_overlay].into();
+    if app.preferences_open
+        && let Some(window) = &app.preferences_window
+    {
+        // Fenêtre FLOTTANTE non bloquante : empilement SANS scrim.
+        // Les clics en dehors du panneau atteignent le contenu principal —
+        // la fenêtre ne se ferme que via ses propres boutons.
+        let prefs_panel = iced::widget::container(window.view().map(Message::PreferencesMsg))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill);
+
+        return iced::widget::stack![base_layout, prefs_panel].into();
     }
 
     // Les dropdowns des menus sont gérés nativement par iced_aw::DropDown
     base_layout
 }
 
-/// Tick d'animation uniquement pendant un chargement (spinner + barre)
+/// Tick d'animation (spinner) + écoute clavier GLOBALE.
+///
+/// Le filtre `Status::Ignored` est la clé du comportement : une pression
+/// de touche CONSUMÉE par un widget (champ texte en cours d'édition, par
+/// exemple) n'atteint jamais le résolveur — plus besoin d'un flag
+/// `text_input_focused` maintenu à la main.
 pub fn subscription(app: &PhotoApp) -> Subscription<Message> {
     let tick = if !app.background_tasks.is_empty() {
         iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::TickFrame)
     } else {
         Subscription::none()
     };
-    Subscription::batch([
-        tick,
-        ui_kit::shortcuts::subscription(
-            &app.shortcuts,
-            app.capturing.is_some(),
-            PhotoApp::message_for,
-            Message::ShortcutCaptured,
-        ),
-    ])
+    let keyboard = iced::event::listen_with(keyboard_filter);
+    Subscription::batch([tick, keyboard])
+}
+
+/// Filtre d'abonnement : uniquement les PRESSIONS de touches non consommées.
+fn keyboard_filter(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match (&event, status) {
+        (
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. }),
+            iced::event::Status::Ignored,
+        ) => Some(Message::Event(event)),
+        _ => None,
+    }
 }

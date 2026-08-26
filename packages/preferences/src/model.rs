@@ -33,6 +33,12 @@ pub enum RenderApi {
     Gl,
 }
 
+impl std::fmt::Display for RenderApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 impl RenderApi {
     /// Cette API est-elle disponible sur la plateforme actuelle ?
     #[must_use]
@@ -88,6 +94,12 @@ pub enum Theme {
     System,
 }
 
+impl std::fmt::Display for Theme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 impl Theme {
     pub const ALL: [Theme; 3] = [Theme::Dark, Theme::Light, Theme::System];
 
@@ -107,6 +119,12 @@ pub enum RenderQuality {
     #[default]
     Balanced,
     Quality,
+}
+
+impl std::fmt::Display for RenderQuality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 impl RenderQuality {

@@ -26,6 +26,7 @@
 
 mod menus;
 mod message;
+mod preferences_window;
 mod state;
 mod ui_handles;
 mod update;
