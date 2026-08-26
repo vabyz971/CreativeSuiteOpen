@@ -20,6 +20,7 @@
 
 pub mod command;
 pub mod document;
+pub mod export;
 pub mod filters;
 pub mod gpu;
 pub mod history;
@@ -35,6 +36,7 @@ pub use document::{
     AdjustmentLayer, Appearance, BlendMode, Document, FilterNode, GroupLayer, LayerNode,
     PixelLayer, RgbaBuf, Transform2D,
 };
+pub use export::{DEFAULT_JPEG_QUALITY, ExportFormat, export_image};
 pub use filters::{filterable_types, new_filter};
 pub use gpu::GpuContext;
 pub use history::UndoAction;

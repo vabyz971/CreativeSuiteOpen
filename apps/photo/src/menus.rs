@@ -55,6 +55,13 @@ pub fn app_menus(
                 },
                 ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
+                    label: "Exporter l'image...".into(),
+                    shortcut: "Ctrl+Maj+E".to_string(),
+                    checked: false,
+                    message: Message::ExportImage,
+                },
+                ui_kit::menu::Item::Separator,
+                ui_kit::menu::Item::Action {
                     label: "Quitter".into(),
                     shortcut: "Ctrl+Q".to_string(),
                     checked: false,

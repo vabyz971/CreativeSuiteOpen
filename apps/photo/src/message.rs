@@ -206,6 +206,12 @@ pub enum Message {
     SaveProjectPathPicked(Option<std::path::PathBuf>),
     /// Résultat d'un enregistrement (nom du fichier pour statut/erreur)
     ProjectSaved(Result<String, String>),
+    /// Ouvre la boîte « Exporter l'image » (PNG/JPEG)
+    ExportImage,
+    /// Chemin d'export choisi — le décodage du format vient de l'extension
+    ExportPathPicked(Option<std::path::PathBuf>),
+    /// Résultat d'un export (nom du fichier ou erreur)
+    ImageExported(Result<String, String>),
     /// Tick d'animation (spinner / barre de progression)
     TickFrame,
     /// Ouvre/ferme le menu des traitements en arrière-plan

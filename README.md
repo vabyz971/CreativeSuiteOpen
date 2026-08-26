@@ -33,6 +33,7 @@ Les versions suivent la maturité fonctionnelle de chaque crate : `0.1.0` = fond
 ### Historique & projet natif (`0.4.0`)
 - **Undo/redo** complet (Ctrl+Z / Ctrl+Y, 50 pas) — snapshots quasi gratuits grâce au partage de pixels, gestes continus (sliders, renommage, drag) coalescés en un seul point de restauration
 - **Format projet `.csophoto`** : enregistrement/ouverture du document (calques, fusion, transforms) — Enregistrer (`Ctrl+S`), Enregistrer sous (`Ctrl+Maj+S`), ouverture projet ou image depuis la même boîte
+- **Export PNG/JPEG** : export de la composite complète (`Ctrl+Maj+E`) — transparence conservée en PNG, aplatement sur fond blanc en JPEG (qualité 90)
 
 ### Plan de travail infini
 - Aucun crop : les images peuvent dépasser le document, comme sur les plans de travail pro

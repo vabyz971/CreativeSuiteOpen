@@ -129,6 +129,29 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.background_tasks.clear();
             app.image_error = Some(e);
         }
+        Message::ExportImage => {
+            if app.background_tasks.is_empty() && app.doc_dims().is_some() {
+                return export_dialog_task();
+            }
+        }
+        Message::ExportPathPicked(path_opt) => {
+            if let Some(path) = path_opt
+                && app.background_tasks.is_empty()
+                && app.doc_dims().is_some()
+            {
+                return export_image_task(app, path);
+            }
+        }
+        Message::ImageExported(Ok(name)) => {
+            app.background_tasks.clear();
+            app.image_error = None;
+            // Confirmation discrète via la zone d'erreur (vert côté UI future)
+            let _ = name;
+        }
+        Message::ImageExported(Err(e)) => {
+            app.background_tasks.clear();
+            app.image_error = Some(e);
+        }
         Message::OpenImage => {
             if app.background_tasks.is_empty() {
                 return pick_image_task(Message::ImagePicked);
@@ -1219,6 +1242,51 @@ fn save_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Messa
             Ok(name)
         },
         Message::ProjectSaved,
+    )
+}
+
+/// Boîte « Exporter l'image » — PNG par défaut, JPEG si extension .jpg/.jpeg.
+fn export_dialog_task() -> Task<Message> {
+    Task::perform(
+        async {
+            rfd::AsyncFileDialog::new()
+                .add_filter("Image PNG", &["png"])
+                .add_filter("Image JPEG", &["jpg", "jpeg"])
+                .set_title("Exporter l'image")
+                .set_file_name("sans-titre.png")
+                .save_file()
+                .await
+                .map(|h| h.path().to_path_buf())
+        },
+        Message::ExportPathPicked,
+    )
+}
+
+/// Export HORS thread UI : composite complète (plan infini rogné au
+/// document) puis encodage selon l'extension choisie.
+fn export_image_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Message> {
+    let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
+    doc_copy.restore_snapshot(app.doc.snapshot());
+    let name = file_label(&path);
+    app.background_tasks.retain(|t| !t.starts_with("Export"));
+    app.background_tasks.push(format!("Export de {name}"));
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let img = doc_copy
+                    .composite()
+                    .ok_or("Rien à exporter : le document est vide")?;
+                photo_engine::export_image(
+                    &img,
+                    &path,
+                    photo_engine::ExportFormat::from_path(&path),
+                )
+            })
+            .await
+            .map_err(|e| format!("Tâche annulée : {e}"))??;
+            Ok(name)
+        },
+        Message::ImageExported,
     )
 }
 
