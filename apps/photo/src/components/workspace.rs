@@ -15,29 +15,30 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::components::{layers_panel, properties, toolpanel};
-use crate::layers::Layer;
 use crate::{Message, PanelType, Tool};
 use datatypes::NodeId;
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{Space, column, container, image, text};
 use iced::{Element, Length, Size, Vector};
+use photo_engine::Document;
 use suite_core::Graph;
 use ui_kit::base_panel;
 use ui_kit::dropdown::{dropdown_box, menu_item, menu_separator};
 use ui_kit::theme::colors;
+use uuid::Uuid;
 
 #[allow(clippy::too_many_arguments)]
 pub fn render<'a>(
     panes: &'a pane_grid::State<PanelType>,
     focus: Option<pane_grid::Pane>,
-    layers: &'a [Layer],
+    doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
-    selected_layer: Option<u64>,
+    selected_layer: Option<Uuid>,
     doc_size: Option<Size>,
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
     // Calque en cours de déplacement (mode fallback)
-    drag_layer: Option<u64>,
+    drag_layer: Option<Uuid>,
     // Fond composite pré-calculé sans le calque déplacé
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
@@ -73,10 +74,8 @@ pub fn render<'a>(
             PanelType::Canvas => {
                 // Chemin rapide : chaque calque = une texture canvas, offsets
                 // appliqués au draw → drag/zoom sans AUCUN recomposite.
-                // Fallback : modes de fusion non-Normal → composite CPU unique.
-                let needs_fallback = layers
-                    .iter()
-                    .any(|l| l.visible && l.opacity > 0.01 && l.blend_mode != "Normal");
+                // Fallback : blending inter-calques → composite CPU unique.
+                let needs_fallback = doc.needs_fallback();
                 let preview: Element<'_, Message> = render_canvas_preview(
                     if needs_fallback {
                         fallback_handle.clone()
@@ -87,7 +86,7 @@ pub fn render<'a>(
                     drag_layer,
                     drag_background.clone(),
                     drag_background_size,
-                    layers,
+                    doc,
                     preview_cache,
                     doc_size,
                     image_error.clone(),
@@ -115,13 +114,13 @@ pub fn render<'a>(
                 };
                 (title, preview)
             }
-            PanelType::Properties => {
-                let sel = selected_layer.and_then(|id| layers.iter().find(|l| l.id == id));
-                ("Propriétés".to_string(), properties::render(sel))
-            }
+            PanelType::Properties => (
+                "Propriétés".to_string(),
+                properties::render(doc, selected_layer),
+            ),
             PanelType::Layers => (
                 "Calques".to_string(),
-                layers_panel::render(layers, preview_cache, selected_layer),
+                layers_panel::render(doc, preview_cache, selected_layer),
             ),
             PanelType::Generator => {
                 let g_clone = gen_graph.clone();
@@ -245,15 +244,15 @@ fn build_node_context_menu<'a>(
 fn render_canvas_preview<'a>(
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
-    drag_layer: Option<u64>,
+    drag_layer: Option<Uuid>,
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
-    layers: &'a [Layer],
+    doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     doc_size: Option<Size>,
-    image_error: Option<String>, // conservé pour futur affichage inline
+    _image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
-    selected_layer: Option<u64>,
+    selected_layer: Option<Uuid>,
     tools_visible: bool,
     canvas_pan: Vector,
     zoom_level: u32,
@@ -276,11 +275,12 @@ fn render_canvas_preview<'a>(
         Tool::Brush => ui_kit::image_canvas::CanvasTool::Brush,
         Tool::Eraser => ui_kit::image_canvas::CanvasTool::Eraser,
     };
-    // Calques canvas : texture + offset + opacité appliqués AU DRAW (GPU)
-    // → slider d'opacité = zéro régénération de pixels, zéro clignotement
+    // Calques canvas : texture d'APPARENCE + transform + opacité appliqués
+    // AU DRAW (GPU) → slider d'opacité = zéro régénération de pixels
     let dragging = drag_layer.is_some();
-    let mut canvas_layers: Vec<ui_kit::image_canvas::CanvasLayer> = layers
-        .iter()
+    let mut canvas_layers: Vec<ui_kit::image_canvas::CanvasLayer> = doc
+        .iter_pixels()
+        .into_iter()
         .filter(|l| l.visible && l.opacity > 0.01)
         // En drag fallback : le calque déplacé est exclu du fond (il est
         // dessiné par-dessus le fond pré-calculé, voir plus bas)
@@ -293,11 +293,11 @@ fn render_canvas_preview<'a>(
                 handle,
                 width: w as f32,
                 height: h as f32,
-                offset_x: l.offset_x,
-                offset_y: l.offset_y,
+                offset_x: l.transform.offset_x,
+                offset_y: l.transform.offset_y,
                 opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
-                rotation_deg: l.rotation,
-                scale: l.scale,
+                rotation_deg: l.transform.rotation_deg,
+                scale: l.transform.scale,
             })
         })
         .collect();
@@ -330,23 +330,23 @@ fn render_canvas_preview<'a>(
     }
     if dragging
         && has_drag_bg
-        && let Some(l) = drag_layer.and_then(|id| layers.iter().find(|l| l.id == id))
+        && let Some(l) = drag_layer.and_then(|id| doc.pixel_layer(id))
         && l.visible
         && let Some(handle) = preview_cache.preview(l.id).cloned()
     {
-        // Uniquement en fallback : le fond pré-calculé exclut ce calque,
-        // on le dessine par-dessus. En chemin rapide il est DÉJÀ dans
+        // Uniquement en fallback : le fond pré-calculé exclut ce sous-arbre,
+        // on dessine ce calque par-dessus. En chemin rapide il est DÉJÀ dans
         // canvas_layers — le push ici le dessinerait deux fois.
         let (w, h) = l.dimensions();
         canvas_layers.push(ui_kit::image_canvas::CanvasLayer {
             handle,
             width: w as f32,
             height: h as f32,
-            offset_x: l.offset_x,
-            offset_y: l.offset_y,
+            offset_x: l.transform.offset_x,
+            offset_y: l.transform.offset_y,
             opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
-            rotation_deg: l.rotation,
-            scale: l.scale,
+            rotation_deg: l.transform.rotation_deg,
+            scale: l.transform.scale,
         });
     }
 
@@ -400,7 +400,7 @@ fn render_canvas_preview<'a>(
             pending_preview,
         )
         .map(Message::ImageCanvasEvent);
-        if layers.is_empty() && doc_size.is_none() {
+        if doc.root.is_empty() && doc_size.is_none() {
             // Écran d'accueil : créer/ouvrir un document
             let welcome = crate::components::welcome::render(new_doc_w, new_doc_h, welcome_error);
             iced::widget::stack![

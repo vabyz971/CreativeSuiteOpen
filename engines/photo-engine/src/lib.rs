@@ -18,7 +18,9 @@
 //! PUR : aucune dépendance UI (les buffers sont convertis côté app).
 //! Utilise suite-core + datatypes, exposé à shell et aux apps
 
+pub mod command;
 pub mod document;
+pub mod filters;
 pub mod gpu;
 pub mod history;
 pub mod nodes;
@@ -27,7 +29,14 @@ pub mod processor;
 pub mod project;
 pub mod registry;
 
+pub use command::{Command, RenderEvent};
+pub use document::{
+    AdjustmentLayer, Appearance, BlendMode, Document, FilterNode, GroupLayer, LayerNode,
+    PixelLayer, RgbaBuf, Transform2D,
+};
+pub use filters::{filterable_types, new_filter};
 pub use gpu::GpuContext;
+pub use history::UndoAction;
 pub use processor::{evaluate, evaluate_incremental, evaluate_with_cache};
 pub use registry::{
     all_definitions, create_empty_graph, create_minimal_graph, create_node_for_type, definition_for,

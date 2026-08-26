@@ -17,11 +17,12 @@
 //! Menus applicatifs affichés dans le shell (Fichier / Édition / Calque / Affichage).
 
 use crate::message::{Message, PanelType};
+use uuid::Uuid;
 
 /// Menus applicatifs affichés dans le shell (Fichier / Édition / Affichage).
 pub fn app_menus(
     tools_visible: bool,
-    selected_layer: Option<u64>,
+    selected_layer: Option<Uuid>,
 ) -> Vec<ui_kit::menu::Menu<Message>> {
     vec![
         ui_kit::menu::Menu::new(
@@ -104,14 +105,14 @@ pub fn app_menus(
                     label: "Dupliquer le calque".into(),
                     shortcut: "Ctrl+J".to_string(),
                     checked: false,
-                    message: Message::DuplicateLayer(selected_layer.unwrap_or(u64::MAX)),
+                    message: Message::DuplicateLayer(selected_layer.unwrap_or_else(Uuid::nil)),
                 },
                 ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
                     label: "Supprimer le calque".into(),
                     shortcut: "".to_string(),
                     checked: false,
-                    message: Message::DeleteLayer(selected_layer.unwrap_or(u64::MAX)),
+                    message: Message::DeleteLayer(selected_layer.unwrap_or_else(Uuid::nil)),
                 },
                 ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::SubMenu {
@@ -122,7 +123,7 @@ pub fn app_menus(
                             shortcut: "".to_string(),
                             checked: false,
                             message: Message::RotateLayer {
-                                id: selected_layer.unwrap_or(u64::MAX),
+                                id: selected_layer.unwrap_or_else(Uuid::nil),
                                 delta: 90.0,
                             },
                         },
@@ -131,7 +132,7 @@ pub fn app_menus(
                             shortcut: "".to_string(),
                             checked: false,
                             message: Message::RotateLayer {
-                                id: selected_layer.unwrap_or(u64::MAX),
+                                id: selected_layer.unwrap_or_else(Uuid::nil),
                                 delta: 180.0,
                             },
                         },
@@ -140,7 +141,7 @@ pub fn app_menus(
                             shortcut: "".to_string(),
                             checked: false,
                             message: Message::RotateLayer {
-                                id: selected_layer.unwrap_or(u64::MAX),
+                                id: selected_layer.unwrap_or_else(Uuid::nil),
                                 delta: -90.0,
                             },
                         },
@@ -149,7 +150,7 @@ pub fn app_menus(
                             shortcut: "".to_string(),
                             checked: false,
                             message: Message::RotateLayer {
-                                id: selected_layer.unwrap_or(u64::MAX),
+                                id: selected_layer.unwrap_or_else(Uuid::nil),
                                 delta: -180.0,
                             },
                         },
@@ -159,7 +160,7 @@ pub fn app_menus(
                             shortcut: "".to_string(),
                             checked: false,
                             message: Message::ResetLayerTransform(
-                                selected_layer.unwrap_or(u64::MAX),
+                                selected_layer.unwrap_or_else(Uuid::nil),
                             ),
                         },
                     ],

@@ -15,32 +15,34 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Boucle de mise à jour : un handler par message, effets de bord via Task.
+//! Toutes les mutations de calques passent par les méthodes du `Document`
+//! moteur (arbre LayerTree) — l'app n'écrit jamais dans les champs directement.
 
 use std::sync::Arc;
 
 use iced::widget::pane_grid;
 use iced::{Task, Vector};
+use uuid::Uuid;
 
 use crate::components;
-use crate::layers::Layer;
+use crate::layers::{LayerNode, PixelLayer, Transform2D};
 use crate::message::{DecodedLayer, Message, OffsetAxis, PanelType};
 use crate::state::PhotoApp;
+use photo_engine::{Command, UndoAction};
 
 /// Point d'entrée : délègue au dispatch puis synchronise les handles UI
 /// (cache dérivé des buffers purs du moteur — UN seul point de sync).
 pub fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
     let task = dispatch(app, message);
-    app.preview_cache.sync(&app.layers);
+    app.preview_cache.sync(&app.doc);
     task
 }
 
 fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
     match message {
         Message::NewProject => {
-            app.layers.clear();
+            app.doc = photo_engine::Document::new(0, 0);
             app.selected_layer = None;
-            app.next_layer_id = 0;
-            app.doc_size = None;
             app.gen_graph = components::node_registry::create_empty_graph();
             app.canvas_pan = Vector::new(0.0, 0.0);
             app.zoom_level = 100;
@@ -76,10 +78,8 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         Message::ProjectOpened(Ok(loaded)) => {
             app.background_tasks.clear();
             app.image_error = None;
-            app.doc_size = Some((loaded.width, loaded.height));
-            app.next_layer_id = loaded.layers.iter().map(|l| l.id + 1).max().unwrap_or(0);
-            app.layers = loaded.layers;
-            app.selected_layer = app.layers.last().map(|l| l.id);
+            app.selected_layer = loaded.document.iter_pixels().last().map(|l| l.id);
+            app.doc = loaded.document;
             app.image_path = loaded.source_name.clone();
             app.project_path = loaded.path.clone();
             app.canvas_pan = Vector::new(0.0, 0.0);
@@ -94,11 +94,9 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.image_error = Some(e);
         }
         Message::SaveProject => {
-            if app.background_tasks.is_empty()
-                && let Some((w, h)) = app.doc_size
-            {
+            if app.background_tasks.is_empty() && app.doc_dims().is_some() {
                 match app.project_path.clone() {
-                    Some(path) => return save_project_task(app, path, w, h),
+                    Some(path) => return save_project_task(app, path),
                     None => return save_as_dialog_task(),
                 }
             }
@@ -110,13 +108,13 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::SaveProjectPathPicked(path_opt) => {
             if let Some(mut path) = path_opt
-                && let Some((w, h)) = app.doc_size
+                && app.doc_dims().is_some()
             {
                 if path.extension().and_then(|e| e.to_str()) != Some("csphoto") {
                     path.set_extension("csphoto");
                 }
                 app.project_path = Some(path.clone());
-                return save_project_task(app, path, w, h);
+                return save_project_task(app, path);
             }
         }
         Message::ProjectSaved(Ok(name)) => {
@@ -150,11 +148,10 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.background_tasks.push(format!("Décodage de {name}"));
             // Le décodage + la construction des buffers tournent hors UI
             // (Task::perform) — le spinner continue d'animer pendant ce temps
-            let id = app.alloc_layer_id();
             return Task::perform(
                 async move {
                     match ::image::load_from_memory(&bytes) {
-                        Ok(dyn_img) => Ok(DecodedLayer(Layer::new(id, name, Arc::new(dyn_img)))),
+                        Ok(dyn_img) => Ok(DecodedLayer(PixelLayer::new(name, Arc::new(dyn_img)))),
                         Err(e) => Err(format!("Décodage échoué: {e}")),
                     }
                 },
@@ -167,18 +164,20 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::ImageDecoded(Ok(decoded)) => {
             app.background_tasks.clear();
-            let layer = decoded.0;
+            let node = LayerNode::Pixel(decoded.0);
             // Le document prend les dimensions de la première image
-            if app.doc_size.is_none() {
-                let (w, h) = layer.dimensions();
-                app.doc_size = Some((w, h));
+            if app.doc.width == 0 || app.doc.height == 0 {
+                let (w, h) = node_dimensions(&node);
+                app.doc.width = w;
+                app.doc.height = h;
                 app.canvas_pan = Vector::new(0.0, 0.0);
                 app.canvas_selection = None;
                 app.zoom_level = 100;
             }
-            app.history.push(app.snapshot());
-            app.layers.push(layer);
-            app.selected_layer = app.layers.last().map(|l| l.id);
+            app.history.push_snapshot(app.snapshot());
+            let new_id = node.id();
+            app.doc.push_layer(node);
+            app.selected_layer = Some(new_id);
             app.refresh_fallback();
         }
         Message::ImageDecoded(Err(e)) => {
@@ -195,6 +194,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             // canvas (State local). On ignore si un commit est en vol.
             if app.pending_paint.is_none()
                 && let Some(id) = app.selected_layer
+                && app.doc.pixel_layer(id).is_some()
             {
                 app.stroke_layer = Some(id);
             }
@@ -204,12 +204,15 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             // part sur un thread de fond (spawn_blocking) : l'UI reste fluide.
             // L'aperçu rastérisé au relâchement reste affiché tel quel
             // (pending_paint) jusqu'à PaintApplied — zéro clignotement.
-            if let Some(id) = app.stroke_layer.take()
+            let stroke_target = app.stroke_layer.take();
+            if let Some(id) = stroke_target
                 && app.pending_paint.is_none()
                 && points.len() > 1
-                && let Some(layer) = app.layers.iter().find(|l| l.id == id).cloned()
+                && let Some(layer) = app.doc.pixel_layer(id)
                 && let Some(tex) = tex
             {
+                let source = Arc::clone(&layer.source_image);
+                let transform = layer.transform;
                 let pts = points;
                 app.pending_paint = Some(crate::message::PendingPaint {
                     layer_id: id,
@@ -217,7 +220,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 });
                 // État PRÉ-trait figé dans l'historique maintenant : le
                 // snapshot partage les pixels via Arc, coût quasi nul.
-                app.history.push(app.snapshot());
+                app.history.push_snapshot(app.snapshot());
                 let brush = photo_engine::paint::BrushParams {
                     radius: app.brush_size / 2.0,
                     color: [
@@ -235,14 +238,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
-                            photo_engine::paint::commit_stroke(
-                                &layer.image,
-                                &pts,
-                                (layer.offset_x, layer.offset_y),
-                                layer.scale,
-                                layer.rotation,
-                                &brush,
-                            )
+                            photo_engine::paint::commit_stroke(&source, &pts, &transform, &brush)
                         })
                         .await
                     },
@@ -266,12 +262,9 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.image_error = Some("Échec interne lors de l'application du trait".into());
         }
         Message::PaintApplied { layer_id, buf } => {
-            if let Some(layer) = app.layers.iter_mut().find(|l| l.id == layer_id)
-                && let Some(img) = ::image::RgbaImage::from_raw(buf.width, buf.height, buf.rgba)
-            {
-                layer.image = Arc::new(::image::DynamicImage::ImageRgba8(img));
-                layer.preview = buf.preview;
-                layer.thumb = buf.thumb;
+            if let Some(img) = ::image::RgbaImage::from_raw(buf.width, buf.height, buf.rgba) {
+                app.doc
+                    .set_source_image(layer_id, ::image::DynamicImage::ImageRgba8(img));
             }
             app.pending_paint = None;
             app.refresh_fallback();
@@ -314,12 +307,10 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     let white = ::image::DynamicImage::ImageRgba8(
                         ::image::ImageBuffer::from_pixel(w, h, ::image::Rgba([255, 255, 255, 255])),
                     );
-                    let id = app.alloc_layer_id();
-                    let layer = Layer::new(id, "Arrière-plan".into(), Arc::new(white));
-                    app.layers.clear();
-                    app.layers.push(layer);
+                    let layer = PixelLayer::new("Arrière-plan", Arc::new(white));
+                    let id = layer.id;
+                    app.doc.restore(w, h, vec![LayerNode::Pixel(layer)]);
                     app.selected_layer = Some(id);
-                    app.doc_size = Some((w, h));
                     app.image_path = None;
                     app.image_error = None;
                     app.canvas_pan = Vector::new(0.0, 0.0);
@@ -387,271 +378,323 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             app.spinner_angle = (app.spinner_angle + 24.0) % 360.0;
         }
 
-        // ---- Calques ----
+        // ---- Calques (arbre LayerTree) ----
         Message::SelectLayer(id) => {
             app.selected_layer = Some(id);
             app.move_anchor = None;
         }
         Message::ToggleLayerVisible(id) => {
-            if let Some(i) = app.layer_index(id) {
-                let pre = app.snapshot();
-                app.layers[i].visible = !app.layers[i].visible;
-                app.history.push(pre);
+            // Micro-édition : commande légère, zéro clonage d'arbre
+            if let Some(node) = app.doc.find(id) {
+                let cmd = Command::SetVisibility {
+                    node_id: id,
+                    old: node.visible(),
+                    new: !node.visible(),
+                };
+                app.history.push_command_immediate(cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
                 app.refresh_fallback();
             }
         }
         Message::SetLayerOpacity { id, opacity } => {
-            // Simple changement d'état : l'opacité est appliquée au draw
-            // (GPU) — zéro régénération de pixels, zéro clignotement
-            if let Some(i) = app.layer_index(id) {
-                let pre = app.snapshot();
-                app.layers[i].opacity = opacity;
-                // Geste continu (slider) : un seul point de restauration
-                app.history.push_coalesced(coalesce_key(id, 1), pre);
+            // Simple changement d'état appliqué AU DRAW — la commande ne
+            // coûte que quelques octets : plus aucun clonage de l'arbre
+            if let Some(node) = app.doc.find(id) {
+                let cmd = Command::SetOpacity {
+                    layer_id: id,
+                    old: node.opacity(),
+                    new: opacity,
+                };
+                // Geste continu (slider) : une seule entrée fusionnée
+                app.history.push_command(coalesce_key(id, 1), cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
             }
         }
         Message::SetLayerBlend { id, mode } => {
-            if let Some(i) = app.layer_index(id) {
-                let pre = app.snapshot();
-                app.layers[i].blend_mode = mode;
-                app.history.push(pre);
+            if let Some(node) = app.doc.find(id)
+                && let Some(old) = node.blend_mode()
+            {
+                let cmd = Command::SetBlendMode {
+                    node_id: id,
+                    old,
+                    new: mode,
+                };
+                app.history.push_command_immediate(cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
                 // Bascule chemin rapide ↔ fallback selon le mode
-                if app.needs_fallback() {
-                    app.refresh_fallback();
-                } else {
-                    app.fallback_handle = None;
-                    app.fallback_size = None;
-                }
+                app.refresh_fallback();
             }
         }
         Message::RenameLayer { id, name } => {
-            if let Some(i) = app.layer_index(id) {
-                let pre = app.snapshot();
-                app.layers[i].name = name;
-                // Saisie clavier : coalescé pour ne pas spammer l'historique
-                app.history.push_coalesced(coalesce_key(id, 0), pre);
+            // Saisie clavier : coalescée pour ne pas spammer l'historique
+            if let Some(node) = app.doc.find(id) {
+                let cmd = Command::RenameLayer {
+                    node_id: id,
+                    old: node.name().to_string(),
+                    new: name,
+                };
+                app.history.push_command(coalesce_key(id, 0), cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
             }
         }
         Message::SetLayerOffset { id, axis, value } => {
-            if let Some(i) = app.layer_index(id) {
-                let pre = app.snapshot();
+            if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+                let mut new_t = l.transform;
                 match axis {
-                    OffsetAxis::X => app.layers[i].offset_x = value,
-                    OffsetAxis::Y => app.layers[i].offset_y = value,
+                    OffsetAxis::X => new_t.offset_x = value,
+                    OffsetAxis::Y => new_t.offset_y = value,
                 }
-                app.history.push_coalesced(coalesce_key(id, 2), pre);
+                let cmd = Command::SetTransform {
+                    layer_id: id,
+                    old: l.transform,
+                    new: new_t,
+                };
+                app.history.push_command(coalesce_key(id, 2), cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
+                // Le composite fallback cuit les offsets → recomposite
                 app.refresh_fallback();
             }
         }
         Message::SetLayerRotation { id, degrees } => {
             // Rotation au draw (GPU) — zéro travail sur les pixels
-            if let Some(i) = app.layer_index(id) {
-                let pre = app.snapshot();
-                app.layers[i].rotation = degrees.clamp(-360.0, 360.0);
-                app.history.push_coalesced(coalesce_key(id, 3), pre);
+            if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+                let cmd = Command::SetTransform {
+                    layer_id: id,
+                    old: l.transform,
+                    new: Transform2D {
+                        rotation_deg: degrees.clamp(-360.0, 360.0),
+                        ..l.transform
+                    },
+                };
+                app.history.push_command(coalesce_key(id, 3), cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
             }
         }
         Message::RotateLayer90 { id, clockwise } => {
-            let target = if app.layer_index(id).is_some() {
-                Some(id)
-            } else {
-                app.selected_layer
-            };
+            let target = resolve_target(app, id);
+            let delta = if clockwise { 90.0 } else { -90.0 };
             if let Some(tid) = target
-                && let Some(i) = app.layer_index(tid)
+                && let Some(LayerNode::Pixel(l)) = app.doc.find(tid)
             {
-                let delta = if clockwise { 90.0 } else { -90.0 };
-                let pre = app.snapshot();
                 // Normalise dans [-180, 180[ pour garder des valeurs lisibles
-                let r = (app.layers[i].rotation + delta + 180.0).rem_euclid(360.0) - 180.0;
-                app.layers[i].rotation = r;
-                app.history.push(pre);
+                let r = (l.transform.rotation_deg + delta + 180.0).rem_euclid(360.0) - 180.0;
+                let cmd = Command::SetTransform {
+                    layer_id: tid,
+                    old: l.transform,
+                    new: Transform2D {
+                        rotation_deg: r,
+                        ..l.transform
+                    },
+                };
+                app.history.push_command_immediate(cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
             }
         }
         Message::FlipLayer { id, horizontal } => {
-            let target = if app.layer_index(id).is_some() {
-                Some(id)
-            } else {
-                app.selected_layer
-            };
-            if let Some(tid) = target
-                && let Some(i) = app.layer_index(tid)
-            {
+            let target = resolve_target(app, id);
+            if let Some(tid) = target {
                 let pre = app.snapshot();
-                app.layers[i].flip(horizontal);
-                app.history.push(pre);
+                match app.doc.flip(tid, horizontal) {
+                    Ok(()) => app.history.push_snapshot(pre),
+                    Err(e) => app.image_error = Some(e),
+                }
+                app.refresh_fallback();
             }
         }
         Message::RotateLayer { id, delta } => {
-            let target = if app.layer_index(id).is_some() {
-                Some(id)
-            } else {
-                app.selected_layer
-            };
+            let target = resolve_target(app, id);
             if let Some(tid) = target
-                && let Some(i) = app.layer_index(tid)
+                && let Some(LayerNode::Pixel(l)) = app.doc.find(tid)
             {
-                let pre = app.snapshot();
-                let r = (app.layers[i].rotation + delta + 180.0).rem_euclid(360.0) - 180.0;
+                let r = (l.transform.rotation_deg + delta + 180.0).rem_euclid(360.0) - 180.0;
                 // -180 et 180 sont équivalents, on garde 180 pour lisibilité
-                app.layers[i].rotation = if r == -180.0 { 180.0 } else { r };
-                app.history.push(pre);
+                let new_rot = if r == -180.0 { 180.0 } else { r };
+                let cmd = Command::SetTransform {
+                    layer_id: tid,
+                    old: l.transform,
+                    new: Transform2D {
+                        rotation_deg: new_rot,
+                        ..l.transform
+                    },
+                };
+                app.history.push_command_immediate(cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
             }
         }
         Message::SetLayerScale { id, scale } => {
-            if let Some(i) = app.layer_index(id) {
-                let pre = app.snapshot();
-                app.layers[i].scale = scale.clamp(0.05, 8.0);
-                app.history.push_coalesced(coalesce_key(id, 4), pre);
+            if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+                let cmd = Command::SetTransform {
+                    layer_id: id,
+                    old: l.transform,
+                    new: Transform2D {
+                        scale: scale.clamp(0.05, 8.0),
+                        ..l.transform
+                    },
+                };
+                app.history.push_command(coalesce_key(id, 4), cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
             }
         }
         Message::ResetLayerTransform(id) => {
-            let target = if app.layer_index(id).is_some() {
-                Some(id)
-            } else {
-                app.selected_layer
-            };
+            let target = resolve_target(app, id);
             if let Some(tid) = target
-                && let Some(i) = app.layer_index(tid)
+                && let Some(LayerNode::Pixel(l)) = app.doc.find(tid)
             {
-                let pre = app.snapshot();
-                app.layers[i].rotation = 0.0;
-                app.layers[i].scale = 1.0;
-                app.history.push(pre);
+                let cmd = Command::SetTransform {
+                    layer_id: tid,
+                    old: l.transform,
+                    new: Transform2D {
+                        rotation_deg: 0.0,
+                        scale: 1.0,
+                        ..l.transform
+                    },
+                };
+                app.history.push_command_immediate(cmd.clone());
+                let _inverse = app.doc.apply_command(cmd);
             }
         }
         Message::CropLayerToSelection => {
-            // Garde-fous explicites (démarche incrémentale) : un calque
-            // sélectionné, une sélection rectangulaire, transform neutre
-            let Some(id) = app.selected_layer else {
-                app.image_error = Some("Rogner : aucun calque sélectionné".into());
-                return Task::none();
-            };
-            let Some(sel) = app.canvas_selection else {
-                app.image_error = Some(
-                    "Rogner : faites d'abord une sélection rectangulaire (outil Sélect)".into(),
-                );
-                return Task::none();
-            };
-            let Some(i) = app.layer_index(id) else {
-                return Task::none();
-            };
-            if app.layers[i].rotation.abs() > 0.01 || (app.layers[i].scale - 1.0).abs() > 0.01 {
-                app.image_error =
-                    Some("Rogner : réinitialisez d'abord rotation/échelle du calque".into());
-                return Task::none();
-            }
-            // Écran → monde → coordonnées calque
-            let zoom = (app.zoom_level as f32 / 100.0).max(0.001);
-            let (doc_w, doc_h) = app.doc_size.unwrap_or((800, 600));
-            let to_layer = |sx: f32, sy: f32| {
-                let wx = (sx - app.canvas_viewport.width / 2.0 - app.canvas_pan.x) / zoom
-                    + doc_w as f32 / 2.0;
-                let wy = (sy - app.canvas_viewport.height / 2.0 - app.canvas_pan.y) / zoom
-                    + doc_h as f32 / 2.0;
-                (wx - app.layers[i].offset_x, wy - app.layers[i].offset_y)
-            };
-            let (x0, y0) = to_layer(sel.x, sel.y);
-            let (x1, y1) = to_layer(sel.x + sel.width, sel.y + sel.height);
-            let cx0 = x0.min(x1).round() as i32;
-            let cy0 = y0.min(y1).round() as i32;
-            let cw = ((x1 - x0).abs().round() as u32).max(1);
-            let ch = ((y1 - y0).abs().round() as u32).max(1);
-            let pre = app.snapshot();
-            match app.layers[i].crop(cx0, cy0, cw, ch) {
-                Ok(()) => {
-                    app.history.push(pre);
-                    app.image_error = None;
-                    app.refresh_fallback();
-                }
-                Err(e) => app.image_error = Some(e),
-            }
+            crop_layer_to_selection(app);
         }
         Message::AddEmptyLayer => {
-            let (w, h) = app.doc_size.unwrap_or((800, 600));
-            let transparent = ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
-                w.max(1),
-                h.max(1),
-                ::image::Rgba([0, 0, 0, 0]),
-            ));
-            let id = app.alloc_layer_id();
-            let idx = app.selected_layer.and_then(|s| app.layer_index(s));
-            let layer = Layer::new(id, format!("Calque {}", id + 1), Arc::new(transparent));
-            let pre = app.snapshot();
-            // Insère AU-DESSUS du calque sélectionné (sinon tout en haut)
-            match idx {
-                Some(i) => app.layers.insert(i + 1, layer),
-                None => app.layers.push(layer),
-            }
-            app.selected_layer = Some(id);
-            app.history.push(pre);
-            app.refresh_fallback();
+            add_empty_layer(app);
         }
         Message::DuplicateLayer(id) => {
-            let src = id;
-            let src = if app.layer_index(src).is_some() {
-                src
-            } else {
-                app.selected_layer.unwrap_or(src)
-            };
-            if let Some(i) = app.layer_index(src) {
-                let mut copy = Layer::new(
-                    app.alloc_layer_id(),
-                    format!("{} copie", app.layers[i].name),
-                    app.layers[i].image.clone(),
-                );
-                copy.opacity = app.layers[i].opacity;
-                copy.blend_mode = app.layers[i].blend_mode.clone();
-                copy.visible = app.layers[i].visible;
-                copy.offset_x = app.layers[i].offset_x;
-                copy.offset_y = app.layers[i].offset_y;
-                copy.rotation = app.layers[i].rotation;
-                copy.scale = app.layers[i].scale;
+            let target = resolve_target(app, id);
+            if let Some(src) = target {
                 let pre = app.snapshot();
-                app.layers.insert(i + 1, copy);
-                app.selected_layer = Some(app.layers[i + 1].id);
-                app.history.push(pre);
-                app.refresh_fallback();
+                if let Some(new_id) = app.doc.duplicate(src) {
+                    rename_duplicate_suffix(&mut app.doc, new_id);
+                    app.selected_layer = Some(new_id);
+                    app.history.push_snapshot(pre);
+                    app.refresh_fallback();
+                }
             }
         }
         Message::DeleteLayer(id) => {
-            let target = if app.layer_index(id).is_some() {
-                Some(id)
-            } else {
-                app.selected_layer
-            };
+            let target = resolve_target(app, id);
             if let Some(t) = target
-                && app.layers.len() > 1
-                && let Some(i) = app.layer_index(t)
+                && app.doc.pixel_count() > 1
             {
                 let pre = app.snapshot();
-                app.layers.remove(i);
-                app.selected_layer = app
-                    .layers
-                    .get(i.min(app.layers.len() - 1))
-                    .or_else(|| app.layers.last())
-                    .map(|l| l.id);
-                app.history.push(pre);
-                app.refresh_fallback();
+                if app.doc.remove(t).is_some() {
+                    // Réparation de sélection : dernier calque pixels restant
+                    app.selected_layer = app.doc.iter_pixels().last().map(|l| l.id);
+                    app.history.push_snapshot(pre);
+                    app.refresh_fallback();
+                }
             }
         }
         Message::MoveLayerUp(id) => {
-            if let Some(i) = app.layer_index(id)
-                && i + 1 < app.layers.len()
-            {
+            if app.doc.move_up(id) {
                 let pre = app.snapshot();
-                app.layers.swap(i, i + 1);
-                app.history.push(pre);
+                app.history.push_snapshot(pre);
                 app.refresh_fallback();
             }
         }
         Message::MoveLayerDown(id) => {
-            if let Some(i) = app.layer_index(id)
-                && i > 0
-            {
+            if app.doc.move_down(id) {
                 let pre = app.snapshot();
-                app.layers.swap(i, i - 1);
-                app.history.push(pre);
+                app.history.push_snapshot(pre);
+                app.refresh_fallback();
+            }
+        }
+        Message::GroupLayers(id) => {
+            let pre = app.snapshot();
+            if let Some(gid) = app.doc.group(&[id]) {
+                app.selected_layer = Some(gid);
+                app.history.push_snapshot(pre);
+                app.refresh_fallback();
+            }
+        }
+        Message::UngroupLayers(id) => {
+            let pre = app.snapshot();
+            if let Some(freed) = app.doc.ungroup(id) {
+                app.selected_layer = freed.first().copied();
+                app.history.push_snapshot(pre);
+                app.refresh_fallback();
+            }
+        }
+        Message::ToggleGroupCollapsed(id) => {
+            // État de vue du panneau : pas de point d'historique
+            if let Some(LayerNode::Group(g)) = app.doc.find_mut(id) {
+                g.collapsed = !g.collapsed;
+            }
+        }
+        Message::AddLiveFilter { id, type_id } => {
+            if let Some(filter) = photo_engine::new_filter(&type_id) {
+                let pre = app.snapshot();
+                if app.doc.add_filter(id, filter).is_some() {
+                    app.history.push_snapshot(pre);
+                    app.refresh_fallback();
+                }
+            }
+        }
+        Message::RemoveLiveFilter {
+            layer_id,
+            filter_id,
+        } => {
+            let pre = app.snapshot();
+            if app.doc.remove_filter(layer_id, filter_id).is_some() {
+                app.history.push_snapshot(pre);
+                app.refresh_fallback();
+            }
+        }
+        Message::SetFilterParam {
+            layer_id,
+            filter_id,
+            key,
+            value,
+        } => {
+            // Micro-édition par excellence : commande légère coalescée.
+            // Calque pixels : l'apparence se recalcule seule via le cache
+            // de versions (zéro recomposite global). Ajustement : le blend
+            // global change → recomposite.
+            let is_adjustment = matches!(app.doc.find(layer_id), Some(LayerNode::Adjustment(_)));
+            let old_value = app
+                .doc
+                .find(layer_id)
+                .and_then(|n| n.filters())
+                .and_then(|fs| fs.iter().find(|f| f.id == filter_id))
+                .and_then(|f| f.params.get(&key))
+                .cloned();
+            match old_value {
+                Some(old) => {
+                    let cmd = Command::SetFilterParam {
+                        layer_id,
+                        filter_id,
+                        param_name: key.clone(),
+                        old,
+                        new: value.clone(),
+                    };
+                    app.history
+                        .push_command(coalesce_key(filter_id, 5), cmd.clone());
+                    let _inverse = app.doc.apply_command(cmd);
+                }
+                None => {
+                    // Paramètre inexistant (initialisation) : hors historique
+                    app.doc.set_filter_param(layer_id, filter_id, key, value);
+                }
+            }
+            if is_adjustment {
+                app.refresh_fallback();
+            }
+        }
+        Message::ToggleFilterEnabled {
+            layer_id,
+            filter_id,
+        } => {
+            let pre = app.snapshot();
+            if app.doc.set_filter_enabled(layer_id, filter_id, {
+                // inverse l'état courant
+                app.doc
+                    .find(layer_id)
+                    .and_then(|n| n.filters())
+                    .and_then(|fs| fs.iter().find(|f| f.id == filter_id))
+                    .map(|f| !f.enabled)
+                    .unwrap_or(false)
+            }) {
+                app.history.push_snapshot(pre);
                 app.refresh_fallback();
             }
         }
@@ -666,7 +709,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::CanvasFit => {
             // Zoom pour voir toute l'image, centrée (pan nul)
-            if let Some((iw, ih)) = app.doc_size.map(|(w, h)| (w as f32, h as f32)) {
+            if let Some((iw, ih)) = app.doc_dims().map(|(w, h)| (w as f32, h as f32)) {
                 let vw = app.canvas_viewport.width.max(1.0);
                 let vh = app.canvas_viewport.height.max(1.0);
                 let fit = (vw / iw).min(vh / ih) * 0.95; // 5% de marge
@@ -725,16 +768,18 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             }
             ui_kit::image_canvas::ImageCanvasEvent::MoveLayerStart => {
                 if app.selected_tool == crate::message::Tool::Move {
-                    // Lit l'ancre avant toute mutation (règle own-borrow-over-clone)
+                    // Lit l'ancre avant toute mutation (règle own-borrow-over-clone).
+                    // Transform COMPLET capturé : la commande SetTransform
+                    // ancre→finale ne sera poussée QU'AU relâchement —
+                    // zéro snapshot pendant le geste.
                     let anchor = app
-                        .selected_layer_mut()
-                        .map(|l| (l.id, l.offset_x, l.offset_y));
-                    if let Some((id, ox, oy)) = anchor {
-                        app.move_anchor = Some((id, ox, oy));
-                        // Un seul point de restauration pour TOUT le geste
-                        app.history.push(app.snapshot());
-                        // Fallback (fusion non-Normal) : pré-calcule UNE FOIS le
-                        // fond sans le calque déplacé — coût unique au début du
+                        .selected_layer
+                        .and_then(|id| app.doc.pixel_layer(id))
+                        .map(|l| (l.id, l.transform));
+                    if let Some((id, anchor_t)) = anchor {
+                        app.move_anchor = Some((id, anchor_t));
+                        // Fallback (blending inter-calques) : pré-calcule UNE FOIS le
+                        // fond sans le sous-arbre déplacé — coût unique au début du
                         // drag, ensuite zéro recomposite pendant tout le geste
                         if app.needs_fallback() {
                             app.prepare_drag_background(id);
@@ -744,7 +789,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             }
             ui_kit::image_canvas::ImageCanvasEvent::MoveLayer { dx, dy } => {
                 if app.selected_tool == crate::message::Tool::Move
-                    && let Some((id, ax, ay)) = app.move_anchor
+                    && let Some((id, anchor_t)) = app.move_anchor
                     && Some(id) == app.selected_layer
                 {
                     let zoom = app.zoom_level as f32 / 100.0;
@@ -754,17 +799,30 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                         //   nouvelle position (modèle Affinity)
                         // - fallback : fond pré-calculé + calque dessiné
                         //   par-dessus (approximation Normal pendant le geste)
-                        let new_x = ax + dx / zoom;
-                        let new_y = ay + dy / zoom;
-                        if let Some(i) = app.layer_index(id) {
-                            app.layers[i].offset_x = new_x;
-                            app.layers[i].offset_y = new_y;
+                        let new_x = anchor_t.offset_x + dx / zoom;
+                        let new_y = anchor_t.offset_y + dy / zoom;
+                        if let Some(LayerNode::Pixel(l)) = app.doc.find_mut(id) {
+                            l.transform.offset_x = new_x;
+                            l.transform.offset_y = new_y;
                         }
                     }
                 }
             }
             ui_kit::image_canvas::ImageCanvasEvent::MoveLayerEnd => {
-                app.move_anchor = None;
+                // Fin du geste : UNE commande légère ancre→final remplace
+                // l'ancien snapshot de début de drag. Drag immobile = pas
+                // d'entrée d'historique du tout.
+                if let Some((id, anchor_t)) = app.move_anchor.take()
+                    && let Some(LayerNode::Pixel(l)) = app.doc.find(id)
+                    && l.transform != anchor_t
+                {
+                    let cmd = Command::SetTransform {
+                        layer_id: id,
+                        old: anchor_t,
+                        new: l.transform,
+                    };
+                    app.history.push_command_immediate(cmd);
+                }
                 // Vrai recomposite : le blend réel du calque à sa position
                 // finale remplace l'approximation du drag
                 let was_fallback = app.needs_fallback();
@@ -779,27 +837,37 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             std::process::exit(0);
         }
         Message::Undo | Message::Redo => {
-            let current = app.snapshot();
-            let restored = if matches!(message, Message::Undo) {
-                app.history.undo(current)
+            // Historique hybride : l'historique applique LUI-MÊME l'inverse
+            // (undo) ou la commande (redo) au document, puis décrit quoi
+            // invalider — recomposite complet ou rien (le sync du cache de
+            // textures UI cible déjà les calques réellement modifiés).
+            let action = if matches!(message, Message::Undo) {
+                app.history.undo(&mut app.doc)
             } else {
-                app.history.redo(current)
+                app.history.redo(&mut app.doc)
             };
-            if let Some(snap) = restored {
-                app.doc_size = snap.doc_size;
-                app.layers = snap.layers;
-                // La sélection peut pointer un calque disparu : on borne.
-                if let Some(sel) = app.selected_layer
-                    && app.layer_index(sel).is_none()
-                {
-                    app.selected_layer = app.layers.last().map(|l| l.id);
+            match action {
+                Some(UndoAction::FullRestore) => {
+                    // Structure restaurée : la sélection peut pointer un
+                    // nœud disparu, on borne.
+                    if let Some(sel) = app.selected_layer
+                        && app.doc.find(sel).is_none()
+                    {
+                        app.selected_layer = app.doc.iter_pixels().last().map(|l| l.id);
+                    }
+                    app.move_anchor = None;
+                    app.drag_background = None;
+                    app.drag_background_size = None;
+                    app.pending_paint = None;
+                    app.stroke_layer = None;
+                    app.refresh_fallback();
                 }
-                app.move_anchor = None;
-                app.drag_background = None;
-                app.drag_background_size = None;
-                app.pending_paint = None;
-                app.stroke_layer = None;
-                app.refresh_fallback();
+                Some(UndoAction::Applied(cmd)) if cmd.affects_composite() => {
+                    // Invalidation ciblée : recomposite UNIQUEMENT si le
+                    // blending global dépend du nœud touché
+                    app.refresh_fallback();
+                }
+                Some(UndoAction::Applied(_)) | None => {}
             }
         }
         Message::ZoomInPressed => {
@@ -943,9 +1011,114 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
     Task::none()
 }
 
-/// Clé de coalescence historique : (calque, paramètre).
-fn coalesce_key(layer_id: u64, param: u64) -> u64 {
-    layer_id.wrapping_mul(16).wrapping_add(param)
+/// Résout la cible d'une action : l'id fourni s'il existe, sinon la
+/// sélection courante (pattern des sentinelles héritées des menus).
+fn resolve_target(app: &PhotoApp, id: Uuid) -> Option<Uuid> {
+    if app.doc.find(id).is_some() {
+        Some(id)
+    } else {
+        app.selected_layer
+            .filter(|sel| app.doc.find(*sel).is_some())
+    }
+}
+
+/// Dimensions du nœud pixels (helper local pour l'ouverture d'image).
+fn node_dimensions(node: &LayerNode) -> (u32, u32) {
+    match node {
+        LayerNode::Pixel(l) => l.dimensions(),
+        _ => (800, 600),
+    }
+}
+
+/// Ajoute un calque transparent vide au-dessus de la sélection.
+fn add_empty_layer(app: &mut PhotoApp) {
+    let (w, h) = app.doc_dims().unwrap_or((800, 600));
+    let transparent = ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
+        w.max(1),
+        h.max(1),
+        ::image::Rgba([0, 0, 0, 0]),
+    ));
+    let count = app.doc.pixel_count();
+    let layer = PixelLayer::new(format!("Calque {}", count + 1), Arc::new(transparent));
+    let new_id = layer.id;
+    let node = LayerNode::Pixel(layer);
+    let pre = app.snapshot();
+    // Insère AU-DESSUS du calque sélectionné (sinon tout en haut)
+    let inserted = match app.selected_layer {
+        Some(sel) if app.doc.find(sel).is_some() => app.doc.insert_above(sel, node),
+        _ => {
+            app.doc.push_layer(node);
+            true
+        }
+    };
+    if inserted {
+        app.selected_layer = Some(new_id);
+        app.history.push_snapshot(pre);
+        app.refresh_fallback();
+    }
+}
+
+/// Suffixe « copie » après duplication (le moteur clone à l'identique).
+fn rename_duplicate_suffix(doc: &mut photo_engine::Document, id: Uuid) {
+    if let Some(node) = doc.find_mut(id) {
+        let name = format!("{} copie", node.name());
+        node.set_name(name);
+    }
+}
+
+/// Rogne le calque sélectionné à la sélection rectangulaire active.
+fn crop_layer_to_selection(app: &mut PhotoApp) {
+    // Garde-fous explicites : un calque sélectionné, une sélection
+    // rectangulaire, transform neutre
+    let Some(id) = app.selected_layer else {
+        app.image_error = Some("Rogner : aucun calque sélectionné".into());
+        return;
+    };
+    let Some(sel) = app.canvas_selection else {
+        app.image_error =
+            Some("Rogner : faites d'abord une sélection rectangulaire (outil Sélect)".into());
+        return;
+    };
+    let Some(layer) = app.doc.pixel_layer(id) else {
+        return;
+    };
+    let offset = (layer.transform.offset_x, layer.transform.offset_y);
+    if layer.transform.rotation_deg.abs() > 0.01 || (layer.transform.scale - 1.0).abs() > 0.01 {
+        app.image_error = Some("Rogner : réinitialisez d'abord rotation/échelle du calque".into());
+        return;
+    }
+    // Écran → monde → coordonnées calque
+    let zoom = (app.zoom_level as f32 / 100.0).max(0.001);
+    let (doc_w, doc_h) = app.doc_dims().unwrap_or((800, 600));
+    let to_layer = |sx: f32, sy: f32| {
+        let wx =
+            (sx - app.canvas_viewport.width / 2.0 - app.canvas_pan.x) / zoom + doc_w as f32 / 2.0;
+        let wy =
+            (sy - app.canvas_viewport.height / 2.0 - app.canvas_pan.y) / zoom + doc_h as f32 / 2.0;
+        (wx - offset.0, wy - offset.1)
+    };
+    let (x0, y0) = to_layer(sel.x, sel.y);
+    let (x1, y1) = to_layer(sel.x + sel.width, sel.y + sel.height);
+    let cx0 = x0.min(x1).round() as i32;
+    let cy0 = y0.min(y1).round() as i32;
+    let cw = ((x1 - x0).abs().round() as u32).max(1);
+    let ch = ((y1 - y0).abs().round() as u32).max(1);
+    let pre = app.snapshot();
+    match app.doc.crop(id, cx0, cy0, cw, ch) {
+        Ok(()) => {
+            app.history.push_snapshot(pre);
+            app.image_error = None;
+            app.refresh_fallback();
+        }
+        Err(e) => app.image_error = Some(e),
+    }
+}
+
+/// Clé de coalescence historique : (nœud, paramètre).
+fn coalesce_key(node_id: Uuid, param: u64) -> u64 {
+    (node_id.as_u128() as u64)
+        .wrapping_mul(16)
+        .wrapping_add(param)
 }
 
 fn file_label(path: &std::path::Path) -> String {
@@ -1021,13 +1194,10 @@ fn load_project_task(path: std::path::PathBuf) -> Task<Message> {
     )
 }
 
-fn save_project_task(
-    app: &mut PhotoApp,
-    path: std::path::PathBuf,
-    w: u32,
-    h: u32,
-) -> Task<Message> {
-    let layers = app.layers.clone();
+fn save_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Message> {
+    // Copie structurelle bon marché pour le thread de fond (Arcs partagés)
+    let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
+    doc_copy.restore_snapshot(app.doc.snapshot());
     let name = file_label(&path);
     app.background_tasks
         .retain(|t| !t.starts_with("Enregistrement"));
@@ -1035,7 +1205,7 @@ fn save_project_task(
         .push(format!("Enregistrement de {name}"));
     Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || photo_engine::project::save(&path, &layers, w, h))
+            tokio::task::spawn_blocking(move || photo_engine::project::save(&path, &doc_copy))
                 .await
                 .map_err(|e| format!("Tâche annulée : {e}"))??;
             Ok(name)

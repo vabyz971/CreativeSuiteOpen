@@ -14,29 +14,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! État applicatif Photo : document, canvas, outils, préférences.
+//! État applicatif Photo : document LayerTree, canvas, outils, préférences.
 
 use iced::widget::{image as iced_image, pane_grid};
 use iced::{Color, Point, Rectangle, Size, Task, Vector};
+use uuid::Uuid;
 
 use crate::components;
-use crate::layers::Layer;
 use crate::message::{Message, PanelType, PendingPaint, Tool};
 
 pub struct PhotoApp {
     pub zoom_level: u32,
     pub panes: pane_grid::State<PanelType>,
     pub focus: Option<pane_grid::Pane>,
-    // ---- Pile de calques (index 0 = bas de la pile) ----
-    pub layers: Vec<Layer>,
-    pub next_layer_id: u64,
-    pub selected_layer: Option<u64>,
-    /// Dimensions du document (fixées par la première image ouverte) — pour export/titre
-    pub doc_size: Option<(u32, u32)>,
+    // ---- Document (arbre de calques — index 0 racine = bas de la pile) ----
+    pub doc: photo_engine::Document,
+    pub selected_layer: Option<Uuid>,
     /// Taille du composite fallback (modes de fusion non-Normal)
     pub fallback_size: Option<Size>,
-    /// Composite CPU unique — UNIQUEMENT si un calque visible a un mode
-    /// de fusion non-Normal (sinon chemin rapide par calque, zéro recomposite)
+    /// Composite CPU unique — UNIQUEMENT si l'arbre exige du blending
+    /// inter-calques (sinon chemin rapide par calque, zéro recomposite)
     pub fallback_handle: Option<iced_image::Handle>,
     pub image_path: Option<String>,
     pub image_error: Option<String>,
@@ -49,8 +46,10 @@ pub struct PhotoApp {
     pub canvas_viewport: Size,
     /// Barre d'outils flottante visible ou masquée
     pub tools_visible: bool,
-    /// Ancre de déplacement du calque sélectionné (outil Déplacer)
-    pub move_anchor: Option<(u64, f32, f32)>,
+    /// Ancre de déplacement du calque sélectionné (outil Déplacer) :
+    /// transform COMPLET au début du geste — sert à construire la commande
+    /// SetTransform ancre→finale poussée au relâchement.
+    pub move_anchor: Option<(Uuid, crate::layers::Transform2D)>,
     /// Fond composite PRÉ-CALCULÉ au début du drag (sans le calque déplacé).
     /// Pendant le drag : zéro recomposite — on dessine ce fond + le calque
     /// par-dessus. Le vrai blend est recalculé au relâchement.
@@ -67,7 +66,7 @@ pub struct PhotoApp {
     /// Fenêtre principale — son Id (ouverte au boot)
     pub main_window: Option<iced::window::Id>,
     // ---- Historique (undo/redo) ----
-    /// Historique du DOCUMENT (calques + dimensions). Les états sont des
+    /// Historique du DOCUMENT (arbre + dimensions). Les états sont des
     /// snapshots bon marché : les pixels sont partagés via Arc.
     pub history: photo_engine::history::History,
     /// Chemin du projet .csphoto courant (None = jamais enregistré)
@@ -80,7 +79,7 @@ pub struct PhotoApp {
     pub brush_opacity: f32,
     pub color_picker_open: bool,
     /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
-    pub stroke_layer: Option<u64>,
+    pub stroke_layer: Option<Uuid>,
     /// Commit lourd EN COURS hors thread UI — l'aperçu reste figé à l'écran
     /// jusqu'à l'application (aucun gel de l'interface).
     pub pending_paint: Option<PendingPaint>,
@@ -131,27 +130,14 @@ impl PhotoApp {
         (app, open.map(|_| Message::MockAction))
     }
 
-    pub(crate) fn alloc_layer_id(&mut self) -> u64 {
-        let id = self.next_layer_id;
-        self.next_layer_id += 1;
-        id
-    }
-
-    pub(crate) fn layer_index(&self, id: u64) -> Option<usize> {
-        self.layers.iter().position(|l| l.id == id)
-    }
-
-    pub(crate) fn selected_layer_mut(&mut self) -> Option<&mut Layer> {
-        let sel = self.selected_layer?;
-        self.layer_index(sel).map(|i| &mut self.layers[i])
+    /// Dimensions du document si un document existe (sinon None).
+    pub(crate) fn doc_dims(&self) -> Option<(u32, u32)> {
+        (self.doc.width > 0 && self.doc.height > 0).then_some((self.doc.width, self.doc.height))
     }
 
     /// Snapshot complet du document pour l'historique (pixels partagés via Arc).
     pub(crate) fn snapshot(&self) -> photo_engine::history::Snapshot {
-        photo_engine::history::Snapshot {
-            doc_size: self.doc_size,
-            layers: self.layers.clone(),
-        }
+        self.doc.snapshot()
     }
 
     /// Raccourci clavier → Message applicatif.
@@ -159,7 +145,7 @@ impl PhotoApp {
     /// branche au clavier partout.
     pub(crate) fn message_for(action: ui_kit::shortcuts::Action) -> Option<Message> {
         use ui_kit::shortcuts::Action;
-        let sel = None; // sélection courante indisponible hors update (abonnement statique)
+        let sel: Option<Uuid> = None; // sélection courante indisponible hors update (abonnement statique)
         match action {
             Action::NewProject => Some(Message::NewProject),
             Action::Open => Some(Message::OpenProject),
@@ -192,26 +178,22 @@ impl PhotoApp {
         }
     }
 
-    /// Un calque visible a-t-il un mode de fusion non-Normal ?
-    /// (l'opacité est gérée au draw, elle ne force plus le fallback)
+    /// L'arbre exige-t-il la composite CPU ? (groupes en mode non-Normal,
+    /// calques d'ajustement actifs, calques non-Normal) — délégué moteur.
     pub(crate) fn needs_fallback(&self) -> bool {
-        self.layers
-            .iter()
-            .any(|l| l.visible && l.blend_mode != "Normal")
+        self.doc.needs_fallback()
     }
 
-    /// Composite CPU — UNIQUEMENT pour les modes de fusion non-Normal
-    /// (le chemin rapide par calque couvre Normal/opacité sans recomposite).
+    /// Composite CPU — UNIQUEMENT quand l'arbre exige du blending
+    /// inter-calques (le chemin rapide par calque couvre le reste sans
+    /// recomposite).
     pub(crate) fn refresh_fallback(&mut self) {
-        use photo_engine::document::{LayerData, composite_preview};
         if !self.needs_fallback() {
             self.fallback_handle = None;
             self.fallback_size = None;
             return;
         }
-        let data: Vec<LayerData> = self.layers.iter().map(LayerData::from).collect();
-        let (doc_w, doc_h) = self.doc_size.unwrap_or((800, 600));
-        if let Some(img) = composite_preview(&data, doc_w, doc_h) {
+        if let Some(img) = self.doc.composite_preview() {
             let (w, h) = (img.width() as f32, img.height() as f32);
             let rgba = img.to_rgba8();
             self.fallback_size = Some(Size::new(w, h));
@@ -226,31 +208,39 @@ impl PhotoApp {
         }
     }
 
-    /// Pré-calcule le fond composite SANS le calque sur le point d'être
+    /// Pré-calcule le fond composite SANS le sous-arbre sur le point d'être
     /// déplacé — appelé UNE FOIS au début du drag (MoveLayerStart).
     /// Pendant tout le drag, ce fond est dessiné tel quel + le calque
-    /// déplacé par-dessus : zéro recomposite, drag fluide même en
-    /// fallback (fusion non-Normal) sur de grosses images.
-    pub(crate) fn prepare_drag_background(&mut self, exclude_id: u64) {
-        use photo_engine::document::{LayerData, composite_preview};
+    /// déplacé par-dessus : zéro recomposite.
+    pub(crate) fn prepare_drag_background(&mut self, exclude_id: Uuid) {
         self.drag_background = None;
         self.drag_background_size = None;
-        let data: Vec<LayerData> = self
-            .layers
-            .iter()
-            .filter(|l| l.id != exclude_id && l.visible)
-            .map(LayerData::from)
-            .collect();
-        let (doc_w, doc_h) = self.doc_size.unwrap_or((800, 600));
-        if let Some(img) = composite_preview(&data, doc_w, doc_h) {
-            let (w, h) = (img.width() as f32, img.height() as f32);
-            let rgba = img.to_rgba8();
-            self.drag_background_size = Some(Size::new(w, h));
-            self.drag_background = Some(iced_image::Handle::from_rgba(
-                rgba.width(),
-                rgba.height(),
-                rgba.into_raw(),
-            ));
+        // Clone structurel bon marché (Arcs partagés), sous-arbre masqué,
+        // composite dédiée. Coût unique au DÉBUT du geste.
+        let mut temp = photo_engine::Document::new(self.doc.width, self.doc.height);
+        temp.root.clone_from(&self.doc.root);
+        hide_subtree(temp.find_mut(exclude_id));
+        let Some(img) = temp.composite_preview() else {
+            return;
+        };
+        let (w, h) = (img.width() as f32, img.height() as f32);
+        let rgba = img.to_rgba8();
+        self.drag_background_size = Some(Size::new(w, h));
+        self.drag_background = Some(iced_image::Handle::from_rgba(
+            rgba.width(),
+            rgba.height(),
+            rgba.into_raw(),
+        ));
+    }
+}
+
+/// Masque récursivement un sous-arbre (drag d'un groupe = tout le groupe).
+fn hide_subtree(node: Option<&mut photo_engine::LayerNode>) {
+    let Some(node) = node else { return };
+    node.set_visible(false);
+    if let photo_engine::LayerNode::Group(g) = node {
+        for child in &mut g.children {
+            hide_subtree(Some(child));
         }
     }
 }
@@ -259,7 +249,7 @@ impl Default for PhotoApp {
     fn default() -> Self {
         // Layout : Canvas à gauche, à droite Calques (bas) + Propriétés (haut).
         // split() ne peut échouer que si le pane source n'existe pas ; en
-        // cas d'imprévu on garde simplement le pane unique (pas de panic).
+        // cas d'imprvu on garde simplement le pane unique (pas de panic).
         let (mut panes, canvas_pane) = pane_grid::State::new(PanelType::Canvas);
         if let Some((right_pane, split_canvas_right)) =
             panes.split(pane_grid::Axis::Vertical, canvas_pane, PanelType::Layers)
@@ -278,10 +268,8 @@ impl Default for PhotoApp {
             zoom_level: 100,
             panes,
             focus: Some(canvas_pane),
-            layers: Vec::new(),
-            next_layer_id: 0,
+            doc: photo_engine::Document::new(0, 0),
             selected_layer: None,
-            doc_size: None,
             fallback_size: None,
             fallback_handle: None,
             image_path: None,

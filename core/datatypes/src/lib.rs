@@ -114,7 +114,7 @@ impl DataValue {
 // Paramètres éditables d'un node (inspecteur Properties)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ParamValue {
     Float(f32),
     Int(i32),

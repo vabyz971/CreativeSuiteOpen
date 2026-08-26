@@ -25,7 +25,7 @@ use crate::state::PhotoApp;
 
 pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     let doc_size = app
-        .doc_size
+        .doc_dims()
         .map(|(w, h)| iced::Size::new(w as f32, h as f32));
     // Contenu central : barre contextuelle (projet/zoom/export) + workspace
     let menus = app_menus(app.tools_visible, app.selected_layer);
@@ -98,12 +98,9 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     );
 
     // Barre d'options contextuelle : contenu selon l'outil sélectionné
-    let selected_scale_percent = app.selected_layer.and_then(|id| {
-        app.layers
-            .iter()
-            .find(|l| l.id == id)
-            .map(|l| l.scale * 100.0)
-    });
+    let selected_scale_percent = app
+        .selected_layer
+        .and_then(|id| app.doc.pixel_layer(id).map(|l| l.transform.scale * 100.0));
     let options_bar = components::options_bar::render(
         app.selected_tool,
         app.selected_layer,
@@ -121,13 +118,13 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
         components::workspace::render(
             &app.panes,
             app.focus,
-            &app.layers,
+            &app.doc,
             &app.preview_cache,
             app.selected_layer,
             doc_size,
             app.fallback_handle.clone(),
             app.fallback_size,
-            app.move_anchor.map(|(id, _, _)| id),
+            app.move_anchor.map(|(id, _)| id),
             app.drag_background.clone(),
             app.drag_background_size,
             app.image_path.clone(),

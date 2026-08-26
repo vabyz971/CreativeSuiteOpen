@@ -27,6 +27,7 @@ use crate::{Message, Tool};
 use iced::widget::{button, container, row, text};
 use iced::{Alignment, Element, Length, Padding};
 use ui_kit::theme::colors;
+use uuid::Uuid;
 
 // Codepoints Material Icons — https://fonts.google.com/icons
 const ICON_ROTATE_LEFT: &str = "\u{e419}";
@@ -37,9 +38,10 @@ const ICON_RESET: &str = "\u{e166}"; // restart_alt
 
 /// Barre contextuelle complète. Retourne un élément de hauteur nulle si
 /// l'outil courant n'a pas de réglages (aucun espace pris dans le layout).
+#[allow(clippy::too_many_arguments)]
 pub fn render<'a>(
     tool: Tool,
-    selected_layer: Option<u64>,
+    selected_layer: Option<Uuid>,
     selected_scale_percent: Option<f32>,
     has_selection: bool,
     brush_color: iced::Color,
@@ -190,11 +192,11 @@ fn eraser_section<'a>(brush_size: f32, brush_opacity: f32) -> Element<'a, Messag
 // ---------------------------------------------------------------------------
 
 fn move_section<'a>(
-    selected_layer: Option<u64>,
+    selected_layer: Option<Uuid>,
     selected_scale_percent: Option<f32>,
     has_selection: bool,
 ) -> Element<'a, Message> {
-    let id = selected_layer.unwrap_or(0);
+    let id = selected_layer.unwrap_or_else(Uuid::nil);
     let has_layer = selected_layer.is_some();
 
     let icon_btn = |codepoint: &'a str, label: &'a str, msg: Message, enabled: bool| {

@@ -18,8 +18,9 @@
 
 use iced::Color;
 use iced::widget::pane_grid;
+use uuid::Uuid;
 
-use crate::layers::Layer;
+use crate::layers::PixelLayer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -48,9 +49,9 @@ pub enum OffsetAxis {
     Y,
 }
 
-/// Layer décodé (thread async) — Debug manuel car la texture n'est pas formattable
+/// Calque pixels décodé (thread async) — Debug manuel car la texture n'est pas formattable
 #[derive(Clone)]
-pub struct DecodedLayer(pub Layer);
+pub struct DecodedLayer(pub PixelLayer);
 impl std::fmt::Debug for DecodedLayer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (w, h) = self.0.dimensions();
@@ -66,7 +67,7 @@ impl std::fmt::Debug for DecodedLayer {
 /// quelle jusqu'à PaintApplied — continuité visuelle parfaite.
 #[derive(Clone)]
 pub struct PendingPaint {
-    pub layer_id: u64,
+    pub layer_id: Uuid,
     pub tex: ui_kit::image_canvas::StrokeTex,
 }
 
@@ -104,67 +105,97 @@ pub enum Message {
     SelectTool(Tool),
     ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent),
 
-    // Calques
-    SelectLayer(u64),
-    ToggleLayerVisible(u64),
+    // Calques (arbre LayerTree)
+    SelectLayer(Uuid),
+    ToggleLayerVisible(Uuid),
     SetLayerOpacity {
-        id: u64,
+        id: Uuid,
         opacity: f32,
     },
     SetLayerBlend {
-        id: u64,
-        mode: String,
+        id: Uuid,
+        mode: crate::layers::BlendMode,
     },
     RenameLayer {
-        id: u64,
+        id: Uuid,
         name: String,
     },
     SetLayerOffset {
-        id: u64,
+        id: Uuid,
         axis: OffsetAxis,
         value: f32,
     },
     /// Rotation du calque (degrés, absolu)
     SetLayerRotation {
-        id: u64,
+        id: Uuid,
         degrees: f32,
     },
     /// Rotation rapide ±90° (true = horaire)
     RotateLayer90 {
-        id: u64,
+        id: Uuid,
         clockwise: bool,
     },
     /// Retourne le calque (miroir horizontal/vertical)
     FlipLayer {
-        id: u64,
+        id: Uuid,
         horizontal: bool,
     },
     /// Rotation relative (delta en degrés, ex: 90, -90, 180)
     RotateLayer {
-        id: u64,
+        id: Uuid,
         delta: f32,
     },
     /// Échelle uniforme du calque (1.0 = 100 %)
     SetLayerScale {
-        id: u64,
+        id: Uuid,
         scale: f32,
     },
     /// Réinitialise rotation + échelle du calque
-    ResetLayerTransform(u64),
+    ResetLayerTransform(Uuid),
     /// Rogne le calque sélectionné à la sélection rectangulaire active
     CropLayerToSelection,
     AddEmptyLayer,
-    DuplicateLayer(u64),
-    DeleteLayer(u64),
-    MoveLayerUp(u64),
-    MoveLayerDown(u64),
+    DuplicateLayer(Uuid),
+    DeleteLayer(Uuid),
+    MoveLayerUp(Uuid),
+    MoveLayerDown(Uuid),
+    /// Regroupe le nœud donné dans un nouveau groupe
+    GroupLayers(Uuid),
+    /// Dissout le groupe donné : ses enfants remontent d'un cran
+    UngroupLayers(Uuid),
+    /// Replie/déplie un groupe dans le panneau Calques
+    ToggleGroupCollapsed(Uuid),
+
+    // Live filters / calques d'ajustement
+    /// Ajoute un filtre dynamique en fin de chaîne du nœud
+    AddLiveFilter {
+        id: Uuid,
+        type_id: String,
+    },
+    /// Retire un filtre de la chaîne
+    RemoveLiveFilter {
+        layer_id: Uuid,
+        filter_id: Uuid,
+    },
+    /// Réglage continu d'un paramètre de filtre (coalescé)
+    SetFilterParam {
+        layer_id: Uuid,
+        filter_id: Uuid,
+        key: String,
+        value: datatypes::ParamValue,
+    },
+    /// Active/désactive un filtre sans perdre ses réglages
+    ToggleFilterEnabled {
+        layer_id: Uuid,
+        filter_id: Uuid,
+    },
 
     // Image - utilise le picker natif via rfd
     OpenImage,
     ImagePicked(Option<std::path::PathBuf>),
     /// Fichier lu (async) — le décodage démarre ensuite
     ImageRead(Result<(Vec<u8>, String), String>),
-    /// Image décodée + texture construite (async) — ajout à la pile
+    /// Image décodée + texture construite (async) — ajout à l'arbre
     ImageDecoded(Result<DecodedLayer, String>),
     // Projet .csphoto
     /// Chemin choisi pour l'ouverture (projet ou image)
@@ -214,12 +245,12 @@ pub enum Message {
     },
     /// Résultat du calcul lourd — applique pixels + buffers au calque
     PaintApplied {
-        layer_id: u64,
+        layer_id: Uuid,
         buf: photo_engine::paint::StrokeCommit,
     },
     /// Le worker de peinture a échoué : retire l'aperçu figé sans panic
     PaintFailed {
-        layer_id: u64,
+        layer_id: Uuid,
     },
     SetBrushColor(Color),
     SetBrushSize(f32),

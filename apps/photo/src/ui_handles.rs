@@ -8,7 +8,7 @@
 //
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY for A PARTICULAR PURPOSE. See the
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
@@ -24,12 +24,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use uuid::Uuid;
 
-use crate::layers::Layer;
+use photo_engine::Document;
 
 /// Handle iced depuis un buffer pur — ZÉRO copie de pixels :
 /// `Bytes::from_owner` partage l'Arc sous-jacent avec le moteur.
-pub fn rgba_handle(buf: &photo_engine::document::RgbaBuf) -> iced::widget::image::Handle {
+pub fn rgba_handle(buf: &photo_engine::RgbaBuf) -> iced::widget::image::Handle {
     iced::widget::image::Handle::from_rgba(
         buf.width,
         buf.height,
@@ -39,12 +40,12 @@ pub fn rgba_handle(buf: &photo_engine::document::RgbaBuf) -> iced::widget::image
 
 #[derive(Default)]
 pub struct PreviewCache {
-    entries: HashMap<u64, Entry>,
+    entries: HashMap<Uuid, Entry>,
 }
 
 struct Entry {
     /// Adresses des Arc détenus — invalide l'entrée dès que le moteur
-    /// régénère un buffer (apply_edit, crop, peinture…).
+    /// régénère un buffer (édition source, changement de filtre…).
     key_preview: usize,
     key_thumb: usize,
     /// Les Arc sont conservés vivants ici : empêche la réutilisation de
@@ -54,29 +55,36 @@ struct Entry {
     thumb: iced::widget::image::Handle,
 }
 
+fn arc_addr(data: &Arc<[u8]>) -> usize {
+    Arc::as_ptr(data).cast::<u8>() as usize
+}
+
 impl PreviewCache {
-    /// Aligne le cache sur l'état courant des calques. Appelé après CHAQUE
-    /// message (point unique de synchronisation, coût : N lookups).
-    pub fn sync(&mut self, layers: &[Layer]) {
-        let ids: Vec<u64> = layers.iter().map(|l| l.id).collect();
+    /// Aligne le cache sur l'apparence courante des calques pixels de
+    /// l'arbre. Appelé après CHAQUE message (point unique de synchronisation).
+    pub fn sync(&mut self, doc: &Document) {
+        let ids: Vec<Uuid> = doc.iter_pixels().iter().map(|l| l.id).collect();
         self.entries.retain(|id, _| ids.contains(id));
-        for layer in layers {
+        for id in ids {
             // Fat pointer → pointeur brut : cast via `.cast::<u8>()`
-            let kp = Arc::as_ptr(&layer.preview.data).cast::<u8>() as usize;
-            let kt = Arc::as_ptr(&layer.thumb.data).cast::<u8>() as usize;
-            match self.entries.get(&layer.id) {
+            let Some(appearance) = doc.appearance(id) else {
+                continue;
+            };
+            let kp = arc_addr(&appearance.preview.data);
+            let kt = arc_addr(&appearance.thumb.data);
+            match self.entries.get(&id) {
                 Some(e) if e.key_preview == kp && e.key_thumb == kt => {}
                 _ => {
-                    let preview = rgba_handle(&layer.preview);
-                    let thumb = rgba_handle(&layer.thumb);
+                    let preview = rgba_handle(&appearance.preview);
+                    let thumb = rgba_handle(&appearance.thumb);
                     self.entries.insert(
-                        layer.id,
+                        id,
                         Entry {
                             key_preview: kp,
                             key_thumb: kt,
                             _keep_alive: (
-                                Arc::clone(&layer.preview.data),
-                                Arc::clone(&layer.thumb.data),
+                                Arc::clone(&appearance.preview.data),
+                                Arc::clone(&appearance.thumb.data),
                             ),
                             preview,
                             thumb,
@@ -88,12 +96,12 @@ impl PreviewCache {
     }
 
     /// Handle d'aperçu interactif du calque (texture canvas).
-    pub fn preview(&self, id: u64) -> Option<&iced::widget::image::Handle> {
+    pub fn preview(&self, id: Uuid) -> Option<&iced::widget::image::Handle> {
         self.entries.get(&id).map(|e| &e.preview)
     }
 
     /// Handle miniature du calque (panneau Calques).
-    pub fn thumb(&self, id: u64) -> Option<&iced::widget::image::Handle> {
+    pub fn thumb(&self, id: Uuid) -> Option<&iced::widget::image::Handle> {
         self.entries.get(&id).map(|e| &e.thumb)
     }
 }

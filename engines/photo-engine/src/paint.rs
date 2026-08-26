@@ -192,13 +192,11 @@ impl std::fmt::Debug for StrokeCommit {
 ///
 /// * `base`      : image source du calque (Arc partagé, non modifiée)
 /// * `pts_doc`   : polyligne en coordonnées DOCUMENT
-/// * offset/scale/rotation_deg : transform courant du calque (doc → calque)
+/// * `transform` : transform courant du calque (doc → calque)
 pub fn commit_stroke(
     base: &image::DynamicImage,
     pts_doc: &[(f32, f32)],
-    offset: (f32, f32),
-    scale: f32,
-    rotation_deg: f32,
+    transform: &crate::document::Transform2D,
     brush: &BrushParams,
 ) -> StrokeCommit {
     use ::image::GenericImageView;
@@ -206,7 +204,9 @@ pub fn commit_stroke(
 
     // Espace DOCUMENT → espace CALQUE (offset + échelle + rotation inversées
     // autour du centre du calque) — identique au transform de draw.
-    let theta = -rotation_deg.to_radians();
+    let offset = (transform.offset_x, transform.offset_y);
+    let scale = transform.scale.clamp(0.05, 8.0);
+    let theta = -transform.rotation_deg.to_radians();
     let (cos, sin) = (theta.cos(), theta.sin());
     let cx = offset.0 + lw as f32 * scale / 2.0;
     let cy = offset.1 + lh as f32 * scale / 2.0;

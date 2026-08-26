@@ -18,6 +18,7 @@
 //! Rendu UI déjà WGPU via iced_wgpu, ce module ajoute le TRAITEMENT GPU
 
 use image::DynamicImage;
+use std::mem::{align_of, size_of};
 use std::sync::{Arc, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -33,6 +34,8 @@ pub struct GpuContext {
     pipeline_sat: wgpu::ComputePipeline,
     pipeline_blur: wgpu::ComputePipeline,
     pipeline_blend: wgpu::ComputePipeline,
+    pipeline_bc_tex: wgpu::ComputePipeline,
+    uniforms_bc_tex: wgpu::Buffer,
 }
 
 static GPU: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
@@ -82,6 +85,19 @@ impl GpuContext {
         let pipeline_blur = Self::create_pipeline(&device, SHADER_BLUR, "blur");
         let pipeline_blend = Self::create_pipeline(&device, SHADER_BLEND, "blend");
 
+        // Chemin texture -> texture (zéro readback) : module + pipeline + uniform persistant
+        let module_bc_tex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("bc_tex"),
+            source: wgpu::ShaderSource::Wgsl(SHADER_BC_TEX.into()),
+        });
+        let pipeline_bc_tex = create_pipeline(&device, &module_bc_tex);
+        let uniforms_bc_tex = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bc_tex_uniforms"),
+            size: size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Some(Self {
             device,
             queue,
@@ -90,6 +106,8 @@ impl GpuContext {
             pipeline_sat,
             pipeline_blur,
             pipeline_blend,
+            pipeline_bc_tex,
+            uniforms_bc_tex,
         })
     }
     fn create_pipeline(device: &wgpu::Device, shader: &str, label: &str) -> wgpu::ComputePipeline {
@@ -785,7 +803,354 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 "#;
 
+/// Brightness/contrast en cheminement TEXTURE -> STORAGE TEXTURE : les pixels
+/// ne quittent jamais la VRAM (aucun readback CPU). Les dimensions sont lues
+/// directement depuis la texture d'entrée (pas de désynchronisation possible).
+/// NB : pas d'affectation par swizzle multiple (`c.rgb = …`) — non supportée
+/// par naga ; on passe par une variable intermédiaire.
+const SHADER_BC_TEX: &str = r#"
+struct Uniforms { brightness: f32, contrast: f32 };
+@group(0) @binding(0) var input_tex: texture_2d<f32>;
+@group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> u: Uniforms;
+
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = textureDimensions(input_tex);
+    if (gid.x >= dims.x || gid.y >= dims.y) { return; }
+    let c = textureLoad(input_tex, gid.xy, 0);
+    var rgb = c.rgb;
+    rgb = (rgb - vec3<f32>(0.5)) * u.contrast + vec3<f32>(0.5) + vec3<f32>(u.brightness);
+    // Alpha préservé, rgb borné (rgba8unorm sature aussi à l'écriture)
+    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    textureStore(output_tex, gid.xy, vec4<f32>(rgb, c.a));
+}
+"#;
+
+// ---------------------------------------------------------------------------
+// Filtre texture -> texture (zéro readback)
+//
+// Contrairement au chemin storage-buffer ci-dessus (aller-retour CPU <-> GPU),
+// ce pipeline lit une texture et écrit dans une autre : les pixels ne quittent
+// JAMAIS la VRAM. Compatible modèle « state-only » : changer un réglage se
+// réduit à queue.write_buffer + rediffusion, sans ré-upload des pixels.
+// ---------------------------------------------------------------------------
+
+/// Format commun aux textures d'entrée/sortie du filtre.
+pub const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Taille du workgroup du filtre : 16x16 pixels par groupe de travail.
+pub const WORKGROUP_SIZE: u32 = 16;
+
+/// Paramètres du filtre, envoyés tels quels via un uniform buffer.
+///
+/// Plages applicatives : `brightness` dans [-1.0 ; 1.0], `contrast` dans [0.0 ; 4.0].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Uniforms {
+    pub brightness: f32,
+    pub contrast: f32,
+}
+
+impl Uniforms {
+    /// Crée des paramètres bornés : brightness [-1.0 ; 1.0], contrast [0.0 ; 4.0].
+    #[must_use]
+    pub fn new(brightness: f32, contrast: f32) -> Self {
+        Self {
+            brightness: brightness.clamp(-1.0, 1.0),
+            contrast: contrast.clamp(0.0, 4.0),
+        }
+    }
+}
+
+impl Default for Uniforms {
+    /// Réglage neutre : aucune transformation.
+    fn default() -> Self {
+        Self {
+            brightness: 0.0,
+            contrast: 1.0,
+        }
+    }
+}
+
+// Verrous de compilation : le layout mémoire doit refléter le struct WGSL à l'octet
+const _: () = assert!(size_of::<Uniforms>() == 8);
+const _: () = assert!(align_of::<Uniforms>() == 4);
+
+/// Nombre de workgroups nécessaire pour couvrir `width x height` pixels.
+#[must_use]
+pub fn workgroup_count(width: u32, height: u32) -> (u32, u32) {
+    (
+        width.div_ceil(WORKGROUP_SIZE),
+        height.div_ceil(WORKGROUP_SIZE),
+    )
+}
+
+/// Construit le pipeline de calcul à partir d'un module déjà compilé.
+#[must_use]
+pub fn create_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("bc_tex"),
+        layout: None,
+        module: shader,
+        entry_point: Some("main"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    })
+}
+
+/// Assemble le bind group : texture d'entrée (lecture), texture de sortie
+/// (écriture storage), uniform buffer de réglages.
+#[must_use]
+pub fn create_bind_group(
+    device: &wgpu::Device,
+    pipeline: &wgpu::ComputePipeline,
+    input_view: &wgpu::TextureView,
+    output_view: &wgpu::TextureView,
+    uniforms: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("bc_tex_bg"),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(input_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(output_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniforms.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+/// Enregistre la diffusion du filtre dans `encoder` (aucune soumission ici :
+/// l'appelant garde la main sur le batching de ses passes).
+pub fn dispatch_filter(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::ComputePipeline,
+    bind_group: &wgpu::BindGroup,
+    width: u32,
+    height: u32,
+) {
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("bc_tex_dispatch"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind_group, &[]);
+    let (wx, wy) = workgroup_count(width, height);
+    pass.dispatch_workgroups(wx, wy, 1);
+}
+
+/// Pas d'une ligne une fois alignée sur COPY_BYTES_PER_ROW_ALIGNMENT (256 octets),
+/// exigence de wgpu pour write_texture/copy_texture_to_texture.
+fn row_pitch(width: u32) -> u32 {
+    let raw = width * 4;
+    raw.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+}
+
+impl GpuContext {
+    /// Crée une texture RGBA8 prête à recevoir un upload CPU (usage échantillonnage + copie).
+    #[must_use]
+    pub fn create_input_texture(&self, width: u32, height: u32) -> wgpu::Texture {
+        self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bc_tex_in"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TEXTURE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    }
+
+    /// Convertit `img` en RGBA8 puis la charge dans une texture GPU.
+    /// Unique passage par la RAM système ; ensuite tout reste en VRAM.
+    #[must_use]
+    pub fn upload_image(&self, img: &DynamicImage) -> wgpu::Texture {
+        let rgba = img.to_rgba8();
+        let texture = self.create_input_texture(rgba.width(), rgba.height());
+        let _ = self.upload_rgba8(&texture, &rgba);
+        texture
+    }
+
+    /// Écrit des pixels RGBA8 dans `texture` en gérant le rembourrage de lignes
+    /// imposé par wgpu (pitch aligné 256 octets).
+    ///
+    /// Retourne `false` si `rgba` ne contient pas exactement largeur x hauteur x 4 octets.
+    pub fn upload_rgba8(&self, texture: &wgpu::Texture, rgba: &[u8]) -> bool {
+        let size = texture.size();
+        let expected = size.width as usize * size.height as usize * 4;
+        if expected == 0 || rgba.len() != expected {
+            return false;
+        }
+        let pitch = row_pitch(size.width);
+        let layout = wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(pitch),
+            rows_per_image: None,
+        };
+        if pitch == size.width * 4 {
+            // Lignes déjà alignées : copie directe zéro transformation
+            self.queue
+                .write_texture(texture.as_image_copy(), rgba, layout, size);
+        } else {
+            let stride = size.width as usize * 4;
+            let mut padded = vec![0u8; pitch as usize * size.height as usize];
+            for (dst, src) in padded
+                .chunks_exact_mut(pitch as usize)
+                .zip(rgba.chunks_exact(stride))
+            {
+                dst[..stride].copy_from_slice(src);
+            }
+            self.queue
+                .write_texture(texture.as_image_copy(), &padded, layout, size);
+        }
+        true
+    }
+
+    /// Applique luminosité/contraste : lit `input`, retourne une NOUVELLE texture.
+    ///
+    /// ZÉRO readback : les pixels restent en VRAM, la sortie est directement
+    /// chaînable vers un autre filtre ou un render pass.
+    ///
+    /// Le réglage est poussé dans l'uniform buffer persistant du contexte ;
+    /// l'ordre des opérations de file garantit que chaque diffusion lit bien la
+    /// valeur écrite juste avant elle.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use photo_engine::gpu::{GpuContext, Uniforms};
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let gpu = GpuContext::get().ok_or("GPU indisponible")?;
+    ///     let input = gpu.upload_image(&image::DynamicImage::new_rgba8(1920, 1080));
+    ///     let output = gpu
+    ///         .apply_brightness_contrast_texture(&input, Uniforms::new(0.1, 1.2))
+    ///         .ok_or("dimensions invalides")?;
+    ///     // `output` reste en VRAM : prête pour un autre filtre ou l'affichage.
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// Retourne `None` si les dimensions sont nulles ou si le contexte est indisponible.
+    pub fn apply_brightness_contrast_texture(
+        &self,
+        input: &wgpu::Texture,
+        uniforms: Uniforms,
+    ) -> Option<wgpu::Texture> {
+        let size = input.size();
+        if size.width == 0 || size.height == 0 {
+            return None;
+        }
+        let output = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bc_tex_out"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TEXTURE_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let in_view = input.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_view = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = create_bind_group(
+            &self.device,
+            &self.pipeline_bc_tex,
+            &in_view,
+            &out_view,
+            &self.uniforms_bc_tex,
+        );
+        self.queue
+            .write_buffer(&self.uniforms_bc_tex, 0, bytemuck::bytes_of(&uniforms));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("bc_tex_enc"),
+            });
+        dispatch_filter(
+            &mut encoder,
+            &self.pipeline_bc_tex,
+            &bind_group,
+            size.width,
+            size.height,
+        );
+        self.queue.submit(Some(encoder.finish()));
+        Some(output)
+    }
+}
+
 // Pour compat avec ancien code qui appelle evaluate_gpu_available
 pub fn evaluate_gpu_available() -> bool {
     GpuContext::is_available()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uniforms_occupe_huit_octets_comme_en_wgsl() {
+        assert_eq!(size_of::<Uniforms>(), 8);
+        assert_eq!(align_of::<Uniforms>(), 4);
+    }
+
+    #[test]
+    fn uniforms_par_defaut_sont_neutres() {
+        let u = Uniforms::default();
+        assert!((u.brightness - 0.0).abs() < f32::EPSILON);
+        assert!((u.contrast - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn uniforms_new_borne_les_plages() {
+        let hors_plage = Uniforms::new(-5.0, 42.0);
+        assert!((hors_plage.brightness - (-1.0)).abs() < f32::EPSILON);
+        assert!((hors_plage.contrast - 4.0).abs() < f32::EPSILON);
+        let aux_limites = Uniforms::new(1.0, 0.0);
+        assert!((aux_limites.brightness - 1.0).abs() < f32::EPSILON);
+        assert!((aux_limites.contrast - 0.0).abs() < f32::EPSILON);
+        let valide = Uniforms::new(0.25, 1.5);
+        assert!((valide.brightness - 0.25).abs() < f32::EPSILON);
+        assert!((valide.contrast - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn nb_workgroups_couvre_toute_la_surface() {
+        assert_eq!(workgroup_count(1, 1), (1, 1));
+        assert_eq!(workgroup_count(WORKGROUP_SIZE, WORKGROUP_SIZE), (1, 1));
+        assert_eq!(
+            workgroup_count(WORKGROUP_SIZE + 1, WORKGROUP_SIZE + 1),
+            (2, 2)
+        );
+        assert_eq!(workgroup_count(1600, 1200), (100, 75));
+        assert_eq!(workgroup_count(0, 0), (0, 0));
+    }
+
+    #[test]
+    fn pas_de_ligne_aligne_sur_256_octets() {
+        // 64 px * 4 = 256 octets : déjà multiple de 256
+        assert_eq!(row_pitch(64), 256);
+        // 640 px * 4 = 2560 octets : déjà multiple de 256
+        assert_eq!(row_pitch(640), 2560);
+        // 800 px * 4 = 3200 octets : arrondi au multiple de 256 supérieur
+        assert_eq!(row_pitch(800), 3328);
+        assert_eq!(row_pitch(1), 256);
+    }
 }

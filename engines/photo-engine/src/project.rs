@@ -17,10 +17,15 @@
 //! Format projet natif `.csophoto` — indépendant de l'UI, réutilisable
 //! par les autres apps de la suite (compositing vidéo de calques…).
 //!
-//! Conteneur JSON versionné : métadonnées du document + un calque par
-//! entrée, chaque image encodée PNG puis base64 (lisibilité, diff partiel,
-//! zéro dépendance d'archive). Le décodage régénère les buffers d'aperçu.
+//! FORMAT_VERSION 2 : arbre hiérarchique (LayerTree). Chaque nœud est un
+//! calque pixels (source PNG + chaîne de live filters), un groupe (enfants
+//! récursifs) ou un calque d'ajustement. Conteneur JSON versionné, images
+//! encodées PNG puis base64.
+//!
+//! Politique de compatibilité : STRICTE — seuls les projets v2 sont lus ;
+//! toute autre version est refusée avec un message clair.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
@@ -28,40 +33,201 @@ use std::sync::Arc;
 use base64::Engine as _;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-use crate::document::{BLEND_MODES, Layer};
+use crate::document::{
+    AdjustmentLayer, BlendMode, Document, FilterNode, GroupLayer, LayerNode, PixelLayer,
+    Transform2D,
+};
 
 /// Version du format — incrémenter à toute évolution incompatible.
-const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct ProjectFile {
     version: u32,
     width: u32,
     height: u32,
-    layers: Vec<LayerDto>,
+    root: Vec<LayerNodeDto>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct LayerDto {
-    id: u64,
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum LayerNodeDto {
+    Pixel(PixelDto),
+    Group(GroupDto),
+    Adjustment(AdjustmentDto),
+}
+
+#[derive(Serialize, Deserialize)]
+struct PixelDto {
+    id: Uuid,
     name: String,
-    opacity: f32,
-    blend_mode: String,
-    visible: bool,
-    offset_x: f32,
-    offset_y: f32,
-    rotation: f32,
-    scale: f32,
-    /// Pixels du calque encodés PNG puis base64
+    /// Pixels de la SOURCE (jamais l'apparence filtrée) encodés PNG + base64
     png_base64: String,
+    #[serde(default)]
+    live_filters: Vec<FilterDto>,
+    transform: Transform2D,
+    opacity: f32,
+    blend_mode: BlendMode,
+    visible: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GroupDto {
+    id: Uuid,
+    name: String,
+    children: Vec<LayerNodeDto>,
+    #[serde(default)]
+    collapsed: bool,
+    opacity: f32,
+    blend_mode: BlendMode,
+    visible: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdjustmentDto {
+    id: Uuid,
+    name: String,
+    filters: Vec<FilterDto>,
+    opacity: f32,
+    visible: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FilterDto {
+    id: Uuid,
+    type_id: String,
+    params: HashMap<String, datatypes::ParamValue>,
+    enabled: bool,
+}
+
+impl FilterNode {
+    fn to_dto(&self) -> FilterDto {
+        FilterDto {
+            id: self.id,
+            type_id: self.type_id.clone(),
+            params: self.params.clone(),
+            enabled: self.enabled,
+        }
+    }
+
+    fn from_dto(dto: FilterDto) -> Self {
+        Self {
+            id: dto.id,
+            type_id: dto.type_id,
+            params: dto.params,
+            enabled: dto.enabled,
+        }
+    }
+}
+
+fn png_encode(img: &DynamicImage, name: &str) -> Result<Vec<u8>, String> {
+    let mut png = Vec::new();
+    img.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| format!("Encodage PNG du calque « {name} » : {e}"))?;
+    Ok(png)
+}
+
+fn png_decode(png_base64: &str, name: &str) -> Result<DynamicImage, String> {
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(png_base64)
+        .map_err(|e| format!("Calque « {name} » corrompu : {e}"))?;
+    image::load_from_memory(&png).map_err(|e| format!("Calque « {name} » illisible : {e}"))
+}
+
+fn node_to_dto(node: &LayerNode) -> Result<LayerNodeDto, String> {
+    Ok(match node {
+        LayerNode::Pixel(l) => {
+            // Encodage de la SOURCE : les filtres restent vivants au rechargement
+            LayerNodeDto::Pixel(PixelDto {
+                id: l.id,
+                name: l.name.clone(),
+                png_base64: base64::engine::general_purpose::STANDARD
+                    .encode(png_encode(l.source_image.as_ref(), &l.name)?),
+                live_filters: l.live_filters.iter().map(FilterNode::to_dto).collect(),
+                transform: l.transform,
+                opacity: l.opacity,
+                blend_mode: l.blend_mode,
+                visible: l.visible,
+            })
+        }
+        LayerNode::Group(g) => {
+            let children: Result<Vec<LayerNodeDto>, String> =
+                g.children.iter().map(node_to_dto).collect();
+            LayerNodeDto::Group(GroupDto {
+                id: g.id,
+                name: g.name.clone(),
+                children: children?,
+                collapsed: g.collapsed,
+                opacity: g.opacity,
+                blend_mode: g.blend_mode,
+                visible: g.visible,
+            })
+        }
+        LayerNode::Adjustment(a) => LayerNodeDto::Adjustment(AdjustmentDto {
+            id: a.id,
+            name: a.name.clone(),
+            filters: a.filters.iter().map(FilterNode::to_dto).collect(),
+            opacity: a.opacity,
+            visible: a.visible,
+        }),
+    })
+}
+
+fn sanitize_transform(t: Transform2D) -> Transform2D {
+    Transform2D {
+        offset_x: t.offset_x,
+        offset_y: t.offset_y,
+        rotation_deg: t.rotation_deg,
+        scale: t.scale.clamp(0.05, 8.0),
+    }
+}
+
+fn node_from_dto(dto: LayerNodeDto) -> Result<LayerNode, String> {
+    Ok(match dto {
+        LayerNodeDto::Pixel(p) => {
+            let img = png_decode(&p.png_base64, &p.name)?;
+            let mut layer = PixelLayer::new(p.name, Arc::new(img));
+            layer.id = p.id;
+            layer.live_filters = p
+                .live_filters
+                .into_iter()
+                .map(FilterNode::from_dto)
+                .collect();
+            layer.transform = sanitize_transform(p.transform);
+            layer.opacity = p.opacity.clamp(0.0, 100.0);
+            layer.blend_mode = p.blend_mode;
+            layer.visible = p.visible;
+            LayerNode::Pixel(layer)
+        }
+        LayerNodeDto::Group(g) => {
+            let children: Result<Vec<LayerNode>, String> =
+                g.children.into_iter().map(node_from_dto).collect();
+            let mut group = GroupLayer::new(g.name, children?);
+            group.id = g.id;
+            group.collapsed = g.collapsed;
+            group.opacity = g.opacity.clamp(0.0, 100.0);
+            group.blend_mode = g.blend_mode;
+            group.visible = g.visible;
+            LayerNode::Group(group)
+        }
+        LayerNodeDto::Adjustment(a) => {
+            let mut adj = AdjustmentLayer::new(
+                a.name,
+                a.filters.into_iter().map(FilterNode::from_dto).collect(),
+            );
+            adj.id = a.id;
+            adj.opacity = a.opacity.clamp(0.0, 100.0);
+            adj.visible = a.visible;
+            LayerNode::Adjustment(adj)
+        }
+    })
 }
 
 /// Document rechargé depuis un `.csophoto`.
 pub struct LoadedProject {
-    pub width: u32,
-    pub height: u32,
-    pub layers: Vec<Layer>,
+    pub document: Document,
     /// Chemin du fichier chargé (devient le chemin d'enregistrement courant)
     pub path: Option<std::path::PathBuf>,
     /// Nom de fichier sans extension — alimente le titre du canvas
@@ -70,10 +236,10 @@ pub struct LoadedProject {
 
 impl Clone for LoadedProject {
     fn clone(&self) -> Self {
+        let mut document = Document::new(self.document.width, self.document.height);
+        document.restore_snapshot(self.document.snapshot());
         Self {
-            width: self.width,
-            height: self.height,
-            layers: self.layers.clone(),
+            document,
             path: self.path.clone(),
             source_name: self.source_name.clone(),
         }
@@ -83,90 +249,72 @@ impl Clone for LoadedProject {
 impl std::fmt::Debug for LoadedProject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedProject")
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("layers", &self.layers.len())
+            .field("width", &self.document.width)
+            .field("height", &self.document.height)
+            .field("root", &self.document.root.len())
             .field("path", &self.path)
             .field("source_name", &self.source_name)
             .finish()
     }
 }
 
-/// Enregistre la pile de calques dans un fichier `.csophoto`.
-pub fn save(path: &Path, layers: &[Layer], doc_w: u32, doc_h: u32) -> Result<(), String> {
-    let mut dtos = Vec::with_capacity(layers.len());
-    for l in layers {
-        let mut png = Vec::new();
-        l.image
-            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-            .map_err(|e| format!("Encodage PNG du calque « {} » : {e}", l.name))?;
-        dtos.push(LayerDto {
-            id: l.id,
-            name: l.name.clone(),
-            opacity: l.opacity,
-            blend_mode: l.blend_mode.clone(),
-            visible: l.visible,
-            offset_x: l.offset_x,
-            offset_y: l.offset_y,
-            rotation: l.rotation,
-            scale: l.scale,
-            png_base64: base64::engine::general_purpose::STANDARD.encode(png),
-        });
-    }
+/// Enregistre l'arbre de calques dans un fichier `.csophoto` (v2).
+///
+/// # Errors
+/// Erreur d'encodage PNG d'un calque, de sérialisation JSON ou d'écriture
+/// disque — message descriptif en français pour l'utilisateur.
+pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
+    let root: Result<Vec<LayerNodeDto>, String> = doc.root.iter().map(node_to_dto).collect();
     let file = ProjectFile {
         version: FORMAT_VERSION,
-        width: doc_w,
-        height: doc_h,
-        layers: dtos,
+        width: doc.width,
+        height: doc.height,
+        root: root?,
     };
     let json =
         serde_json::to_vec_pretty(&file).map_err(|e| format!("Sérialisation du projet : {e}"))?;
     std::fs::write(path, json).map_err(|e| format!("Écriture de {}: {e}", path.display()))
 }
 
-/// Charge un `.csophoto` et reconstruit la pile (aperçus/miniatures régénérés).
+/// Charge un `.csophoto`. Strict : seule la version courante est acceptée.
+///
+/// # Errors
+/// Fichier illisible, JSON invalide, version étrangère (v1 incluse), ou
+/// calque corrompu — message descriptif en français.
 pub fn load(path: &Path) -> Result<LoadedProject, String> {
     let json = std::fs::read(path).map_err(|e| format!("Lecture de {}: {e}", path.display()))?;
-    let file: ProjectFile =
+    // Sonde de version AVANT désérialisation complète : un projet d'une
+    // autre époque doit être refusé avec le bon message, pas avec une
+    // erreur de champs manquants.
+    #[derive(Deserialize)]
+    struct VersionProbe {
+        version: u32,
+    }
+    let probe: VersionProbe =
         serde_json::from_slice(&json).map_err(|e| format!("Projet invalide : {e}"))?;
-    if file.version != FORMAT_VERSION {
+    if probe.version != FORMAT_VERSION {
         return Err(format!(
-            "Version de projet non supportée : {} (attendu {FORMAT_VERSION})",
-            file.version
+            "Version de projet non supportée : {} (attendu {FORMAT_VERSION}). \
+             Les projets au format 1 ne sont plus lisibles.",
+            probe.version
         ));
     }
+    let file: ProjectFile =
+        serde_json::from_slice(&json).map_err(|e| format!("Projet invalide : {e}"))?;
+
+    let root: Result<Vec<LayerNode>, String> = file.root.into_iter().map(node_from_dto).collect();
+    let root = root?;
 
     let source_name = path
         .file_stem()
         .and_then(|n| n.to_str())
         .map(str::to_string);
 
-    let mut layers = Vec::with_capacity(file.layers.len());
-    for dto in file.layers {
-        let png = base64::engine::general_purpose::STANDARD
-            .decode(&dto.png_base64)
-            .map_err(|e| format!("Calque « {} » corrompu : {e}", dto.name))?;
-        let img: DynamicImage = image::load_from_memory(&png)
-            .map_err(|e| format!("Calque « {} » illisible : {e}", dto.name))?;
-        let mut layer = Layer::new(dto.id, dto.name, Arc::new(img));
-        layer.opacity = dto.opacity.clamp(0.0, 100.0);
-        layer.blend_mode = if BLEND_MODES.contains(&dto.blend_mode.as_str()) {
-            dto.blend_mode
-        } else {
-            "Normal".into()
-        };
-        layer.visible = dto.visible;
-        layer.offset_x = dto.offset_x;
-        layer.offset_y = dto.offset_y;
-        layer.rotation = dto.rotation;
-        layer.scale = dto.scale.clamp(0.05, 8.0);
-        layers.push(layer);
-    }
+    let mut document = Document::new(file.width.max(1), file.height.max(1));
+    document.restore(file.width, file.height, root);
 
     Ok(LoadedProject {
-        width: file.width,
-        height: file.height,
-        layers,
+        document,
         path: Some(path.to_path_buf()),
         source_name,
     })
@@ -175,43 +323,137 @@ pub fn load(path: &Path) -> Result<LoadedProject, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datatypes::ParamValue;
     use image::RgbaImage;
 
-    fn sample_layers() -> Vec<Layer> {
-        let img = DynamicImage::ImageRgba8({
+    fn red_img() -> Arc<DynamicImage> {
+        Arc::new(DynamicImage::ImageRgba8({
             let mut b = RgbaImage::new(3, 2);
             b.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
             b
-        });
-        let mut l = Layer::new(42, "fond".into(), Arc::new(img));
-        l.opacity = 75.0;
-        l.offset_x = 12.5;
-        vec![l]
+        }))
     }
 
-    #[test]
-    fn aller_retour_projet() {
-        let layers = sample_layers();
-        let path = std::env::temp_dir().join(format!(
-            "cso-test-{}.csophoto",
+    fn green_img() -> Arc<DynamicImage> {
+        Arc::new(DynamicImage::ImageRgba8({
+            let mut b = RgbaImage::new(2, 2);
+            b.put_pixel(1, 1, image::Rgba([0, 255, 0, 255]));
+            b
+        }))
+    }
+
+    /// Racine : [Groupe(haut, fond filtré), Ajustement(color_correct)]
+    fn sample_document() -> Document {
+        let mut doc = Document::new(800, 600);
+        let mut haut = PixelLayer::new("haut", green_img());
+        haut.transform.offset_y = -4.0;
+
+        let mut fond = PixelLayer::new("fond", red_img());
+        fond.opacity = 75.0;
+        fond.transform.offset_x = 12.5;
+        let mut filtre = FilterNode::new("brightness_contrast");
+        filtre
+            .params
+            .insert("brightness".into(), ParamValue::Float(25.0));
+        fond.live_filters.push(filtre);
+
+        doc.push_layer(LayerNode::Group(GroupLayer::new(
+            "groupe",
+            vec![LayerNode::Pixel(haut), LayerNode::Pixel(fond)],
+        )));
+        doc.push_layer(LayerNode::Adjustment(AdjustmentLayer::new(
+            "courbe",
+            vec![FilterNode::new("color_correct")],
+        )));
+        doc
+    }
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "cso-{tag}-{}.csophoto",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("horloge")
                 .as_nanos()
-        ));
-        save(&path, &layers, 800, 600).expect("sauvegarde");
+        ))
+    }
+
+    #[test]
+    fn aller_retour_projet_v2_conserve_arbre_et_filtres() {
+        let doc = sample_document();
+        let path = temp_path("rt");
+        save(&path, &doc).expect("sauvegarde");
 
         let loaded = load(&path).expect("chargement");
         std::fs::remove_file(&path).ok();
 
-        assert_eq!(loaded.width, 800);
-        assert_eq!(loaded.height, 600);
-        assert_eq!(loaded.layers.len(), 1);
-        let l = &loaded.layers[0];
-        assert_eq!((l.id, l.name.as_str()), (42, "fond"));
-        assert_eq!(l.opacity, 75.0);
-        assert_eq!(l.offset_x, 12.5);
+        assert_eq!((loaded.document.width, loaded.document.height), (800, 600));
+        // Racine : [Groupe(pixels ×2), Ajustement]
+        assert_eq!(loaded.document.root.len(), 2);
+        let Some(LayerNode::Group(g)) = loaded.document.root.first() else {
+            panic!("groupe attendu à la racine");
+        };
+        assert_eq!(g.name, "groupe");
+        assert_eq!(g.children.len(), 2);
+
+        let LayerNode::Pixel(fond) = &g.children[1] else {
+            panic!("calque pixels attendu");
+        };
+        assert_eq!(fond.id.to_string().len(), 36, "uuid préservé");
+        assert_eq!(fond.opacity, 75.0);
+        assert_eq!(fond.transform.offset_x, 12.5);
+        assert_eq!(fond.blend_mode, BlendMode::Normal);
+        assert_eq!(fond.live_filters.len(), 1);
+        assert_eq!(fond.live_filters[0].type_id, "brightness_contrast");
+        assert_eq!(
+            fond.live_filters[0].params.get("brightness"),
+            Some(&ParamValue::Float(25.0)),
+            "paramètres de filtre préservés"
+        );
         // Pixels identiques après l'aller-retour PNG
-        assert_eq!(*l.image, *layers[0].image);
+        let reference = sample_document();
+        let Some(LayerNode::Group(gr)) = reference.root.first() else {
+            panic!()
+        };
+        let LayerNode::Pixel(fond_ref) = &gr.children[1] else {
+            panic!()
+        };
+        assert_eq!(*fond.source_image, *fond_ref.source_image);
+    }
+
+    #[test]
+    fn version_etrangere_rejetee_proprement() {
+        let path = temp_path("bad");
+        std::fs::write(&path, r#"{"version":1,"width":4,"height":4,"layers":[]}"#)
+            .expect("écriture fixture v1");
+        let err = load(&path).expect_err("v1 doit être refusée");
+        assert!(err.contains("non supportée"), "{err}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn apparence_regeneree_apres_chargement() {
+        let doc = sample_document();
+        let path = temp_path("appear");
+        save(&path, &doc).expect("sauvegarde");
+        let loaded = load(&path).expect("chargement");
+        std::fs::remove_file(&path).ok();
+
+        let Some(LayerNode::Group(g)) = loaded.document.root.first() else {
+            panic!()
+        };
+        let LayerNode::Pixel(fond) = &g.children[1] else {
+            panic!()
+        };
+        let id = fond.id;
+        let appearance = loaded.document.appearance(id).expect("apparence");
+        // preview aux dimensions source, thumb standard 48 px
+        assert_eq!(
+            (appearance.preview.width, appearance.preview.height),
+            (3, 2)
+        );
+        assert_eq!(appearance.thumb.width, 48);
+        // L'ajustement est bien présent et actif
+        assert!(loaded.document.needs_fallback());
     }
 }
