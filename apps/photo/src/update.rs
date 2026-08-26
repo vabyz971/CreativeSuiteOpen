@@ -66,7 +66,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             if let Some(path) = path_opt
                 && app.background_tasks.is_empty()
             {
-                if path.extension().and_then(|e| e.to_str()) == Some("csphoto") {
+                if photo_engine::project::is_project_path(&path) {
                     let name = file_label(&path);
                     app.background_tasks.push(format!("Ouverture de {name}"));
                     return load_project_task(path);
@@ -110,8 +110,10 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             if let Some(mut path) = path_opt
                 && app.doc_dims().is_some()
             {
-                if path.extension().and_then(|e| e.to_str()) != Some("csphoto") {
-                    path.set_extension("csphoto");
+                if path.extension().and_then(|e| e.to_str())
+                    != Some(photo_engine::project::PROJECT_EXTENSION)
+                {
+                    path.set_extension(photo_engine::project::PROJECT_EXTENSION);
                 }
                 app.project_path = Some(path.clone());
                 return save_project_task(app, path);
@@ -1128,12 +1130,15 @@ fn file_label(path: &std::path::Path) -> String {
         .to_string()
 }
 
-/// Boîte d'ouverture : projets .csphoto ET images brutes.
+/// Boîte d'ouverture : projets (.csophoto, et hérités .csphoto) ET images.
 fn open_document_task() -> Task<Message> {
     Task::perform(
         async {
             rfd::AsyncFileDialog::new()
-                .add_filter("Projet CreativeSuite", &["csphoto"])
+                .add_filter(
+                    "Projet CreativeSuite",
+                    &[photo_engine::project::PROJECT_EXTENSION, "csphoto"],
+                )
                 .add_filter(
                     "Images",
                     &["png", "jpg", "jpeg", "bmp", "tiff", "webp", "gif"],
@@ -1147,14 +1152,17 @@ fn open_document_task() -> Task<Message> {
     )
 }
 
-/// Boîte « Enregistrer sous » (.csphoto).
+/// Boîte « Enregistrer sous » (.csophoto).
 fn save_as_dialog_task() -> Task<Message> {
     Task::perform(
         async {
             rfd::AsyncFileDialog::new()
-                .add_filter("Projet CreativeSuite", &["csphoto"])
+                .add_filter(
+                    "Projet CreativeSuite",
+                    &[photo_engine::project::PROJECT_EXTENSION],
+                )
                 .set_title("Enregistrer le projet")
-                .set_file_name("sans-titre.csphoto")
+                .set_file_name("sans-titre.csophoto")
                 .save_file()
                 .await
                 .map(|h| h.path().to_path_buf())

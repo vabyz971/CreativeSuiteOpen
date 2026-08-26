@@ -33,7 +33,7 @@ Moteurs métier spécifiques à chaque domaine, strictement purs :
 aucune connaissance d'iced ou de ses types. Les buffers portés par le modèle
 document restent purs (`RgbaBuf`, `Arc<[u8]>`) ; toute conversion vers une
 texture UI se fait côté app.
-- `photo-engine` : document, compositing CPU/GPU, historique, projet `.csphoto`.
+- `photo-engine` : document, compositing CPU/GPU, historique, projet `.csophoto`.
 - `video-engine`, `audio-engine` : fondations.
 
 Ils peuvent dépendre de `core/*` et de `packages/*` (hors UI).

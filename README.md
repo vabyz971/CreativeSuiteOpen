@@ -32,7 +32,7 @@ Les versions suivent la maturité fonctionnelle de chaque crate : `0.1.0` = fond
 
 ### Historique & projet natif (`0.4.0`)
 - **Undo/redo** complet (Ctrl+Z / Ctrl+Y, 50 pas) — snapshots quasi gratuits grâce au partage de pixels, gestes continus (sliders, renommage, drag) coalescés en un seul point de restauration
-- **Format projet `.csphoto`** : enregistrement/ouverture du document (calques, fusion, transforms) — Enregistrer (`Ctrl+S`), Enregistrer sous (`Ctrl+Maj+S`), ouverture projet ou image depuis la même boîte
+- **Format projet `.csophoto`** : enregistrement/ouverture du document (calques, fusion, transforms) — Enregistrer (`Ctrl+S`), Enregistrer sous (`Ctrl+Maj+S`), ouverture projet ou image depuis la même boîte
 
 ### Plan de travail infini
 - Aucun crop : les images peuvent dépasser le document, comme sur les plans de travail pro
@@ -153,7 +153,7 @@ Les contributions sont **très bienvenues** — c'est un projet jeune, chaque ap
 ## Feuille de route
 
 - [x] Photo : système de calques temps réel (`0.3.0`)
-- [x] Photo : pinceau + gomme, historique undo/redo, projet `.csphoto` (`0.4.0`)
+- [x] Photo : pinceau + gomme, historique undo/redo, projet `.csophoto` (`0.4.0`)
 - [ ] Photo : masques de calque, formes, export (PNG/JPEG)
 - [ ] Générateur nodal : textures générées appliquées aux calques
 - [ ] Vidéo : timeline, montage, preview (`0.2.0` → `0.3.0`)

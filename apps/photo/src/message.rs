@@ -197,7 +197,7 @@ pub enum Message {
     ImageRead(Result<(Vec<u8>, String), String>),
     /// Image décodée + texture construite (async) — ajout à l'arbre
     ImageDecoded(Result<DecodedLayer, String>),
-    // Projet .csphoto
+    // Projet .csophoto
     /// Chemin choisi pour l'ouverture (projet ou image)
     ProjectOpenPicked(Option<std::path::PathBuf>),
     /// Projet chargé hors thread UI — remplace le document courant

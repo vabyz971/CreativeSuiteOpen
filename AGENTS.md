@@ -37,7 +37,7 @@ Dépendances autorisées : `packages/*` ← `core/*` ← `engines/*` ← `apps/*
 
 ## Historique & persistance
 - Undo/redo : snapshots complets du document (`engines/photo-engine/src/history.rs`) quasi gratuits grâce aux `Arc<DynamicImage>` partagés. Les gestes continus (sliders, renommage, drag) passent par `push_coalesced` — toujours pousser le snapshot PRÉ-mutation, jamais après.
-- Format projet `.csphoto` (`engines/photo-engine/src/project.rs`) : JSON versionné, calques en PNG+base64. Toute évolution incompatible du modèle → incrémenter `FORMAT_VERSION` et gérer le refus proprement.
+- Format projet `.csophoto` (`engines/photo-engine/src/project.rs`) : JSON versionné, calques en PNG+base64. Toute évolution incompatible du modèle → incrémenter `FORMAT_VERSION` et gérer le refus proprement.
 
 ## Structure de l'app photo
 Découpée par rôle (même schéma pour les futures apps) :

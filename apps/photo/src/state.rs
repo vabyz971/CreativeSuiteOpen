@@ -69,7 +69,7 @@ pub struct PhotoApp {
     /// Historique du DOCUMENT (arbre + dimensions). Les états sont des
     /// snapshots bon marché : les pixels sont partagés via Arc.
     pub history: photo_engine::history::History,
-    /// Chemin du projet .csphoto courant (None = jamais enregistré)
+    /// Chemin du projet .csophoto courant (None = jamais enregistré)
     pub project_path: Option<std::path::PathBuf>,
     // ---- Pinceau ----
     pub brush_color: Color,

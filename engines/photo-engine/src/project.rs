@@ -43,6 +43,25 @@ use crate::document::{
 /// Version du format — incrémenter à toute évolution incompatible.
 pub const FORMAT_VERSION: u32 = 2;
 
+/// Extension canonique des projets photo : `cso` (CreativeSuiteOpen) + `photo`.
+pub const PROJECT_EXTENSION: &str = "csophoto";
+
+/// Ancienne extension (pré-convention `cso*`) encore acceptée EN LECTURE.
+pub const LEGACY_PROJECT_EXTENSION: &str = "csphoto";
+
+/// L'extension du fichier correspond-elle à un projet photo (canonique
+/// `.csophoto` ou héritée `.csphoto`) ? Insensible à la casse.
+#[must_use]
+pub fn is_project_path(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => {
+            let ext = ext.to_ascii_lowercase();
+            ext == PROJECT_EXTENSION || ext == LEGACY_PROJECT_EXTENSION
+        }
+        None => false,
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct ProjectFile {
     version: u32,
@@ -419,6 +438,16 @@ mod tests {
             panic!()
         };
         assert_eq!(*fond.source_image, *fond_ref.source_image);
+    }
+
+    #[test]
+    fn detection_extension_projet_canonique_et_heritee() {
+        assert!(is_project_path(Path::new("mon-projet.csophoto")));
+        assert!(is_project_path(Path::new("MON-PROJET.CSOPHOTO")));
+        // Ancienne extension encore reconnue en lecture
+        assert!(is_project_path(Path::new("ancien.csphoto")));
+        assert!(!is_project_path(Path::new("image.png")));
+        assert!(!is_project_path(Path::new("sans-extension")));
     }
 
     #[test]
