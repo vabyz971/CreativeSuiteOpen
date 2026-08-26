@@ -354,38 +354,54 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
 
         Message::OpenPreferences => {
-            app.preferences_open = true;
-            let mut tasks = Vec::new();
-            if app.preferences_window.is_none() {
-                let window =
-                    crate::preferences_window::PreferencesWindow::new(app.preferences.clone());
-                app.preferences_window = Some(window);
+            // Déjà ouverte : on lui rend le focus (comportement pro)
+            if let Some(id) = app.preferences_window_id {
+                return iced::window::gain_focus(id);
             }
+            app.preferences_window = Some(crate::preferences_window::PreferencesWindow::new(
+                app.preferences.clone(),
+            ));
+            let (_, open) = iced::window::open(iced::window::Settings {
+                size: iced::Size::new(780.0, 580.0),
+                min_size: Some(iced::Size::new(620.0, 460.0)),
+                resizable: true,
+                exit_on_close_request: false,
+                ..iced::window::Settings::default()
+            });
             // Détection matérielle HORS thread UI pour la section Hardware
-            tasks.push(Task::perform(
+            let detect = Task::perform(
                 async { preferences::HardwareReport::detect().await },
                 Message::HardwareDetected,
-            ));
-            return Task::batch(tasks);
+            );
+            return Task::batch([open.map(Message::WindowOpened), detect]);
         }
-        Message::Event(event) => {
-            // 1) Capture de raccourci en cours : la fenêtre consomme la touche
-            if app.preferences_open
-                && app
-                    .preferences_window
-                    .as_ref()
-                    .is_some_and(crate::preferences_window::PreferencesWindow::is_capturing)
-                && let Some(window) = &mut app.preferences_window
-                && let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key,
-                    modifiers,
-                    ..
-                }) = event
-            {
-                window.key_event(key, modifiers);
+        Message::WindowOpened(id) => {
+            app.preferences_window_id = Some(id);
+        }
+        Message::WindowClosed(id) => {
+            // Fermeture par la croix OS : purge de l'état associé
+            if app.is_preferences_window(id) {
+                app.preferences_window = None;
+                app.preferences_window_id = None;
+            }
+        }
+
+        Message::Event { event, window } => {
+            // Les touches pressées dans la fenêtre préférences ne doivent
+            // JAMAIS atteindre les raccourcis du document.
+            if app.is_preferences_window(window) {
+                if let Some(w) = &mut app.preferences_window
+                    && let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key,
+                        modifiers,
+                        ..
+                    }) = event
+                {
+                    w.key_event(key, modifiers);
+                }
                 return Task::none();
             }
-            // 2) Résolution globale : l'abonnement ne livre que les touches
+            // Résolution globale : l'abonnement ne livre que les touches
             // NON consommées par un widget (les champs texte sont donc sûrs)
             if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key, modifiers, ..
@@ -395,6 +411,7 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 return dispatch(app, Message::ExecuteAction(action));
             }
         }
+
         Message::ExecuteAction(action) => {
             // Pont unique action typée → messages existants (réutilisation
             // intégrale des handlers, zéro duplication de logique)
@@ -434,33 +451,28 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
 
         Message::PreferencesMsg(msg) => {
-            if let Some(window) = &mut app.preferences_window {
-                match msg {
-                    crate::preferences_window::Message::Close => {
-                        app.preferences_open = false;
-                        app.preferences_window = None;
+            use crate::preferences_window::Message as PrefsMsg;
+            match msg {
+                PrefsMsg::Close | PrefsMsg::SaveAndClose => {
+                    if let Some(window) = &mut app.preferences_window {
+                        window.update(msg.clone());
+                        if matches!(msg, PrefsMsg::SaveAndClose) {
+                            app.preferences = window.draft.clone();
+                            app.resolver = preferences::KeybindingResolver::from_bindings(
+                                &window.draft.keybindings.bindings,
+                            );
+                        }
                     }
-                    crate::preferences_window::Message::Apply
-                    | crate::preferences_window::Message::SaveAndClose => {
-                        app.resolver = preferences::KeybindingResolver::from_bindings(
-                            &window.draft.keybindings.bindings,
-                        );
-                        app.preferences = window.draft.clone();
-                        // Persistance déjà faite par la fenêtre ; on recharge
-                        // et on referme.
-                        window.update(crate::preferences_window::Message::SaveAndClose);
-                        app.preferences = app
-                            .preferences_window
-                            .as_ref()
-                            .map(|w| w.draft.clone())
-                            .unwrap_or_default();
-                        app.preferences_open = false;
-                        app.preferences_window = None;
+                    return app.close_preferences_window();
+                }
+                inner => {
+                    if let Some(window) = &mut app.preferences_window {
+                        window.update(inner);
                     }
-                    inner => window.update(inner),
                 }
             }
         }
+
         Message::HardwareDetected(report) => {
             if let Some(window) = &mut app.preferences_window {
                 window.set_hardware(report);

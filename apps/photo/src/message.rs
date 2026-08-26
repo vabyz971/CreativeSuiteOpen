@@ -214,8 +214,15 @@ pub enum Message {
     ImageExported(Result<String, String>),
     /// Tick d'animation (spinner / barre de progression)
     TickFrame,
-    /// Événement plateforme (clavier…) filtré « non consommé » par un widget
-    Event(iced::Event),
+    /// Événement plateforme « non consommé », taggé par sa fenêtre d'origine
+    Event {
+        event: iced::Event,
+        window: iced::window::Id,
+    },
+    /// La fenêtre de préférences vient d'être créée par l'OS
+    WindowOpened(iced::window::Id),
+    /// Une fenêtre a été fermée (croix OS incluse)
+    WindowClosed(iced::window::Id),
     /// Action raccourci résolue → dispatch vers les messages existants
     ExecuteAction(preferences::PhotoAction),
     /// Message interne de la fenêtre de préférences flottante

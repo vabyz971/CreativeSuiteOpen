@@ -99,8 +99,8 @@ pub struct PhotoApp {
     pub new_doc_h: String,
     pub welcome_error: Option<String>,
 
-    /// Fenêtre de préférences FLOTTANTE ouverte (non bloquante)
-    pub preferences_open: bool,
+    /// Id de la VRAIE fenêtre OS des préférences (multi-fenêtres daemon)
+    pub preferences_window_id: Option<iced::window::Id>,
     /// État interne de la fenêtre (brouillon de préférences)
     pub preferences_window: Option<crate::preferences_window::PreferencesWindow>,
     /// Préférences persistantes chargées au démarrage
@@ -148,6 +148,22 @@ impl PhotoApp {
     /// Snapshot complet du document pour l'historique (pixels partagés via Arc).
     pub(crate) fn snapshot(&self) -> photo_engine::history::Snapshot {
         self.doc.snapshot()
+    }
+
+    /// Cette fenêtre est-elle celle des préférences ?
+    #[must_use]
+    pub fn is_preferences_window(&self, window: iced::window::Id) -> bool {
+        self.preferences_window_id == Some(window)
+    }
+
+    /// Ferme la fenêtre de préférences (état + surface OS) et retourne
+    /// la tâche de fermeture à exécuter par le runtime.
+    pub(crate) fn close_preferences_window(&mut self) -> Task<Message> {
+        self.preferences_window = None;
+        match self.preferences_window_id.take() {
+            Some(id) => iced::window::close(id),
+            None => Task::none(),
+        }
     }
 
     /// L'arbre exige-t-il la composite CPU ? (groupes en mode non-Normal,
@@ -291,7 +307,7 @@ impl Default for PhotoApp {
             new_doc_w: "1920".to_string(),
             new_doc_h: "1080".to_string(),
             welcome_error: None,
-            preferences_open: false,
+            preferences_window_id: None,
             preferences_window: None,
             preferences: preferences::Preferences::load("photo"),
             gen_graph: components::node_registry::create_empty_graph(),

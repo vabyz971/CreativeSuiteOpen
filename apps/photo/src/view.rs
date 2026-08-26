@@ -16,6 +16,7 @@
 
 //! Rendu de l'interface + abonnements (spinner, raccourcis clavier).
 
+use iced::widget::container;
 use iced::{Alignment, Element, Length, Subscription};
 
 use crate::components;
@@ -23,7 +24,25 @@ use crate::menus::app_menus;
 use crate::message::Message;
 use crate::state::PhotoApp;
 
-pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
+pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
+    // Fenêtre OS des préférences : contenu dédié plein cadre
+    if app.is_preferences_window(window) {
+        if let Some(prefs) = &app.preferences_window {
+            return container(prefs.view().map(Message::PreferencesMsg))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_| iced::widget::container::Style {
+                    background: Some(ui_kit::theme::colors::BG_APP.into()),
+                    ..Default::default()
+                })
+                .into();
+        }
+        return iced::widget::container(iced::widget::Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
+
     let doc_size = app
         .doc_dims()
         .map(|(w, h)| iced::Size::new(w as f32, h as f32));
@@ -166,21 +185,6 @@ pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
     );
 
     // Modal Préférences unifiée (Général / Raccourcis clavier / À propos)
-    if app.preferences_open
-        && let Some(window) = &app.preferences_window
-    {
-        // Fenêtre FLOTTANTE non bloquante : empilement SANS scrim.
-        // Les clics en dehors du panneau atteignent le contenu principal —
-        // la fenêtre ne se ferme que via ses propres boutons.
-        let prefs_panel = iced::widget::container(window.view().map(Message::PreferencesMsg))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill);
-
-        return iced::widget::stack![base_layout, prefs_panel].into();
-    }
-
     // Les dropdowns des menus sont gérés nativement par iced_aw::DropDown
     base_layout
 }
@@ -198,20 +202,21 @@ pub fn subscription(app: &PhotoApp) -> Subscription<Message> {
         Subscription::none()
     };
     let keyboard = iced::event::listen_with(keyboard_filter);
-    Subscription::batch([tick, keyboard])
+    let closes = iced::window::close_events().map(Message::WindowClosed);
+    Subscription::batch([tick, keyboard, closes])
 }
 
 /// Filtre d'abonnement : uniquement les PRESSIONS de touches non consommées.
 fn keyboard_filter(
     event: iced::Event,
     status: iced::event::Status,
-    _window: iced::window::Id,
+    window: iced::window::Id,
 ) -> Option<Message> {
     match (&event, status) {
         (
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. }),
             iced::event::Status::Ignored,
-        ) => Some(Message::Event(event)),
+        ) => Some(Message::Event { event, window }),
         _ => None,
     }
 }

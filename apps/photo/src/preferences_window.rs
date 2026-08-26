@@ -229,15 +229,13 @@ impl PreferencesWindow {
         ]
         .height(Length::Fill);
 
+        // Plein cadre : c'est une VRAIE fenêtre OS (multi-fenêtres daemon)
         container(column![layout, self.view_footer()].height(Length::Fill))
-            .width(Length::Fixed(760.0))
-            .height(Length::Fixed(560.0))
-            .style(|_| {
-                ui_kit::style::floating_card(
-                    colors::SURFACE_CONTAINER_LOW,
-                    ui_kit::theme::metrics::RADIUS_DROPDOWN,
-                    ui_kit::theme::shadows::panel(),
-                )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(colors::SURFACE_CONTAINER_LOW.into()),
+                ..Default::default()
             })
             .into()
     }

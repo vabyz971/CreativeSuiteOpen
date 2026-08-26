@@ -56,8 +56,11 @@ pub fn main() -> iced::Result {
     });
     // Daemon : multi-fenêtres (principale + Préférences), cf. examples/multi_window
     iced::daemon(PhotoApp::new, update, view)
-        .title(
-            |app: &PhotoApp, _window: iced::window::Id| match &app.project_path {
+        .title(|app: &PhotoApp, window: iced::window::Id| {
+            if app.is_preferences_window(window) {
+                return "Préférences — Creative Suite Open Photo".to_string();
+            }
+            match &app.project_path {
                 Some(path) => {
                     let name = path
                         .file_stem()
@@ -66,8 +69,8 @@ pub fn main() -> iced::Result {
                     format!("Creative Suite Open Photo — {name}")
                 }
                 None => "Creative Suite Open Photo".to_string(),
-            },
-        )
+            }
+        })
         .subscription(subscription)
         .font(include_bytes!(
             "../../../assets/fonts/MaterialIcons-Regular.ttf"
