@@ -10,6 +10,7 @@ members = [
     "packages/ui-kit",
     "packages/math-utils",
     "packages/file-utils",
+    "packages/preferences",
     "apps/photo",
     "apps/video",
     "apps/audio",
@@ -27,3 +28,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "1"
+log = "0.4"
+dirs = "6"
