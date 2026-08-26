@@ -28,6 +28,7 @@ pub mod paint;
 pub mod processor;
 pub mod project;
 pub mod registry;
+pub mod renderer;
 
 pub use command::{Command, RenderEvent};
 pub use document::{
