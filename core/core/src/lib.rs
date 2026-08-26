@@ -119,15 +119,9 @@ pub struct Graph {
 pub enum GraphError {
     NodeNotFound(NodeId),
     SocketNotFound(String),
-    TypeMismatch {
-        from: SocketType,
-        to: SocketType,
-    },
+    TypeMismatch { from: SocketType, to: SocketType },
     CycleDetected,
-    InputAlreadyConnected {
-        node: NodeId,
-        socket: String,
-    },
+    InputAlreadyConnected { node: NodeId, socket: String },
 }
 
 impl std::fmt::Display for GraphError {
@@ -250,8 +244,7 @@ impl Graph {
 
     /// Tri topologique (Kahn). Erreur si cycle.
     pub fn topological_order(&self) -> Result<Vec<NodeId>, GraphError> {
-        let mut indeg: HashMap<NodeId, usize> =
-            self.nodes.keys().map(|id| (*id, 0)).collect();
+        let mut indeg: HashMap<NodeId, usize> = self.nodes.keys().map(|id| (*id, 0)).collect();
         for c in &self.connections {
             *indeg.entry(c.to_node).or_insert(0) += 1;
         }
@@ -414,18 +407,40 @@ mod tests {
 
     fn make_graph() -> Graph {
         let mut g = Graph::new();
-        let a = g.add_node(Node::new(NodeId(0), "input_image", "Input", Vec2::new(0.0, 0.0)));
+        let a = g.add_node(Node::new(
+            NodeId(0),
+            "input_image",
+            "Input",
+            Vec2::new(0.0, 0.0),
+        ));
         let b = g.add_node(Node::new(
             NodeId(0),
             "brightness_contrast",
             "BC",
             Vec2::new(200.0, 0.0),
         ));
-        let c = g.add_node(Node::new(NodeId(0), "output", "Output", Vec2::new(400.0, 0.0)));
-        g.connect(Connection::create(a, "image", b, "image", SocketType::Image))
-            .unwrap();
-        g.connect(Connection::create(b, "image", c, "image", SocketType::Image))
-            .unwrap();
+        let c = g.add_node(Node::new(
+            NodeId(0),
+            "output",
+            "Output",
+            Vec2::new(400.0, 0.0),
+        ));
+        g.connect(Connection::create(
+            a,
+            "image",
+            b,
+            "image",
+            SocketType::Image,
+        ))
+        .unwrap();
+        g.connect(Connection::create(
+            b,
+            "image",
+            c,
+            "image",
+            SocketType::Image,
+        ))
+        .unwrap();
         g
     }
 
@@ -469,7 +484,12 @@ mod tests {
     #[test]
     fn input_already_connected() {
         let mut g = make_graph();
-        let extra = g.add_node(Node::new(NodeId(0), "blur", "Blur", Vec2::new(200.0, 100.0)));
+        let extra = g.add_node(Node::new(
+            NodeId(0),
+            "blur",
+            "Blur",
+            Vec2::new(200.0, 100.0),
+        ));
         let target = g
             .nodes
             .iter()

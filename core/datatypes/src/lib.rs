@@ -51,11 +51,11 @@ pub enum SocketType {
 impl SocketType {
     pub fn color(self) -> [f32; 3] {
         match self {
-            SocketType::Image => [0.65, 0.45, 0.95], // violet
-            SocketType::Float => [0.55, 0.55, 0.55], // gris
-            SocketType::Color => [0.95, 0.85, 0.25], // jaune
+            SocketType::Image => [0.65, 0.45, 0.95],  // violet
+            SocketType::Float => [0.55, 0.55, 0.55],  // gris
+            SocketType::Color => [0.95, 0.85, 0.25],  // jaune
             SocketType::Vector => [0.30, 0.60, 0.95], // bleu
-            SocketType::Bool => [0.85, 0.35, 0.35], // rouge
+            SocketType::Bool => [0.85, 0.35, 0.35],   // rouge
         }
     }
 
@@ -114,7 +114,7 @@ impl DataValue {
 // Paramètres éditables d'un node (inspecteur Properties)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ParamValue {
     Float(f32),
     Int(i32),
@@ -126,10 +126,18 @@ pub enum ParamValue {
 
 impl ParamValue {
     pub fn as_float(&self) -> Option<f32> {
-        if let Self::Float(v) = self { Some(*v) } else { None }
+        if let Self::Float(v) = self {
+            Some(*v)
+        } else {
+            None
+        }
     }
     pub fn as_enum(&self) -> Option<&str> {
-        if let Self::Enum(v) = self { Some(v.as_str()) } else { None }
+        if let Self::Enum(v) = self {
+            Some(v.as_str())
+        } else {
+            None
+        }
     }
 }
 
@@ -278,11 +286,15 @@ mod tests {
 
     #[test]
     fn node_def_builder() {
-        let def = NodeDefinition::new("brightness_contrast", "Luminosité / Contraste", NodeCategory::Color)
-            .input(SocketDef::new("image", "Image", SocketType::Image))
-            .output(SocketDef::new("image", "Image", SocketType::Image))
-            .param("brightness", ParamValue::Float(0.0))
-            .param("contrast", ParamValue::Float(0.0));
+        let def = NodeDefinition::new(
+            "brightness_contrast",
+            "Luminosité / Contraste",
+            NodeCategory::Color,
+        )
+        .input(SocketDef::new("image", "Image", SocketType::Image))
+        .output(SocketDef::new("image", "Image", SocketType::Image))
+        .param("brightness", ParamValue::Float(0.0))
+        .param("contrast", ParamValue::Float(0.0));
         assert_eq!(def.inputs.len(), 1);
         assert_eq!(def.outputs.len(), 1);
         assert_eq!(def.default_params.len(), 2);

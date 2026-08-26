@@ -1,105 +1,122 @@
 # CreativeSuiteOpen
 
-**Une suite créative professionnelle, open source, pensée pour Linux d'abord — disponible partout.**
+**A professional, open-source creative suite — Linux-first, available everywhere.**
 
-CreativeSuiteOpen est une suite créative (Photo, Vidéo, Audio) construite en **Rust** avec **Iced** et **wgpu**. Le projet est né d'un constat simple : les utilisateurs de Linux disposent de très peu de logiciels créatifs de niveau professionnel. Les grandes suites du marché (Adobe, Affinity) ignorent Linux ou restent fermées. CreativeSuiteOpen vise à combler ce vide avec une base 100 % open source, performante et multiplateforme.
+CreativeSuiteOpen is a creative suite (Photo, Video, Audio) built in **Rust** with **Iced** and **wgpu**. The project was born from a simple observation: Linux users have very few professional-grade creative applications. The major suites on the market (Adobe, Affinity) ignore Linux or remain closed. CreativeSuiteOpen aims to fill that gap with a 100% open-source foundation — fast and cross-platform.
 
-- **Linux** en priorité (Wayland/X11, Vulkan) — environnement de développement officiel via Nix
-- **Windows** et **macOS** supportés nativement grâce à Rust et wgpu (Vulkan / DX12 / Metal)
-
----
-
-## État du projet
-
-| App | État | Version |
-|-----|------|---------|
-| **Photo** | Utilisable au quotidien — calques temps réel, GPU | `0.3.0` |
-| **Vidéo** | Fondations (interface) | `0.1.0` |
-| **Audio** | Fondations (interface) | `0.1.0` |
-
-Les versions suivent la maturité fonctionnelle de chaque crate : `0.1.0` = fondations, `0.2.0` = socle technique complet, `0.3.0` = premier jeu de fonctionnalités réelles.
+- **Linux** first (Wayland/X11, Vulkan) — official development environment via Nix
+- **Windows** and **macOS** supported natively thanks to Rust and wgpu (Vulkan / DX12 / Metal)
 
 ---
 
-## Fonctionnalités — Photo (`0.3.0`)
+## Project status
 
-### Système de calques façon Photoshop / Affinity
-- Pile de calques ordonnée : **ajouter, dupliquer, supprimer, réordonner, renommer**
-- Miniatures live, œil de visibilité par calque
-- **Opacité appliquée au draw (GPU)** — le slider répond instantanément, zéro régénération de pixels, zéro clignotement
-- **Modes de fusion** : Normal, Multiply, Screen, Overlay, Darken, Lighten
-- Déplacement **par calque en temps réel** (60 fps, zéro recomposite pendant le drag)
+| App | Status | Version |
+|-----|--------|---------|
+| **Photo** | Daily-usable — LayerTree, live filters, hybrid history, GPU rendering, projects, export | `0.5.0` |
+| **Video** | Foundations (UI shell) | `0.1.0` |
+| **Audio** | Foundations (UI shell) | `0.1.0` |
 
-### Plan de travail infini
-- Aucun crop : les images peuvent dépasser le document, comme sur les plans de travail pro
-- Repère document dessiné **dans l'espace monde** (insensible au zoom, jamais déformé)
-- Pan/zoom fluide : molette, outil Main, zoom sur sélection, ajuster à l'écran
+Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0` = complete technical base, `0.3.0` = first real feature set, `0.5.0` = professional editing model (layer tree, non-destructive filters).
 
-### Rendu hybride CPU/GPU
-- Chemin rapide : chaque calque = une texture GPU dessinée indépendamment (déplacement/opacité sans aucun recalcul)
-- Fallback CPU rayon pour les modes de fusion nécessitant un vrai blending inter-calques
-- Détection GPU (Vulkan/DX12/Metal) et informations matériel dans les préférences
+---
 
-### Générateur de textures (graphe nodal)
-- Éditeur nodal intégré (panneau dédié) — destiné à la génération de textures et aux filtres appliquables aux calques (en développement)
+## Features — Photo (`0.5.0`)
 
-### Outils
-Main, Zoom, Sélection rectangulaire, Déplacement, Pipette — barre d'outils flottante masquable (`Tab`)
+### Affinity-style layer tree
+- **Hierarchical layer tree**: pixel layers, **groups** (collapsible, with their own opacity/blend) and **adjustment layers** that process everything beneath them
+- Ordered stack: **add, duplicate, delete, reorder (within parent), rename**, group/dissolve
+- Live thumbnails, per-layer visibility toggle
+- **Opacity and blend applied at draw time (GPU)** — sliders respond instantly: zero pixel regeneration, zero flicker
+- **Blend modes**: Normal, Multiply, Screen, Overlay, Darken, Lighten
+- **Per-layer real-time dragging** (60 fps, zero recomposite during the gesture)
+
+### Live filters (non-destructive)
+- Per-layer filter chains: brightness/contrast, blur, color correction… evaluated through an internal node-graph engine
+- Filters never alter the source image — edit parameters anytime, disable without losing settings
+- **Per-layer appearance cache keyed by a signature of the filter chain + source identity**: editing layer N recomputes layer N only; neighbors keep their textures untouched
+
+### Hybrid history & native project (`0.5.0`)
+- **Hybrid undo/redo** (Ctrl+Z / Ctrl+Y, 50 steps): full snapshots for destructive/structural operations (paint, crop, reordering), lightweight commands for micro-editions (opacity, transforms, blend, renames, filter parameters) — near-zero memory cost, precise render invalidation
+- Continuous gestures (sliders, renaming, drags) coalesced into a single restoration point within an 800 ms window; redo after a coalesced gesture restores the gesture's final value
+- **Native project format `.csophoto` (v2)**: hierarchical tree saved as versioned JSON, source pixels stored as PNG so filters stay alive across sessions — Save (`Ctrl+S`), Save As (`Ctrl+Shift+S`); open projects or plain images from the same dialog (legacy `.csphoto` files are still detected)
+- **PNG/JPEG export**: exports the full composite (`Ctrl+Shift+E`) — transparency preserved in PNG, alpha flattened onto white in JPEG (quality 90)
+
+### Infinite canvas
+- No cropping: images may extend past the document, like professional artboards
+- Document outline drawn **in world space** (zoom-independent, never distorted)
+- Smooth pan/zoom: mouse wheel, Hand tool, zoom to selection, fit to screen
+
+### Hybrid CPU/GPU rendering
+- Fast path: each layer = one independently drawn GPU texture (move/opacity with no recomputation)
+- CPU rayon fallback for blending that requires true inter-layer compositing (groups in non-Normal modes, adjustment layers)
+- Compute-shader filters (brightness/contrast, blur…) with graceful CPU fallback when no adapter is present
+- GPU detection (Vulkan/DX12/Metal) and hardware info in preferences
+
+### Nodal texture generator
+- Built-in node editor (dedicated panel) — intended for texture generation and filters applicable to layers (work in progress)
+
+### Tools
+Hand, Zoom, Rectangle selection, Move, **Brush**, **Eraser** (destination-out, ring preview), Eyedropper — floating toolbar hideable with `Tab` (shortcuts `B` / `E`)
 
 ### Interface
-- Layout à panneaux redimensionnables (Calques, Propriétés, Générateur)
-- Menus complets (Fichier, Édition, Calque, Affichage) avec raccourcis (`Ctrl+O`, `Ctrl+J`, `F7`…)
-- Thème sombre cohérent, police Hanken Grotesk, icônes Material
+- Resizable panel layout (Layers, Properties, Generator)
+- Full menus (File, Edit, Layer, View) with shortcuts (`Ctrl+O`, `Ctrl+J`, `F7`…)
+- Unified design system: DESIGN.md tokens + shared canonical styles (`ui_kit::style`) — macOS-style tool palette
+- Consistent dark theme, Hanken Grotesk typeface, Material icons
 
 ---
 
-## Structure du projet
+## Project structure
 
 ```
 CreativeSuiteOpen/
-├── apps/                     # Applications utilisateur
-│   ├── photo/                # Éditeur photo (calques, outils, canvas)
-│   ├── video/                # Éditeur vidéo (fondations)
-│   └── audio/                # Station audio (fondations)
-├── core/                     # Moteurs et logique métier (réutilisables entre apps)
-│   ├── core/                 # suite-core : graphe de nœuds générique (évaluation, connexions)
-│   ├── datatypes/            # Types partagés : nœuds, sockets, paramètres, Vec2
-│   ├── photo-engine/         # Moteur photo : modèle document, compositing CPU/GPU, modes de fusion
-│   ├── video-engine/         # Moteur vidéo (à venir)
-│   ├── audio-engine/         # Moteur audio (à venir)
-│   └── shell/                # Shell commun : layout, barre de menus, fenêtre
-├── ui/                       # Bibliothèque de widgets iced
-│   ├── node_graph.rs         # Éditeur de graphe nodal (câbles, previews, context menu)
-│   ├── image_canvas.rs       # Canvas image : pan/zoom infini, calques, repère document
-│   ├── layer_canvas.rs       # Canvas GPU expérimental (render passes wgpu)
-│   ├── menu.rs / dropdown.rs # Menus applicatifs et dropdowns
-│   ├── theme.rs              # Palette, typographie, métriques
-│   └── timeline.rs / piano_roll.rs  # Widgets réservés (vidéo/audio)
+├── apps/                     # User-facing applications
+│   ├── photo/                # Photo editor (layers, tools, canvas)
+│   ├── video/                # Video editor (foundations)
+│   └── audio/                # Audio station (foundations)
+├── engines/                  # PURE business engines (zero UI dependencies)
+│   ├── photo-engine/         # Photo engine: layer tree, compositing, live filters,
+│   │                         #   hybrid history, GPU compute, project format, export
+│   ├── video-engine/         # Video engine (upcoming)
+│   └── audio-engine/         # Audio engine (upcoming)
+├── core/                     # Shared foundation reused across apps
+│   ├── core/                 # suite-core: generic node graph (evaluation, connections)
+│   ├── datatypes/            # Shared types: nodes, sockets, parameters, Vec2
+│   └── shell/                # Common shell: layout, menu bar, window
+├── packages/                 # Reusable libraries (never depend on engines/apps)
+│   ├── ui-kit/               # Iced widgets: theme.rs (SOLE source of tokens), style.rs,
+│   │                         #   node_graph.rs, image_canvas.rs, layer_canvas.rs,
+│   │                         #   menu.rs / dropdown.rs, timeline.rs / piano_roll.rs
+│   ├── math-utils/           # Shared math: Vec3, Matrix4, Bézier (canonical Vec2 = datatypes)
+│   └── file-utils/           # I/O: drag & drop, file dialogs
 ├── assets/fonts/             # Hanken Grotesk, Material Icons
-├── flake.nix                 # Environnement de dev NixOS (Vulkan, Wayland)
-└── Cargo.toml                # Workspace Rust
+├── flake.nix                 # NixOS dev environment (Vulkan, Wayland)
+└── Cargo.toml                # Rust workspace
 ```
 
-### Philosophie d'architecture
-- **Modularité stricte** : la logique métier vit dans `core/*`, jamais dans les apps. Une app = interface + orchestration.
-- **Moteurs réutilisables** : `photo-engine` (modèle document, compositing) est indépendant de l'UI et pourra servir au module vidéo (titres, compositing d'images).
-- **Rust + Iced + wgpu** : un seul code source, rendu GPU natif sur les trois plateformes.
+### Architecture philosophy
+- **Strict modularity**: business logic lives in `engines/*` and `core/*`, never in the apps. An app = interface + orchestration.
+- **Pure engines**: `photo-engine` (layer tree, compositing, history) has no UI dependency and can later serve the video module (titles, image compositing).
+- **Layered dependencies**: `packages` ← `core`/`engines` ← `apps`. Packages never depend on engines or apps.
+- **State-only rendering**: settings (opacity, transform, blend) never regenerate pixels — they apply at draw time. This invariant is what makes the UI feel instant.
+- **Rust + Iced + wgpu**: one codebase, native GPU rendering on all three platforms.
 
 ---
 
-## Compilation
+## Building
 
-### Prérequis
-- Rust 1.85+ (édition 2024)
-- Dépendances système (Linux) : `pkg-config`, `vulkan-loader`, `libxkbcommon`, `wayland` (+ `libx11` si X11)
+### Prerequisites
+- Rust 1.85+ (2024 edition)
+- System dependencies (Linux): `pkg-config`, `vulkan-loader`, `libxkbcommon`, `wayland` (+ `libx11` for X11)
 
 ### Linux (NixOS / Nix)
 ```bash
-nix develop        # shell de dev prêt à l'emploi
+nix develop        # ready-to-use dev shell
 cargo build --release -p photo
 ```
 
-### Linux (distros classiques)
+### Linux (classic distros)
 ```bash
 cargo build --release -p photo
 ./target/release/photo
@@ -109,9 +126,9 @@ cargo build --release -p photo
 ```bash
 cargo build --release -p photo
 ```
-Aucune configuration spécifique : wgpu sélectionne automatiquement DX12 (Windows) ou Metal (macOS).
+No special configuration: wgpu automatically selects DX12 (Windows) or Metal (macOS).
 
-### Lancer les autres apps
+### Running the other apps
 ```bash
 cargo run -p video
 cargo run -p audio
@@ -119,44 +136,42 @@ cargo run -p audio
 
 ---
 
-## Contribuer
+## Contributing
 
-Les contributions sont **très bienvenues** — c'est un projet jeune, chaque apport compte, du fix de bug au moteur de rendu.
+Contributions are **very welcome** — this is a young project and every contribution counts, from bug fixes to the rendering engine.
 
-### Bonnes pratiques
-1. **Ouvre une issue avant** les changements importants (architecture, nouveaux moteurs) pour en discuter.
-2. **Respecte la modularité** : logique métier → `core/*`, UI → `ui/`, orchestration → `apps/*`. Pas de logique de rendu dans les apps.
-3. **Performance** : le modèle de rendu est « state-only » (les réglages ne régénèrent jamais les textures). Préserve-le — profile avant d'optimiser (`cargo flamegraph`), mesure avant/après.
-4. **Qualité** : `cargo clippy --workspace` sans erreur, `cargo fmt` avant tout commit. Les `unwrap()` sont interdits hors tests.
-5. **Pas d'emoji** dans le code ni les commits ; messages de commit courts et descriptifs (`photo: fix blend-mode offset jump`).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide: development setup, architecture rules, code style and the pull-request checklist.
 
-### Idées de contribution
-- Photo : masques de calque, outils pinceau/formes, export (PNG/JPEG), historique undo/redo
-- Générateur nodal : brancher l'évaluation du graphe sur des textures de calque
-- Video / Audio : faire passer les fondations au stade `0.2.0` (timeline fonctionnelle)
-- Packaging : Flatpak, AppImage, AUR, brew
-- Traductions, tests, documentation
+Quick summary:
+1. **Open an issue first** for significant changes (architecture, new engines).
+2. **Respect modularity**: business logic → `engines/*` / `core/*`, widgets → `packages/ui-kit`, orchestration → `apps/*`.
+3. **Preserve the state-only rendering model** — profile before optimizing.
+4. **Quality gate**: `cargo clippy --workspace` clean, `cargo fmt` before every commit.
+5. Short, descriptive commit messages prefixed by the app (`photo: fix blend-mode offset jump`).
 
 ---
 
-## Feuille de route
+## Roadmap
 
-- [x] Photo : système de calques temps réel (`0.3.0`)
-- [ ] Photo : masques de calque, pinceau, export
-- [ ] Générateur nodal : textures générées appliquées aux calques
-- [ ] Vidéo : timeline, montage, preview (`0.2.0` → `0.3.0`)
-- [ ] Audio : mixer, pistes, piano roll
-- [ ] Packaging Linux (Flatpak/AppImage) + releases Windows/macOS
+- [x] Photo: real-time layer system (`0.3.0`)
+- [x] Photo: brush + eraser, undo/redo, `.csophoto` project (`0.4.0`)
+- [x] Photo: LayerTree (groups, adjustment layers), live filters, hybrid history, PNG/JPEG export (`0.5.0`)
+- [ ] Photo: layer masks, vector shapes
+- [ ] Photo: zero-readback GPU pipeline integrated with the UI renderer
+- [ ] Nodal generator: generated textures applied to layers
+- [ ] Video: timeline, editing, preview (`0.2.0` → `0.3.0`)
+- [ ] Audio: mixer, tracks, piano roll
+- [ ] Linux packaging (Flatpak/AppImage) + Windows/macOS releases
 
 ---
 
-## Licence
+## License
 
-CreativeSuiteOpen est un logiciel libre distribué sous licence **GNU GPL v3** — voir le fichier [LICENSE](LICENSE).
+CreativeSuiteOpen is free software licensed under the **GNU GPL v3** — see the [LICENSE](LICENSE) file.
 
-- Vous êtes libre d'utiliser, d'étudier, de modifier et de redistribuer ce logiciel
-- Toute version dérivée doit rester open source sous la même licence (copyleft)
-- Chaque fichier source commence par l'en-tête GPL standard
+- You are free to use, study, modify and redistribute this software
+- Any derivative version must remain open source under the same license (copyleft)
+- Every source file starts with the standard GPL header
 
 ```
 CreativeSuiteOpen — Suite créative professionnelle open source
@@ -175,4 +190,4 @@ GNU General Public License for more details.
 
 ---
 
-*Fait avec Rust, Iced et wgpu — pour les créateurs sur Linux.*
+*Built with Rust, Iced and wgpu — for creators on Linux.*

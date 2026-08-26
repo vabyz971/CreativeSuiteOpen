@@ -14,50 +14,59 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Panneau Calques façon Photoshop/Affinity :
-//! - En-tête : mode de fusion + opacité du calque sélectionné
-//! - Liste (haut de pile en premier) : miniature, nom, œil de visibilité
-//! - Barre bas : ajouter, dupliquer, supprimer, monter/descendre
+//! Panneau Calques façon Affinity (arbre hiérarchique) :
+//! - En-tête : mode de fusion + opacité du nœud sélectionné
+//! - Arbre (haut de pile en premier) : groupes repliables, calques pixels,
+//!   calques d'ajustement, miniature, nom, œil de visibilité
+//! - Barre bas : ajouter, dupliquer, grouper/dégrouper, monter/descendre
 
-use crate::layers::{Layer, BLEND_MODES};
 use crate::Message;
-use iced::widget::{button, column, container, image, pick_list, row, scrollable, slider, text, text_input, Space};
+use crate::layers::{BlendMode, LayerNode};
+use iced::widget::{
+    Space, button, column, container, image, pick_list, row, scrollable, slider, text, text_input,
+};
 use iced::{Alignment, Element, Length, Padding};
-use ui::theme::{colors, metrics};
+use photo_engine::Document;
+use ui_kit::theme::{colors, metrics};
+use uuid::Uuid;
 
 const ICON_ADD: &str = "\u{e145}"; // add
 const ICON_IMAGE: &str = "\u{e3f4}"; // image
 const ICON_DUPLICATE: &str = "\u{e14d}"; // content_copy
 const ICON_DELETE: &str = "\u{e872}"; // delete
-const ICON_UP: &str = "\u{e316}"; // arrow_upward
-const ICON_DOWN: &str = "\u{e313}"; // arrow_downward
+const ICON_UP: &str = "\u{e316}"; // keyboard_arrow_up
+const ICON_DOWN: &str = "\u{e313}"; // keyboard_arrow_down
 const ICON_VISIBLE: &str = "\u{e8f4}"; // visibility
 const ICON_HIDDEN: &str = "\u{e8f5}"; // visibility_off
+const ICON_FOLDER: &str = "\u{e2c8}"; // folder_open
+const ICON_GROUP: &str = "\u{e2cc}"; // create_new_folder
+const ICON_ADJUST: &str = "\u{e39e}"; // filter_b_and_w → ajustement
 
 pub fn render<'a>(
-    layers: &'a [Layer],
-    selected: Option<u64>,
+    doc: &'a Document,
+    preview_cache: &'a crate::ui_handles::PreviewCache,
+    selected: Option<Uuid>,
 ) -> Element<'a, Message> {
-    let sel_layer = selected.and_then(|id| layers.iter().find(|l| l.id == id));
+    let sel_node = selected.and_then(|id| doc.find(id));
 
     // --- En-tête : mode de fusion + opacité ---
-    let blend = sel_layer
-        .map(|l| l.blend_mode.clone())
-        .unwrap_or_else(|| "Normal".to_string());
-    let opacity = sel_layer.map(|l| l.opacity).unwrap_or(100.0);
+    let blend = sel_node
+        .and_then(|n| n.blend_mode())
+        .unwrap_or(BlendMode::Normal);
+    let opacity = sel_node.map(|n| n.opacity()).unwrap_or(100.0);
+    let has_sel = sel_node.is_some();
 
     let header = container(
         column![
             row![
                 text("Fusion").size(11).color(colors::TEXT_MUTED),
                 Space::new().width(Length::Fill),
-                pick_list(
-                    BLEND_MODES.iter().map(|s| s.to_string()).collect::<Vec<String>>(),
-                    Some(blend),
-                    move |m: String| {
-                        Message::SetLayerBlend { id: selected.unwrap_or(0), mode: m }
-                    },
-                )
+                pick_list(BlendMode::ALL, Some(blend), move |m: BlendMode| {
+                    Message::SetLayerBlend {
+                        id: selected.unwrap_or_else(Uuid::nil),
+                        mode: m,
+                    }
+                },)
                 .width(Length::Fixed(130.0))
                 .placeholder("—"),
             ]
@@ -86,7 +95,7 @@ pub fn render<'a>(
             .align_y(Alignment::Center)
             .spacing(6),
             slider(0.0..=100.0, opacity, move |v| Message::SetLayerOpacity {
-                id: selected.unwrap_or(0),
+                id: selected.unwrap_or_else(Uuid::nil),
                 opacity: v,
             })
             .step(1.0_f32),
@@ -104,12 +113,9 @@ pub fn render<'a>(
         ..Default::default()
     });
 
-    // --- Liste des calques (haut de la pile affiché en premier) ---
-    let mut list = column![].spacing(2).padding(6);
-    for layer in layers.iter().rev() {
-        list = list.push(layer_row(layer, Some(layer.id) == selected));
-    }
-    let list_view: Element<'_, Message> = if layers.is_empty() {
+    // --- Arbre des calques (haut de la pile affiché en premier) ---
+    let list = tree_column(&doc.root, preview_cache, selected, 0).padding(6);
+    let list_view: Element<'_, Message> = if doc.root.is_empty() {
         container(
             text("Aucun calque — ouvrez une image ou ajoutez un calque")
                 .size(11)
@@ -118,11 +124,14 @@ pub fn render<'a>(
         .padding(12)
         .into()
     } else {
-        scrollable(list).width(Length::Fill).height(Length::Fill).into()
+        scrollable(list)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     };
 
     // --- Barre d'actions ---
-    let material = ui::icon_button::MATERIAL_ICONS;
+    let material = ui_kit::icon_button::MATERIAL_ICONS;
     let action_btn = |codepoint: &'a str, _tip: &'a str, msg: Message, enabled: bool| {
         let b = button(text(codepoint).font(material).size(16).color(if enabled {
             colors::TEXT_SECONDARY
@@ -130,52 +139,67 @@ pub fn render<'a>(
             colors::TEXT_MUTED
         }))
         .padding(4);
-        
+
         if enabled {
-            b.on_press(msg).style(move |_t, s| {
-                let mut st = button::Style::default();
-                st.background = Some(if s == button::Status::Hovered {
-                    colors::HOVER_OVERLAY.into()
-                } else {
-                    iced::Color::TRANSPARENT.into()
-                });
-                st.border.radius = metrics::RADIUS_BUTTON.into();
-                st
-            })
+            b.on_press(msg).style(move |_t, s| ui_kit::style::ghost(s))
         } else {
             b.style(|_t, _s| button::Style::default())
         }
     };
 
-    let has_sel = sel_layer.is_some();
+    // Le nœud sélectionné est-il déjà un groupe ? (grouper/dégrouper)
+    let sel_is_group = matches!(sel_node, Some(LayerNode::Group(_)));
+    let nil = Uuid::nil();
     let actions = container(
         row![
-            action_btn(ICON_ADD, "Nouveau calque vide", Message::AddEmptyLayer, true),
-            action_btn(ICON_IMAGE, "Calque depuis une image", Message::OpenImage, true),
+            action_btn(
+                ICON_ADD,
+                "Nouveau calque vide",
+                Message::AddEmptyLayer,
+                true
+            ),
+            action_btn(
+                ICON_IMAGE,
+                "Calque depuis une image",
+                Message::OpenImage,
+                true
+            ),
             action_btn(
                 ICON_DUPLICATE,
                 "Dupliquer",
-                Message::DuplicateLayer(selected.unwrap_or(0)),
+                Message::DuplicateLayer(selected.unwrap_or(nil)),
                 has_sel
+            ),
+            action_btn(
+                ICON_GROUP,
+                "Grouper la sélection",
+                Message::GroupLayers(selected.unwrap_or(nil)),
+                has_sel && !sel_is_group
+            ),
+            action_btn(
+                ICON_FOLDER,
+                "Dissoudre le groupe",
+                Message::UngroupLayers(selected.unwrap_or(nil)),
+                sel_is_group
             ),
             action_btn(
                 ICON_UP,
                 "Monter",
-                Message::MoveLayerUp(selected.unwrap_or(0)),
+                Message::MoveLayerUp(selected.unwrap_or(nil)),
                 has_sel
             ),
             action_btn(
                 ICON_DOWN,
                 "Descendre",
-                Message::MoveLayerDown(selected.unwrap_or(0)),
+                Message::MoveLayerDown(selected.unwrap_or(nil)),
                 has_sel
             ),
             Space::new().width(Length::Fill),
             action_btn(
                 ICON_DELETE,
                 "Supprimer",
-                Message::DeleteLayer(selected.unwrap_or(0)),
-                has_sel && layers.len() > 1
+                Message::DeleteLayer(selected.unwrap_or(nil)),
+                has_sel && doc.pixel_count() > 1
             ),
         ]
         .spacing(4)
@@ -198,62 +222,140 @@ pub fn render<'a>(
         .into()
 }
 
-fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
-    let material = ui::icon_button::MATERIAL_ICONS;
-    let id = layer.id;
+/// Construit la colonne d'une portée (haut-de-pile d'abord) ; les groupes
+/// dépliés imbriquent récursivement leurs enfants avec indentation.
+fn tree_column<'a>(
+    nodes: &'a [LayerNode],
+    preview_cache: &'a crate::ui_handles::PreviewCache,
+    selected: Option<Uuid>,
+    depth: usize,
+) -> iced::widget::Column<'a, Message> {
+    let mut list = iced::widget::Column::new().spacing(2);
+    for node in nodes.iter().rev() {
+        list = list.push(node_row(node, preview_cache, selected, depth));
+        if let LayerNode::Group(g) = node
+            && !g.collapsed
+        {
+            list = list.push(tree_column(&g.children, preview_cache, selected, depth + 1));
+        }
+    }
+    list
+}
 
+fn node_row<'a>(
+    node: &'a LayerNode,
+    preview_cache: &'a crate::ui_handles::PreviewCache,
+    selected: Option<Uuid>,
+    depth: usize,
+) -> Element<'a, Message> {
+    let material = ui_kit::icon_button::MATERIAL_ICONS;
+    let id = node.id();
+
+    // Œil de visibilité (commun à tous les types)
     let eye = button(
-        text(if layer.visible { ICON_VISIBLE } else { ICON_HIDDEN })
-            .font(material)
-            .size(15)
-            .color(if layer.visible {
-                colors::TEXT_SECONDARY
-            } else {
-                colors::TEXT_MUTED
-            }),
+        text(if node.visible() {
+            ICON_VISIBLE
+        } else {
+            ICON_HIDDEN
+        })
+        .font(material)
+        .size(15)
+        .color(if node.visible() {
+            colors::TEXT_SECONDARY
+        } else {
+            colors::TEXT_MUTED
+        }),
     )
     .padding(2)
-    .style(move |_t, s| {
-        let mut st = button::Style::default();
-        st.background = Some(if s == button::Status::Hovered {
-            colors::HOVER_OVERLAY.into()
-        } else {
-            iced::Color::TRANSPARENT.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st
-    })
+    .style(|_t, s| ui_kit::style::ghost(s))
     .on_press(Message::ToggleLayerVisible(id));
 
-    let thumb_bg = container(
-        image(layer.thumb.clone())
-            .width(Length::Fixed(48.0))
-            .height(Length::Fixed(32.0)),
-    )
-    .style(|_| container::Style {
-        background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
-        border: iced::Border {
-            width: 1.0,
-            color: colors::BORDER_PANEL,
-            radius: 2.0.into(),
-        },
-        ..Default::default()
-    });
+    // Chevron de repli pour les groupes, vignette sinon
+    let leading: iced::Element<'a, Message> = match node {
+        LayerNode::Group(g) => {
+            let chevron = if g.collapsed { ICON_DOWN } else { ICON_UP };
+            container(
+                button(
+                    text(chevron)
+                        .font(material)
+                        .size(15)
+                        .color(colors::TEXT_MUTED),
+                )
+                .padding(2)
+                .style(|_t: &iced::Theme, s| ui_kit::style::ghost(s))
+                .on_press(Message::ToggleGroupCollapsed(id)),
+            )
+            .into()
+        }
+        LayerNode::Pixel(l) => {
+            // Cache synchronisé après chaque update ; repli neutre si absent
+            let thumb_handle = preview_cache
+                .thumb(l.id)
+                .cloned()
+                .unwrap_or_else(|| iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]));
+            container(
+                image(thumb_handle)
+                    .width(Length::Fixed(48.0))
+                    .height(Length::Fixed(32.0)),
+            )
+            .style(|_| {
+                ui_kit::style::inset_card(
+                    colors::SURFACE_CONTAINER_LOWEST,
+                    ui_kit::theme::metrics::RADIUS_SM,
+                )
+            })
+            .into()
+        }
+        LayerNode::Adjustment(_) => container(
+            text(ICON_ADJUST)
+                .font(material)
+                .size(20)
+                .color(colors::ACCENT),
+        )
+        .width(Length::Fixed(52.0))
+        .center_x(Length::Shrink)
+        .into(),
+    };
 
-    let name_field = text_input("Nom", &layer.name)
+    let name_field = text_input("Nom", node.name())
         .size(12)
         .padding(Padding::new(4.0).top(2.0).bottom(2.0))
         .on_input(move |s| Message::RenameLayer { id, name: s });
 
-    let mut row_btn = button(
+    // Sous-titre par type : opacité • fusion | Ajustement • filtres
+    let subtitle = match node {
+        LayerNode::Pixel(l) => {
+            let filters = if l.live_filters.is_empty() {
+                String::new()
+            } else {
+                format!(" • {} filtre(s)", l.live_filters.len())
+            };
+            format!(
+                "{} % • {}{}",
+                l.opacity as u32,
+                l.blend_mode.label(),
+                filters
+            )
+        }
+        LayerNode::Group(g) => {
+            format!("{} % • {} • groupe", g.opacity as u32, g.blend_mode.label())
+        }
+        LayerNode::Adjustment(a) => {
+            format!(
+                "Ajustement • {} % • {} filtre(s)",
+                a.opacity as u32,
+                a.filters.len()
+            )
+        }
+    };
+
+    let row_btn = button(
         row![
             eye,
-            thumb_bg,
+            leading,
             column![
                 name_field,
-                text(format!("{} % • {}", layer.opacity as u32, layer.blend_mode))
-                    .size(10)
-                    .color(colors::TEXT_MUTED),
+                text(subtitle).size(10).color(colors::TEXT_MUTED)
             ]
             .spacing(1),
         ]
@@ -262,21 +364,13 @@ fn layer_row<'a>(layer: &'a Layer, is_selected: bool) -> Element<'a, Message> {
     )
     .padding(Padding::new(4.0).left(4.0).right(6.0))
     .width(Length::Fill)
-    .style(move |_t, _s| {
-        let mut st = button::Style::default();
-        st.background = Some(if is_selected {
-            colors::BG_NODE_SELECTED.into()
-        } else {
-            iced::Color::TRANSPARENT.into()
-        });
-        st.border.radius = metrics::RADIUS_BUTTON.into();
-        st.text_color = colors::TEXT_PRIMARY;
-        st
-    })
+    .style(move |_t, s| ui_kit::style::ghost_selected(Some(id) == selected, s))
     .on_press(Message::SelectLayer(id));
-    let _ = &mut row_btn;
 
+    // Indentation hiérarchique
+    let indent = 4.0 + (depth as f32) * 14.0;
     container(row_btn)
         .width(Length::Fill)
+        .padding(Padding::new(0.0).left(indent))
         .into()
 }

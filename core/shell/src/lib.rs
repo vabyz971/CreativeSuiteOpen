@@ -17,9 +17,9 @@
 //! Suite Shell — couche minimaliste et modulaire partagée par Photo/Video/Audio
 //! Inspiré Final Cut (timeline) et FL Studio (mixer) mais avec même coque.
 
+use datatypes::NodeId;
 use datatypes::{NodeDefinition, Vec2};
 use suite_core::{Graph, Node};
-use datatypes::NodeId;
 
 /// Descripteur d'une app de la suite. Chaque app (photo, video, audio) implémente ce trait.
 pub trait SuiteApp {

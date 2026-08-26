@@ -43,3 +43,6 @@ yarn-error.log*
 
 # Cargo install
 ~/.cargo/bin/
+
+# NIXOS
+.direnv

@@ -4,10 +4,12 @@ members = [
     "core/core",
     "core/datatypes",
     "core/shell",
-    "core/photo-engine",
-    "core/video-engine",
-    "core/audio-engine",
-    "ui/",
+    "engines/photo-engine",
+    "engines/video-engine",
+    "engines/audio-engine",
+    "packages/ui-kit",
+    "packages/math-utils",
+    "packages/file-utils",
     "apps/photo",
     "apps/video",
     "apps/audio",
@@ -15,9 +17,13 @@ members = [
 
 [workspace.dependencies]
 iced = { version = "0.14", features = ["tokio"] }
-iced_aw = { version = "0.14", default-features = false, features = ["context_menu", "drop_down"] }
+iced_aw = { version = "0.14", default-features = false, features = ["context_menu", "drop_down", "menu", "color_picker"] }
 wgpu = "30.0.0"
 image = { version = "0.25", features = ["rayon"] }
 rayon = "1.10"
 pollster = "0.3"
 bytemuck = { version = "1.14", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4", "serde"] }
