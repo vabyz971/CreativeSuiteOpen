@@ -42,3 +42,4 @@ pub use processor::{evaluate, evaluate_incremental, evaluate_with_cache};
 pub use registry::{
     all_definitions, create_empty_graph, create_minimal_graph, create_node_for_type, definition_for,
 };
+pub use renderer::{Renderer, filters_signature};

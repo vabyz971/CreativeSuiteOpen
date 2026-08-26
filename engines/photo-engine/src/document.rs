@@ -456,22 +456,16 @@ pub struct Appearance {
     pub thumb: RgbaBuf,
 }
 
-#[derive(Default)]
-struct AppearanceCache {
-    entries: HashMap<Uuid, CachedAppearance>,
-}
-
-struct CachedAppearance {
-    version: u64,
-    appearance: Appearance,
-}
-
 pub struct Document {
     pub width: u32,
     pub height: u32,
     /// Pile racine — index 0 = BAS de la pile (premier dessiné)
     pub root: Vec<LayerNode>,
-    cache: RefCell<AppearanceCache>,
+    /// Cache d'apparences par calque ([`crate::renderer::Renderer`]) :
+    /// validité par signature de filtres + identité de source, alimenté
+    /// par la chaîne GPU compute / CPU rayon. Interior mutability car le
+    /// cache est un détail de performance invisible depuis l'API (&self).
+    cache: RefCell<crate::renderer::Renderer>,
 }
 
 impl Document {
@@ -480,18 +474,18 @@ impl Document {
             width,
             height,
             root: Vec::new(),
-            cache: RefCell::default(),
+            cache: RefCell::new(crate::renderer::Renderer::default()),
         }
     }
 
     /// Reconstruit le document depuis un état restauré (undo/redo, projet).
-    /// Le cache d'apparence est vidé : les versions restaurées ne peuvent
-    /// jamais produire de faux hits grâce au compteur global monotone.
+    /// Le cache d'apparence est vidé : les entrées restaurées se
+    /// revalideront par signature à la première demande.
     pub fn restore(&mut self, width: u32, height: u32, root: Vec<LayerNode>) {
         self.width = width;
         self.height = height;
         self.root = root;
-        self.cache.borrow_mut().entries.clear();
+        self.cache.borrow_mut().invalidate_all();
     }
 
     // -- Recherche ----------------------------------------------------------
@@ -836,30 +830,13 @@ impl Document {
 
     // -- Apparence ------------------------------------------------------------
 
-    /// Apparence dérivée du calque (source × filtres actifs), calculée une
-    /// seule fois par version. Retourne des clones bon marché (Arc/RgbaBuf).
+    /// Apparence dérivée du calque (source × filtres actifs), servie par
+    /// le [`crate::renderer::Renderer`] : HIT = zéro recalcul, MISS =
+    /// exécution de la chaîne (compute shaders si GPU disponible).
+    /// Retourne des clones bon marché (Arc/RgbaBuf).
     pub fn appearance(&self, id: Uuid) -> Option<Appearance> {
         let layer = self.pixel_layer(id)?;
-        let version = layer.appearance_version;
-        if let Some(hit) = self.cache.borrow().entries.get(&id)
-            && hit.version == version
-        {
-            return Some(hit.appearance.clone());
-        }
-        let rendered = crate::filters::render_chain(&layer.source_image, &layer.live_filters);
-        let appearance = Appearance {
-            preview: preview_buf(&rendered),
-            thumb: thumb_buf(&rendered),
-            image: Arc::clone(&rendered),
-        };
-        self.cache.borrow_mut().entries.insert(
-            id,
-            CachedAppearance {
-                version,
-                appearance: appearance.clone(),
-            },
-        );
-        Some(appearance)
+        Some(self.cache.borrow_mut().appearance(layer))
     }
 
     /// Image seule (chemin compositing — évite de régénérer preview/thumb).
