@@ -120,40 +120,13 @@ pub fn tool_controls<'a>(
 // ---------------------------------------------------------------------------
 
 fn brush_section<'a>(
-    brush_color: iced::Color,
+    _brush_color: iced::Color,
     brush_size: f32,
     brush_opacity: f32,
-    color_picker_open: bool,
+    _color_picker_open: bool,
 ) -> Element<'a, Message> {
-    // Cercle couleur → ColorPicker iced_aw
-    let swatch = button(
-        container(
-            iced::widget::Space::new()
-                .width(Length::Fixed(14.0))
-                .height(Length::Fixed(14.0)),
-        )
-        .style(move |_| container::Style {
-            background: Some(brush_color.into()),
-            border: iced::Border {
-                width: 1.0,
-                color: colors::BORDER_SUBTLE,
-                radius: ui_kit::theme::metrics::RADIUS_DROPDOWN.into(),
-            },
-            ..Default::default()
-        }),
-    )
-    .padding(5)
-    .style(|_t, s| ui_kit::style::ghost(s))
-    .on_press(Message::ToggleColorPicker);
-
-    let color_circle = iced_aw::widget::ColorPicker::new(
-        color_picker_open,
-        brush_color,
-        swatch,
-        Message::ToggleColorPicker,
-        Message::SetBrushColor,
-    );
-
+    // Couleur gérée globalement dans toolpanel — pas de ColorPicker ici
+    // pour éviter double ouverture (même bool partagé)
     let size_slider = row![
         field_label("Taille"),
         iced::widget::slider(1.0..=200.0, brush_size, Message::SetBrushSize)
@@ -174,8 +147,6 @@ fn brush_section<'a>(
 
     row![
         field_label("Pinceau"),
-        separator(),
-        color_circle,
         separator(),
         size_slider,
         opacity_slider,
