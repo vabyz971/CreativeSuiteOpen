@@ -86,6 +86,13 @@ pub fn app_menus(
                 },
                 ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
+                    label: "Taille du document...".into(),
+                    shortcut: "Ctrl+Alt+I".to_string(),
+                    checked: false,
+                    message: Message::ShowResizeDialog,
+                },
+                ui_kit::menu::Item::Separator,
+                ui_kit::menu::Item::Action {
                     label: "Préférences...".into(),
                     shortcut: "".to_string(),
                     checked: false,

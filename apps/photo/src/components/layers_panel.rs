@@ -41,6 +41,7 @@ const ICON_HIDDEN: &str = "\u{e8f5}"; // visibility_off
 const ICON_FOLDER: &str = "\u{e2c8}"; // folder_open
 const ICON_GROUP: &str = "\u{e2cc}"; // create_new_folder
 const ICON_ADJUST: &str = "\u{e39e}"; // filter_b_and_w → ajustement
+const ICON_PALETTE: &str = "\u{e40a}"; // palette → couleur uni
 
 pub fn render<'a>(
     doc: &'a Document,
@@ -156,6 +157,12 @@ pub fn render<'a>(
                 ICON_ADD,
                 "Nouveau calque vide",
                 Message::AddEmptyLayer,
+                true
+            ),
+            action_btn(
+                ICON_PALETTE,
+                "Calque couleur uni",
+                Message::AddSolidColorLayer,
                 true
             ),
             action_btn(
@@ -349,8 +356,21 @@ fn node_row<'a>(
         }
     };
 
+    let is_visible = node.visible();
+    let is_selected = Some(id) == selected;
+    let drag_handle = button(
+        text("\u{e945}")
+            .font(material)
+            .size(14)
+            .color(colors::TEXT_MUTED),
+    )
+    .padding(2)
+    .style(|_t, s| ui_kit::style::ghost(s))
+    .on_press(Message::SetDraggedLayer(id));
+
     let row_btn = button(
         row![
+            drag_handle,
             eye,
             leading,
             column![
@@ -359,18 +379,30 @@ fn node_row<'a>(
             ]
             .spacing(1),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(Alignment::Center),
     )
     .padding(Padding::new(4.0).left(4.0).right(6.0))
     .width(Length::Fill)
-    .style(move |_t, s| ui_kit::style::ghost_selected(Some(id) == selected, s))
-    .on_press(Message::SelectLayer(id));
+    .style(move |_t, s| {
+        if !is_visible {
+            ui_kit::style::ghost(s)
+        } else {
+            ui_kit::style::ghost_selected(is_selected, s)
+        }
+    });
+    let row_btn = if is_visible {
+        row_btn.on_press(Message::SelectLayer(id))
+    } else {
+        row_btn
+    };
 
-    // Indentation hiérarchique
+    // Indentation hiérarchique + drop zone pour réordonnancement par drag & drop
     let indent = 4.0 + (depth as f32) * 14.0;
-    container(row_btn)
+    let inner = container(row_btn)
         .width(Length::Fill)
-        .padding(Padding::new(0.0).left(indent))
+        .padding(Padding::new(0.0).left(indent));
+    iced::widget::mouse_area(inner)
+        .on_release(Message::DropLayerOn(id))
         .into()
 }

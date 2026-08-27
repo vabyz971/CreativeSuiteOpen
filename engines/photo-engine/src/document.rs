@@ -590,6 +590,46 @@ impl Document {
         true
     }
 
+    /// Réordonne par drag & drop : déplace `dragged` avant ou après `target`.
+    pub fn reorder_before(&mut self, dragged: Uuid, target: Uuid, before: bool) -> bool {
+        if dragged == target {
+            return false;
+        }
+        // Empêche de déplacer un groupe dans son propre sous-arbre
+        if let Some(node) = self.find(dragged)
+            && let LayerNode::Group(g) = node
+            && Self::contains_id(&g.children, target)
+        {
+            return false;
+        }
+        let Some(node) = self.remove(dragged) else {
+            return false;
+        };
+        let Some((list, idx)) = find_owner_list(&mut self.root, target) else {
+            // target disparu ? restaure à la fin
+            self.push_layer(node);
+            return false;
+        };
+        let at = if before { idx } else { idx + 1 };
+        let at = at.min(list.len());
+        list.insert(at, node);
+        true
+    }
+
+    fn contains_id(nodes: &[LayerNode], id: Uuid) -> bool {
+        for n in nodes {
+            if n.id() == id {
+                return true;
+            }
+            if let LayerNode::Group(g) = n
+                && Self::contains_id(&g.children, id)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Regroupe les nœuds donnés (mêmes frères) dans un nouveau groupe
     /// inséré à la place du plus bas d'entre eux. L'ordre relatif de la
     /// pile est préservé. Retourne l'id du groupe créé.
@@ -1001,7 +1041,10 @@ fn needs_fallback_in(nodes: &[LayerNode]) -> bool {
                 }
             }
             LayerNode::Group(g) => {
-                if g.blend_mode != BlendMode::Normal || needs_fallback_in(&g.children) {
+                if g.opacity < 99.9
+                    || g.blend_mode != BlendMode::Normal
+                    || needs_fallback_in(&g.children)
+                {
                     return true;
                 }
             }

@@ -99,6 +99,14 @@ pub struct PhotoApp {
     pub new_doc_h: String,
     pub welcome_error: Option<String>,
 
+    // ---- Redimensionnement document ----
+    pub resize_dialog_open: bool,
+    pub resize_w: String,
+    pub resize_h: String,
+
+    // ---- Drag & drop calques ----
+    pub dragged_layer: Option<Uuid>,
+
     /// Id de la VRAIE fenêtre OS des préférences (multi-fenêtres daemon)
     pub preferences_window_id: Option<iced::window::Id>,
     /// État interne de la fenêtre (brouillon de préférences)
@@ -249,19 +257,19 @@ impl PhotoApp {
 
 impl Default for PhotoApp {
     fn default() -> Self {
-        // Layout : Canvas à gauche, à droite Calques (bas) + Propriétés (haut).
+        // Layout : Canvas à gauche, à droite Propriétés (haut) + Calques (bas).
         // split() ne peut échouer que si le pane source n'existe pas ; en
         // cas d'imprvu on garde simplement le pane unique (pas de panic).
         let (mut panes, canvas_pane) = pane_grid::State::new(PanelType::Canvas);
-        if let Some((right_pane, split_canvas_right)) =
-            panes.split(pane_grid::Axis::Vertical, canvas_pane, PanelType::Layers)
-        {
+        if let Some((right_pane, split_canvas_right)) = panes.split(
+            pane_grid::Axis::Vertical,
+            canvas_pane,
+            PanelType::Properties,
+        ) {
             panes.resize(split_canvas_right, 0.74);
-            if let Some((_props_pane, split_right_panel)) = panes.split(
-                pane_grid::Axis::Horizontal,
-                right_pane,
-                PanelType::Properties,
-            ) {
+            if let Some((_layers_pane, split_right_panel)) =
+                panes.split(pane_grid::Axis::Horizontal, right_pane, PanelType::Layers)
+            {
                 panes.resize(split_right_panel, 0.55);
             }
         }
@@ -307,6 +315,10 @@ impl Default for PhotoApp {
             new_doc_w: "1920".to_string(),
             new_doc_h: "1080".to_string(),
             welcome_error: None,
+            resize_dialog_open: false,
+            resize_w: String::new(),
+            resize_h: String::new(),
+            dragged_layer: None,
             preferences_window_id: None,
             preferences_window: None,
             preferences: preferences::Preferences::load("photo"),

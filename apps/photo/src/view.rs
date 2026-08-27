@@ -175,13 +175,97 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             app.welcome_error.as_deref(),
         )
     ];
+    // Taille du document — titre du panel principal
+    let doc_size_label: iced::Element<'_, Message> = if let Some((w, h)) = app.doc_dims() {
+        iced::widget::container(
+            iced::widget::text(format!("Document {}×{} px", w, h))
+                .size(11)
+                .color(ui_kit::theme::colors::TEXT_MUTED),
+        )
+        .padding(iced::Padding::new(3.0).left(8.0))
+        .style(|_| iced::widget::container::Style {
+            background: Some(ui_kit::theme::colors::SURFACE_CONTAINER_LOW.into()),
+            ..Default::default()
+        })
+        .into()
+    } else {
+        iced::widget::Space::new()
+            .height(iced::Length::Fixed(0.0))
+            .into()
+    };
+    let central_with_title = iced::widget::column![doc_size_label, central];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
     let base_layout = ui_kit::shell::minimalist_layout_menus_only(
         "Creative Suite Open Photo",
         menu_buttons,
-        central,
+        central_with_title,
         spinner,
     );
+
+    // Dialogue redimensionnement document (Édition → Taille du document...)
+    if app.resize_dialog_open {
+        let dialog = iced::widget::container(
+            iced::widget::column![
+                iced::widget::text("Taille du document")
+                    .size(16)
+                    .color(ui_kit::theme::colors::TEXT_PRIMARY),
+                iced::widget::row![
+                    iced::widget::text("Largeur")
+                        .size(12)
+                        .width(iced::Length::Fixed(60.0)),
+                    iced::widget::text_input("1920", &app.resize_w)
+                        .on_input(Message::SetResizeWidth)
+                        .width(iced::Length::Fixed(80.0)),
+                    iced::widget::text("px").size(11),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+                iced::widget::row![
+                    iced::widget::text("Hauteur")
+                        .size(12)
+                        .width(iced::Length::Fixed(60.0)),
+                    iced::widget::text_input("1080", &app.resize_h)
+                        .on_input(Message::SetResizeHeight)
+                        .width(iced::Length::Fixed(80.0)),
+                    iced::widget::text("px").size(11),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+                iced::widget::row![
+                    iced::widget::button(iced::widget::text("Annuler").size(12))
+                        .on_press(Message::ShowResizeDialog)
+                        .style(|_, s| ui_kit::style::ghost(s)),
+                    iced::widget::button(iced::widget::text("Appliquer").size(12))
+                        .on_press(Message::ResizeDocument {
+                            width: app.resize_w.parse::<u32>().unwrap_or(800),
+                            height: app.resize_h.parse::<u32>().unwrap_or(600),
+                        })
+                        .style(|_, s| ui_kit::style::primary(s)),
+                ]
+                .spacing(8),
+            ]
+            .spacing(12)
+            .padding(16),
+        )
+        .width(iced::Length::Fixed(300.0))
+        .style(|_| {
+            ui_kit::style::floating_card(
+                ui_kit::theme::colors::BG_DROPDOWN,
+                ui_kit::theme::metrics::RADIUS_DROPDOWN,
+                ui_kit::theme::shadows::dropdown(),
+            )
+        });
+        let overlay = iced::widget::container(dialog)
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .center_x(iced::Length::Fill)
+            .center_y(iced::Length::Fill)
+            .style(|_| iced::widget::container::Style {
+                background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                ..Default::default()
+            });
+        return iced::widget::stack![base_layout, overlay].into();
+    }
 
     // Modal Préférences unifiée (Général / Raccourcis clavier / À propos)
     // Les dropdowns des menus sont gérés nativement par iced_aw::DropDown

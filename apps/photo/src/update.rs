@@ -217,11 +217,11 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
 
         // ---- Pinceau / Gomme ----
         Message::BrushStart { .. } => {
-            // Cible le calque sélectionné ; l'aperçu live est géré par le
-            // canvas (State local). On ignore si un commit est en vol.
+            // Masqué → aucun dessin/gomme possible
             if app.pending_paint.is_none()
                 && let Some(id) = app.selected_layer
                 && app.doc.pixel_layer(id).is_some()
+                && app.doc.find(id).map(|n| n.visible()).unwrap_or(false)
             {
                 app.stroke_layer = Some(id);
             }
@@ -486,20 +486,31 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
 
         // ---- Calques (arbre LayerTree) ----
         Message::SelectLayer(id) => {
+            // Masqué → non sélectionnable (ni dessin/gomme/déplacement)
+            if app.doc.find(id).map(|n| !n.visible()).unwrap_or(true) {
+                return Task::none();
+            }
             app.selected_layer = Some(id);
             app.move_anchor = None;
         }
         Message::ToggleLayerVisible(id) => {
             // Micro-édition : commande légère, zéro clonage d'arbre
             if let Some(node) = app.doc.find(id) {
+                let new_visible = !node.visible();
                 let cmd = Command::SetVisibility {
                     node_id: id,
                     old: node.visible(),
-                    new: !node.visible(),
+                    new: new_visible,
                 };
                 app.history.push_command_immediate(cmd.clone());
                 let _inverse = app.doc.apply_command(cmd);
                 app.invalidate_fallback();
+                // Si on vient de masquer le calque sélectionné, on le désélectionne
+                if !new_visible && app.selected_layer == Some(id) {
+                    app.selected_layer = None;
+                    app.move_anchor = None;
+                    app.stroke_layer = None;
+                }
             }
         }
         Message::SetLayerOpacity { id, opacity } => {
@@ -673,6 +684,63 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::AddEmptyLayer => {
             add_empty_layer(app);
+        }
+        Message::AddSolidColorLayer => {
+            add_solid_color_layer(app, app.brush_color);
+        }
+        Message::SetDraggedLayer(id) => {
+            app.dragged_layer = Some(id);
+        }
+        Message::DropLayerOn(target) => {
+            if let Some(dragged) = app.dragged_layer.take() {
+                if dragged != target
+                    && app.doc.find(dragged).is_some()
+                    && app.doc.find(target).is_some()
+                {
+                    let pre = app.snapshot();
+                    if app.doc.reorder_before(dragged, target, true) {
+                        app.history.push_snapshot(pre);
+                        app.invalidate_fallback();
+                    }
+                }
+            } else {
+                app.dragged_layer = None;
+            }
+        }
+        Message::SetResizeWidth(s) => {
+            app.resize_w = s;
+        }
+        Message::SetResizeHeight(s) => {
+            app.resize_h = s;
+        }
+        Message::ShowResizeDialog => {
+            app.resize_dialog_open = !app.resize_dialog_open;
+            if app.resize_dialog_open {
+                let (w, h) = app.doc_dims().unwrap_or((800, 600));
+                app.resize_w = w.to_string();
+                app.resize_h = h.to_string();
+            }
+        }
+        Message::ResizeDocument { width, height } => {
+            let w = width.max(1);
+            let h = height.max(1);
+            let pre = app.snapshot();
+            app.doc.width = w;
+            app.doc.height = h;
+            app.resize_dialog_open = false;
+            app.history.push_snapshot(pre);
+            app.invalidate_fallback();
+        }
+        Message::ReorderLayer {
+            dragged,
+            target,
+            before,
+        } => {
+            if app.doc.reorder_before(dragged, target, before) {
+                let pre = app.snapshot();
+                app.history.push_snapshot(pre);
+                app.invalidate_fallback();
+            }
         }
         Message::DuplicateLayer(id) => {
             let target = resolve_target(app, id);
@@ -882,6 +950,15 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             }
             ui_kit::image_canvas::ImageCanvasEvent::MoveLayerStart => {
                 if app.selected_tool == crate::message::Tool::Move {
+                    // Masqué → déplacement interdit
+                    if app
+                        .selected_layer
+                        .and_then(|id| app.doc.find(id))
+                        .map(|n| !n.visible())
+                        .unwrap_or(true)
+                    {
+                        return Task::none();
+                    }
                     // Lit l'ancre avant toute mutation (règle own-borrow-over-clone).
                     // Transform COMPLET capturé : la commande SetTransform
                     // ancre→finale ne sera poussée QU'AU relâchement —
@@ -1196,6 +1273,39 @@ fn add_empty_layer(app: &mut PhotoApp) {
     let node = LayerNode::Pixel(layer);
     let pre = app.snapshot();
     // Insère AU-DESSUS du calque sélectionné (sinon tout en haut)
+    let inserted = match app.selected_layer {
+        Some(sel) if app.doc.find(sel).is_some() => app.doc.insert_above(sel, node),
+        _ => {
+            app.doc.push_layer(node);
+            true
+        }
+    };
+    if inserted {
+        app.selected_layer = Some(new_id);
+        app.history.push_snapshot(pre);
+        app.invalidate_fallback();
+    }
+}
+
+/// Ajoute un calque couleur uni à partir de la couleur globale du toolbar.
+fn add_solid_color_layer(app: &mut PhotoApp, color: iced::Color) {
+    let (w, h) = app.doc_dims().unwrap_or((800, 600));
+    let rgba = ::image::Rgba([
+        (color.r * 255.0).clamp(0.0, 255.0) as u8,
+        (color.g * 255.0).clamp(0.0, 255.0) as u8,
+        (color.b * 255.0).clamp(0.0, 255.0) as u8,
+        (color.a * 255.0).clamp(0.0, 255.0) as u8,
+    ]);
+    let solid = ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
+        w.max(1),
+        h.max(1),
+        rgba,
+    ));
+    let count = app.doc.pixel_count();
+    let layer = PixelLayer::new(format!("Couleur {}", count + 1), Arc::new(solid));
+    let new_id = layer.id;
+    let node = LayerNode::Pixel(layer);
+    let pre = app.snapshot();
     let inserted = match app.selected_layer {
         Some(sel) if app.doc.find(sel).is_some() => app.doc.insert_above(sel, node),
         _ => {

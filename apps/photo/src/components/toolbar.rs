@@ -49,6 +49,34 @@ pub fn context_bar<'a>(
     .style(|_, s| ui_kit::style::primary(s))
     .on_press(Message::MockAction);
 
+    // Sélecteur couleur global — visible pour tous les tools
+    let swatch = iced::widget::button(
+        iced::widget::container(
+            iced::widget::Space::new()
+                .width(Length::Fixed(18.0))
+                .height(Length::Fixed(18.0)),
+        )
+        .style(move |_| iced::widget::container::Style {
+            background: Some(brush_color.into()),
+            border: iced::Border {
+                width: 1.0,
+                color: ui_kit::theme::colors::BORDER_SUBTLE,
+                radius: ui_kit::theme::metrics::RADIUS_SM.into(),
+            },
+            ..Default::default()
+        }),
+    )
+    .padding(3)
+    .style(|_t, s| ui_kit::style::ghost(s))
+    .on_press(Message::ToggleColorPicker);
+    let global_color = iced_aw::widget::ColorPicker::new(
+        color_picker_open,
+        brush_color,
+        swatch,
+        Message::ToggleColorPicker,
+        Message::SetBrushColor,
+    );
+
     // Menu du tool à gauche d'Exporter, sans fond — juste les btn/sliders
     if let Some(controls) = crate::components::options_bar::tool_controls(
         selected_tool,
@@ -63,15 +91,20 @@ pub fn context_bar<'a>(
         row![
             controls,
             iced::widget::Space::new().width(Length::Fill),
+            global_color,
             export_btn,
         ]
         .align_y(Alignment::Center)
         .padding(Padding::new(5.0).left(8.0).right(8.0))
         .into()
     } else {
-        row![iced::widget::Space::new().width(Length::Fill), export_btn,]
-            .align_y(Alignment::Center)
-            .padding(Padding::new(5.0).left(8.0).right(8.0))
-            .into()
+        row![
+            iced::widget::Space::new().width(Length::Fill),
+            global_color,
+            export_btn,
+        ]
+        .align_y(Alignment::Center)
+        .padding(Padding::new(5.0).left(8.0).right(8.0))
+        .into()
     }
 }

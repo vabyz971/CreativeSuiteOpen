@@ -372,6 +372,10 @@ fn render_canvas_preview<'a>(
             rotation_deg: 0.0,
             scale: 1.0,
         }];
+        let can_paint = selected_layer
+            .and_then(|id| doc.find(id))
+            .map(|n| n.visible())
+            .unwrap_or(false);
         let canvas = ui_kit::image_canvas::view_with_tool(
             doc_size,
             canvas_pan,
@@ -380,6 +384,7 @@ fn render_canvas_preview<'a>(
             canvas_selection,
             ls,
             brush,
+            can_paint,
             None,
         )
         .map(Message::ImageCanvasEvent);
@@ -389,6 +394,10 @@ fn render_canvas_preview<'a>(
             .clip(true)
             .into()
     } else {
+        let can_paint = selected_layer
+            .and_then(|id| doc.find(id))
+            .map(|n| n.visible())
+            .unwrap_or(false);
         let canvas = ui_kit::image_canvas::view_with_tool(
             doc_size,
             canvas_pan,
@@ -397,6 +406,7 @@ fn render_canvas_preview<'a>(
             canvas_selection,
             canvas_layers,
             brush,
+            can_paint,
             pending_preview,
         )
         .map(Message::ImageCanvasEvent);

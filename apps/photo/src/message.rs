@@ -155,6 +155,7 @@ pub enum Message {
     /// Rogne le calque sélectionné à la sélection rectangulaire active
     CropLayerToSelection,
     AddEmptyLayer,
+    AddSolidColorLayer,
     DuplicateLayer(Uuid),
     DeleteLayer(Uuid),
     MoveLayerUp(Uuid),
@@ -285,6 +286,9 @@ pub enum Message {
     /// Crée le document : fond blanc plein cadre + calque sélectionné
     CreateDocument,
 
+    // Drag & drop calques
+    SetDraggedLayer(Uuid),
+    DropLayerOn(Uuid),
     // Générateur de textures (graphe nodal)
     NodeGraphEvent(ui_kit::node_graph::NodeGraphEvent),
     UpdateParam {
@@ -297,6 +301,19 @@ pub enum Message {
         world_pos: datatypes::Vec2,
     },
     DeleteSelectedNode,
+    // Document
+    ShowResizeDialog,
+    SetResizeWidth(String),
+    SetResizeHeight(String),
+    ResizeDocument {
+        width: u32,
+        height: u32,
+    },
+    ReorderLayer {
+        dragged: Uuid,
+        target: Uuid,
+        before: bool,
+    },
 
     // Hardware
     DetectGpu,

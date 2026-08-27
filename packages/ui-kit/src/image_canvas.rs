@@ -223,6 +223,8 @@ pub struct ImageCanvas {
     pub selection: Option<Rectangle>,
     /// Style du pinceau (rastérisation de l'aperçu live)
     pub brush: BrushStyle,
+    /// Pinceau autorisé (false = calque masqué → pas d'aperçu ni interaction)
+    pub can_paint: bool,
     /// Aperçu figé pendant le commit asynchrone (après relâchement)
     pub pending_preview: Option<StrokeTex>,
 }
@@ -242,11 +244,16 @@ impl ImageCanvas {
                 opacity: 1.0,
                 erase: false,
             },
+            can_paint: true,
             pending_preview: None,
         }
     }
     pub fn with_brush(mut self, brush: BrushStyle) -> Self {
         self.brush = brush;
+        self
+    }
+    pub fn with_can_paint(mut self, can: bool) -> Self {
+        self.can_paint = can;
         self
     }
     pub fn with_pending_preview(mut self, preview: Option<StrokeTex>) -> Self {
@@ -422,6 +429,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         )
                     }
                     CanvasTool::Brush | CanvasTool::Eraser => {
+                        if !self.can_paint {
+                            return Some(canvas::Action::capture());
+                        }
                         let doc = self.screen_to_doc(cursor_pos, bounds);
                         state.stroke = vec![(doc.x, doc.y)];
                         state.stroke_tex = None;
@@ -673,8 +683,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             );
         }
 
-        // Aperçu taille d'outil — IMAGE au-dessus des calques (vectoriel passerait dessous)
-        if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser)
+        // Aperçu taille d'outil — IMAGE au-dessus des calques (masqué si calque masqué)
+        if self.can_paint
+            && matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser)
             && let Some(pos) = state.cursor_pos
             && bounds.contains(pos)
         {
@@ -787,6 +798,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             return mouse::Interaction::Crosshair;
         }
         if cursor.is_over(bounds) {
+            if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) && !self.can_paint {
+                return mouse::Interaction::NotAllowed;
+            }
             return match self.tool {
                 CanvasTool::Hand => mouse::Interaction::Grab,
                 CanvasTool::Move => mouse::Interaction::Move,
@@ -808,6 +822,7 @@ pub fn view_with_tool<'a>(
     selection: Option<Rectangle>,
     layers: Vec<CanvasLayer>,
     brush: BrushStyle,
+    can_paint: bool,
     pending_preview: Option<StrokeTex>,
 ) -> iced::Element<'a, ImageCanvasEvent> {
     let program = ImageCanvas::new(doc_size, pan, zoom)
@@ -815,6 +830,7 @@ pub fn view_with_tool<'a>(
         .with_tool(tool)
         .with_selection(selection)
         .with_brush(brush)
+        .with_can_paint(can_paint)
         .with_pending_preview(pending_preview);
     iced::widget::canvas(program)
         .width(iced::Length::Fill)
