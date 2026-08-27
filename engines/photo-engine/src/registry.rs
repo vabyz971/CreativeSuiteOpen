@@ -21,10 +21,14 @@ use crate::nodes;
 use datatypes::{NodeDefinition, NodeId, SocketType, Vec2};
 use suite_core::{Graph, Node};
 
+/// All registered node definitions.
+#[must_use]
 pub fn all_definitions() -> Vec<NodeDefinition> {
     nodes::all().into_iter().map(|e| e.definition).collect()
 }
 
+/// Find a definition by its `type_id`.
+#[must_use]
 pub fn definition_for(type_id: &str) -> Option<NodeDefinition> {
     all_definitions().into_iter().find(|d| d.type_id == type_id)
 }
@@ -58,12 +62,15 @@ pub fn create_minimal_graph() -> Graph {
 }
 
 fn node_from_def(type_id: &str, id: NodeId, pos: Vec2) -> Node {
+    // BUG: type_id is a hard-coded literal ("input_image"/"output") known to be registered; missing definition is a programming error
     let def = definition_for(type_id).expect("type inconnu");
     let mut node = Node::new(id, def.type_id.clone(), def.name.clone(), pos);
     node.params = def.default_params.clone();
     node
 }
 
+/// Create a node of given type at `pos` in `graph`.
+#[must_use]
 pub fn create_node_for_type(type_id: &str, pos: Vec2, graph: &mut Graph) -> Option<NodeId> {
     let def = definition_for(type_id)?;
     let mut node = Node::new(NodeId(0), def.type_id.clone(), def.name.clone(), pos);

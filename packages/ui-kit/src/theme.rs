@@ -14,13 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Design tokens unifiés - Thème pro dark façon Photoshop / Blender
-//! Centralise toutes les couleurs, radius, shadows pour cohérence suite.
+//! Unified design tokens — Pro dark theme ala Photoshop / Blender
+//! Centralizes all colors, radii, shadows for suite consistency.
 
 use iced::{Color, Font, Shadow, Vector};
 
 // ---------------------------------------------------------------------------
-// Typographie — DESIGN.md : Hanken Grotesk (chargée dans chaque app via .font())
+// Typography — DESIGN.md: Hanken Grotesk (loaded in each app via .font())
 // ---------------------------------------------------------------------------
 
 pub mod fonts {
@@ -29,9 +29,9 @@ pub mod fonts {
 
     pub const FAMILY: &str = "Hanken Grotesk";
 
-    /// Corps de texte par défaut (400)
+    /// Default body text (400)
     pub const SANS: Font = Font::with_name(FAMILY);
-    /// Titres de panneaux, labels importants (600)
+    /// Panel titles, important labels (600)
     pub const SANS_SEMIBOLD: Font = Font {
         weight: Weight::Semibold,
         ..SANS
@@ -44,15 +44,15 @@ pub mod fonts {
 }
 
 // ---------------------------------------------------------------------------
-// Palette dark pro
+// Pro dark palette
 // ---------------------------------------------------------------------------
 
-/// Tokens officiels du design system "Lumina Creative" — voir DESIGN.md.
-/// Toute couleur doit passer par ces constantes, jamais codée en dur.
+/// Official tokens for the "Lumina Creative" design system — see DESIGN.md.
+/// Every color must go through these constants, never hard-coded.
 pub mod colors {
     use super::Color;
 
-    // --- Surfaces (échelle Material dark, DESIGN.md) ---
+    // --- Surfaces (Material dark scale, DESIGN.md) ---
     pub const SURFACE: Color = Color::from_rgb(0.0745, 0.0745, 0.0745); // #131313
     pub const SURFACE_CONTAINER_LOWEST: Color = Color::from_rgb(0.0549, 0.0549, 0.0549); // #0E0E0E
     pub const SURFACE_CONTAINER_LOW: Color = Color::from_rgb(0.1098, 0.1059, 0.1059); // #1C1B1B
@@ -61,7 +61,7 @@ pub mod colors {
     pub const SURFACE_CONTAINER_HIGHEST: Color = Color::from_rgb(0.2078, 0.2078, 0.2039); // #353534
     pub const SURFACE_BRIGHT: Color = Color::from_rgb(0.2235, 0.2235, 0.2235); // #393939
 
-    // --- Textes ---
+    // --- Text ---
     pub const TEXT_PRIMARY: Color = Color::WHITE; // #FFFFFF
     pub const TEXT_SECONDARY: Color = Color::from_rgb(0.6275, 0.6275, 0.6275); // #A0A0A0
     pub const ON_SURFACE: Color = Color::from_rgb(0.898, 0.8863, 0.8824); // #E5E2E1
@@ -69,20 +69,20 @@ pub mod colors {
     pub const TEXT_MUTED: Color = Color::from_rgb(0.5451, 0.5647, 0.6275); // outline #8B90A0
     pub const TEXT_ON_ACCENT: Color = Color::WHITE;
 
-    // --- Accent & actions primaires ---
+    // --- Accent & primary actions ---
     pub const ACCENT: Color = Color::from_rgb(0.0, 0.4784, 1.0); // #007AFF
     pub const ACCENT_HOVER: Color = Color::from_rgb(0.169, 0.557, 1.0); // #2B8EFF
     pub const PRIMARY: Color = Color::from_rgb(0.6784, 0.7765, 1.0); // #ADC6FF
 
-    // --- Bordures ---
+    // --- Borders ---
     pub const BORDER_SUBTLE: Color = Color::from_rgb(0.1765, 0.1765, 0.1765); // #2D2D2D
     pub const OUTLINE_VARIANT: Color = Color::from_rgb(0.2549, 0.2784, 0.3333); // #414755
 
-    // --- Alias legacy (mapping sur les tokens ci-dessus) ---
+    // --- Legacy aliases (mapping onto tokens above) ---
     pub const BG_APP: Color = SURFACE;
     pub const BG_PANEL: Color = SURFACE_CONTAINER_LOW;
     pub const BG_PANEL_HEADER: Color = SURFACE_CONTAINER;
-    /// Teinte focalisée : accent fondu dans la surface
+    /// Focused tint: accent blended into surface
     pub const BG_PANEL_HEADER_FOCUSED: Color = Color::from_rgb(0.078, 0.145, 0.235);
     pub const BG_MENU_BAR: Color = SURFACE;
     pub const BG_DROPDOWN: Color = SURFACE_CONTAINER;
@@ -99,23 +99,23 @@ pub mod colors {
     pub const BORDER_NODE: Color = SURFACE_CONTAINER_LOWEST;
     pub const BORDER_NODE_SELECTED: Color = ACCENT;
 
-    /// Sélection rectangulaire sur canvas — ACCENT du DESIGN.md (pas de bleu ad-hoc)
+    /// Rectangular selection on canvas — DESIGN.md ACCENT (no ad-hoc blue)
     pub const SELECTION_STROKE: Color = ACCENT;
     pub const SELECTION_FILL: Color = Color::from_rgba(0.0, 0.4784, 1.0, 0.15);
 
-    /// Couleur par défaut du pinceau (contenu utilisateur, pas de l'UI chrome)
+    /// Default brush color (user content, not UI chrome)
     pub const BRUSH_DEFAULT: Color = Color::from_rgb8(0x1E, 0x1E, 0x22);
 
-    // Hover neutre (blanc translucide, façon Affinity)
+    // Neutral hover (translucent white, Affinity-style)
     pub const HOVER_OVERLAY: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.08);
 
-    // --- Erreur ---
+    // --- Error ---
     pub const ERROR: Color = Color::from_rgb(1.0, 0.7059, 0.6706); // #FFB4AB
     pub const ON_ERROR: Color = Color::from_rgb(0.4078, 0.0, 0.0196); // #690005
     pub const ERROR_CONTAINER: Color = Color::from_rgb(0.5765, 0.0, 0.0392); // #93000A
     pub const SUCCESS: Color = Color::from_rgb(0.4, 0.85, 0.4);
 
-    // Couleurs d'IDENTITÉ par type de nœud (données domaine, pas du chrome)
+    // IDENTITY colors per node type (domain data, not chrome)
     pub const NODE_INPUT_IMAGE: Color = Color::from_rgb(0.25, 0.45, 0.75);
     pub const NODE_OUTPUT: Color = Color::from_rgb(0.65, 0.20, 0.20);
     pub const NODE_BRIGHTNESS_CONTRAST: Color = Color::from_rgb(0.75, 0.55, 0.15);
@@ -125,13 +125,14 @@ pub mod colors {
     pub const NODE_COLOR_CORRECT: Color = Color::from_rgb(0.85, 0.55, 0.10);
     pub const NODE_OTHER: Color = Color::from_rgb(0.35, 0.35, 0.35);
 
-    // En-têtes de nœuds par catégorie (RVB)
+    // Node headers per category (RGB)
     pub const ACCENT_NODE_HEADER_IMAGE: [f32; 3] = [0.42, 0.28, 0.75];
     pub const ACCENT_NODE_HEADER_COLOR: [f32; 3] = [0.75, 0.55, 0.15];
     pub const ACCENT_NODE_HEADER_FILTER: [f32; 3] = [0.20, 0.55, 0.75];
     pub const ACCENT_NODE_HEADER_OUTPUT: [f32; 3] = [0.65, 0.20, 0.20];
 
-    // Sockets (mirroir SocketType::color mais en Color)
+    // Sockets (mirror SocketType::color but as Color)
+    #[must_use]
     pub fn socket_color(ty: datatypes::SocketType) -> Color {
         let [r, g, b] = ty.color();
         Color::from_rgb(r, g, b)
@@ -142,11 +143,11 @@ pub mod colors {
 }
 
 // ---------------------------------------------------------------------------
-// Dimensions, Radius & Espacements
+// Dimensions, Radius & Spacing
 // ---------------------------------------------------------------------------
 
 pub mod metrics {
-    // --- Échelle de rayons (DESIGN.md « rounded ») : sm=2 / default=4 / md=6 / lg=8
+    // --- Radii scale (DESIGN.md "rounded"): sm=2 / default=4 / md=6 / lg=8
     pub const RADIUS_SM: f32 = 2.0;
     pub const RADIUS_BUTTON: f32 = 4.0; // = DEFAULT
     pub const RADIUS_PANEL: f32 = 4.0; // floating panel DESIGN.md
@@ -170,27 +171,27 @@ pub mod metrics {
     pub const TOOLBAR_WIDTH: f32 = 60.0;
 }
 
-/// Échelle typographique (DESIGN.md) — TOUTE taille de texte passe ici.
-/// Les tailles intermédiaires (12/13/16/20/22) existent pour les densités
-/// pro ; ne pas en introduire d'autres sans les ajouter à cette liste.
+/// Typographic scale (DESIGN.md) — ALL text sizes go through here.
+/// Intermediate sizes (12/13/16/20/22) exist for pro densities
+/// pro; do not introduce others without adding to this list.
 pub mod type_scale {
-    /// DESIGN.md label-sm (11 px) — labels de champs, métadonnées
+    /// DESIGN.md label-sm (11 px) — field labels, metadata
     pub const LABEL_SM: u16 = 11;
-    /// Lignes denses (liste de calques, menus)
+    /// Dense lines (layer list, menus)
     pub const LABEL_MD: u16 = 12;
-    /// Titres de sections compactes
+    /// Compact section titles
     pub const BODY_SM: u16 = 13;
     /// DESIGN.md body-md (14 px)
     pub const BODY_MD: u16 = 14;
-    /// Texte d'interface standard plus grand (boutons icône texte…)
+    /// Standard larger interface text (text icon buttons...)
     pub const BODY_LG: u16 = 16;
     /// DESIGN.md headline-md (18 px)
     pub const HEADLINE_MD: u16 = 18;
-    /// Titres d'écrans (welcome)
+    /// Screen titles (welcome)
     pub const HEADLINE_LG: u16 = 22;
 }
 
-/// Espacements (DESIGN.md « spacing »)
+/// Spacing (DESIGN.md "spacing")
 pub mod spacing {
     pub const STACK_SM: f32 = 8.0;
     pub const STACK_MD: f32 = 12.0;
@@ -205,6 +206,7 @@ pub mod spacing {
 pub mod shadows {
     use super::{Color, Shadow, Vector};
 
+    #[must_use]
     pub fn panel() -> Shadow {
         Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.6),
@@ -213,6 +215,7 @@ pub mod shadows {
         }
     }
 
+    #[must_use]
     pub fn dropdown() -> Shadow {
         Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.6),
@@ -221,6 +224,7 @@ pub mod shadows {
         }
     }
 
+    #[must_use]
     pub fn node() -> Shadow {
         Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
@@ -231,9 +235,10 @@ pub mod shadows {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers container/button styles
+// Container/button style helpers
 // ---------------------------------------------------------------------------
 
+#[must_use]
 pub fn panel_container_style(focused: bool) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(colors::BG_PANEL.into()),
@@ -250,6 +255,7 @@ pub fn panel_container_style(focused: bool) -> iced::widget::container::Style {
     }
 }
 
+#[must_use]
 pub fn node_container_style(selected: bool) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(if selected {

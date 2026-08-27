@@ -77,30 +77,49 @@ impl Renderer {
     /// valide — sinon recalculée (GPU compute si disponible) et insérée.
     pub fn appearance(&mut self, layer: &PixelLayer) -> Appearance {
         let signature = filters_signature(&layer.live_filters);
-        if let Some(entry) = self.entries.get(&layer.id)
-            && entry.signature == signature
-            && Arc::ptr_eq(&entry.source, &layer.source_image)
-        {
-            self.hits += 1;
-            return entry.appearance.clone();
+        // perf-entry-api: use Entry to avoid double hashing on miss path
+        use std::collections::hash_map::Entry;
+        match self.entries.entry(layer.id) {
+            Entry::Occupied(entry)
+                if entry.get().signature == signature
+                    && Arc::ptr_eq(&entry.get().source, &layer.source_image) =>
+            {
+                self.hits += 1;
+                entry.get().appearance.clone()
+            }
+            Entry::Occupied(mut entry) => {
+                self.misses += 1;
+                let rendered =
+                    crate::filters::render_chain(&layer.source_image, &layer.live_filters);
+                let appearance = Appearance {
+                    preview: crate::document::preview_buf(&rendered),
+                    thumb: crate::document::thumb_buf(&rendered),
+                    image: Arc::clone(&rendered),
+                };
+                entry.insert(CacheEntry {
+                    signature,
+                    source: Arc::clone(&layer.source_image),
+                    appearance: appearance.clone(),
+                });
+                appearance
+            }
+            Entry::Vacant(slot) => {
+                self.misses += 1;
+                let rendered =
+                    crate::filters::render_chain(&layer.source_image, &layer.live_filters);
+                let appearance = Appearance {
+                    preview: crate::document::preview_buf(&rendered),
+                    thumb: crate::document::thumb_buf(&rendered),
+                    image: Arc::clone(&rendered),
+                };
+                slot.insert(CacheEntry {
+                    signature,
+                    source: Arc::clone(&layer.source_image),
+                    appearance: appearance.clone(),
+                });
+                appearance
+            }
         }
-
-        self.misses += 1;
-        let rendered = crate::filters::render_chain(&layer.source_image, &layer.live_filters);
-        let appearance = Appearance {
-            preview: crate::document::preview_buf(&rendered),
-            thumb: crate::document::thumb_buf(&rendered),
-            image: Arc::clone(&rendered),
-        };
-        self.entries.insert(
-            layer.id,
-            CacheEntry {
-                signature,
-                source: Arc::clone(&layer.source_image),
-                appearance: appearance.clone(),
-            },
-        );
-        appearance
     }
 
     /// Invalide UNIQUEMENT l'apparence du calque donné (micro-édition
@@ -164,7 +183,8 @@ pub fn filters_signature(filters: &[FilterNode]) -> u64 {
         h.write(f.type_id.as_bytes());
         h.write_u8(u8::from(f.enabled));
         // Params triés par clé : même contenu => même signature
-        let mut keys: Vec<&str> = f.params.keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = Vec::with_capacity(f.params.len());
+        keys.extend(f.params.keys().map(String::as_str));
         keys.sort_unstable();
         h.write_usize(keys.len());
         for key in keys {

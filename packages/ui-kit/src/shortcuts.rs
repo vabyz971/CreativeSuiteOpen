@@ -14,41 +14,41 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Système de raccourcis clavier unifié pour toutes les applications.
+//! Unified keyboard shortcut system for all apps.
 //!
-//! SOURCE DE VÉRITÉ UNIQUE : pour ajouter/modifier un raccourci par défaut,
-//! il suffit d'éditer [`default_bindings`] ci-dessous — rien d'autre.
+//! SINGLE SOURCE OF TRUTH: to add/modify a default shortcut,
+//! just edit [`default_bindings`] below — nothing else.
 //!
-//! - [`Shortcuts`] : table action → combinaison, modifiable à l'exécution
-//! - [`Shortcuts::load`] / [`Shortcuts::save`] : persistance JSON utilisateur
-//! - [`subscription`] : écoute clavier (résolution action + mode capture)
+//! - [`Shortcuts`]: action → combo table, modifiable at runtime
+//! - [`Shortcuts::load`] / [`Shortcuts::save`]: user JSON persistence
+//! - [`subscription`]: keyboard listening (action resolution + capture mode)
 //!
-//! Utilisable par les 3 apps : `shortcuts::subscription(&app.shortcuts, ...)`
-//! puis un simple `match action -> Message` dans l'app.
+//! Usable by 3 apps: `shortcuts::subscription(&app.shortcuts, ...)`
+//! then a simple `match action -> Message` in app.
 
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// Actions — identifiants sémantiques partagés par toutes les apps
+// Actions — semantic identifiers shared by all apps
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Action {
-    // Fichier
+    // File
     NewProject,
     Open,
     Save,
     SaveAs,
     Quit,
-    // Édition
+    // Edit
     Undo,
     Redo,
     Preferences,
-    // Affichage
+    // Display
     ToggleTools,
     ToggleLayersPanel,
     TogglePropertiesPanel,
-    // Calque
+    // Layer
     LayerNew,
     LayerDuplicate,
     LayerDelete,
@@ -60,18 +60,19 @@ pub enum Action {
     RotateN180,
     ResetTransform,
     CropToSelection,
-    // Vue
+    // View
     ZoomIn,
     ZoomOut,
     FitToScreen,
-    // Outils
+    // Tools
     ToolHand,
     ToolBrush,
     ToolEraser,
 }
 
 impl Action {
-    /// Identifiant de sérialisation stable
+    /// Stable serialization identifier
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Action::NewProject => "new_project",
@@ -139,7 +140,8 @@ impl Action {
         })
     }
 
-    /// Libellé français affiché dans les préférences
+    /// French label displayed in preferences
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Action::NewProject => "Nouveau projet",
@@ -173,7 +175,8 @@ impl Action {
         }
     }
 
-    /// Catégorie (groupement dans les préférences)
+    /// Category (grouping in preferences)
+    #[must_use]
     pub fn category(self) -> &'static str {
         match self {
             Action::NewProject | Action::Open | Action::Save | Action::SaveAs | Action::Quit => {
@@ -199,7 +202,8 @@ impl Action {
         }
     }
 
-    /// Toutes les actions, ordonnées par catégorie (pour l'UI préférences)
+    /// All actions, ordered by category (for preferences UI)
+    #[must_use]
     pub fn all() -> Vec<Self> {
         let mut all: Vec<Self> = [
             Action::NewProject,
@@ -238,12 +242,12 @@ impl Action {
 }
 
 // ---------------------------------------------------------------------------
-// Binding — une combinaison de touches
+// Binding — a key combination
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Binding {
-    /// Touche normalisée minuscule : "n", "s", "+", "arrowup", "f7", "space"…
+    /// Normalized lowercase key: "n", "s", "+", "arrowup", "f7", "space"...
     pub key: String,
     pub ctrl: bool,
     pub shift: bool,
@@ -251,6 +255,7 @@ pub struct Binding {
 }
 
 impl Binding {
+    #[must_use]
     pub fn new(key: &str, ctrl: bool, shift: bool, alt: bool) -> Self {
         Self {
             key: key.to_lowercase(),
@@ -260,9 +265,10 @@ impl Binding {
         }
     }
 
-    /// Libellé lisible : "Ctrl+Maj+N"
+    /// Readable label: "Ctrl+Shift+N"
+    #[must_use]
     pub fn label(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<String> = Vec::with_capacity(4);
         if self.ctrl {
             parts.push("Ctrl".into());
         }
@@ -276,6 +282,7 @@ impl Binding {
         parts.join("+")
     }
 
+    #[must_use]
     pub fn matches(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
         self.key == key && self.ctrl == ctrl && self.shift == shift && self.alt == alt
     }
@@ -306,48 +313,52 @@ fn display_key(key: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Table par défaut — SOURCE DE VÉRITÉ UNIQUE
-// Pour changer un raccourci par défaut : éditer UNE ligne ici.
+// Default table — SINGLE SOURCE OF TRUTH
+// To change a default shortcut: edit ONE line here.
 // ---------------------------------------------------------------------------
 
 fn default_bindings() -> Vec<(Action, Binding)> {
-    use Action::*;
+    use Action::{
+        FitToScreen, LayerDuplicate, LayerNew, NewProject, Open, Quit, Redo, Save, SaveAs,
+        ToggleLayersPanel, TogglePropertiesPanel, ToggleTools, ToolBrush, ToolEraser, ToolHand,
+        Undo, ZoomIn, ZoomOut,
+    };
     vec![
-        // Fichier
+        // File
         (NewProject, Binding::new("n", true, false, false)),
         (Open, Binding::new("o", true, false, false)),
         (Save, Binding::new("s", true, false, false)),
         (SaveAs, Binding::new("s", true, true, false)),
         (Quit, Binding::new("q", true, false, false)),
-        // Édition
+        // Edit
         (Undo, Binding::new("z", true, false, false)),
         (Redo, Binding::new("y", true, false, false)),
-        // Affichage
+        // Display
         (ToggleTools, Binding::new("tab", false, false, false)),
         (ToggleLayersPanel, Binding::new("f7", false, false, false)),
         (
             TogglePropertiesPanel,
             Binding::new("f8", false, false, false),
         ),
-        // Calque
+        // Layer
         (LayerNew, Binding::new("n", true, true, false)),
         (LayerDuplicate, Binding::new("j", true, false, false)),
-        // Vue
+        // View
         (ZoomIn, Binding::new("+", true, false, false)),
         (ZoomOut, Binding::new("-", true, false, false)),
         (FitToScreen, Binding::new("0", true, false, false)),
-        // Outils
+        // Tools
         (ToolHand, Binding::new("space", false, false, false)),
         (ToolBrush, Binding::new("b", false, false, false)),
         (ToolEraser, Binding::new("e", false, false, false)),
-        // Sans raccourci par défaut (dangereux ou rare) :
+        // No default shortcut (dangerous or rare):
         // LayerDelete, LayerMoveUp/Down, Rotate*, ResetTransform,
-        // CropToSelection, Preferences — assignables dans les préférences.
+        // CropToSelection, Preferences — assignable in preferences.
     ]
 }
 
 // ---------------------------------------------------------------------------
-// Shortcuts — la table modifiable
+// Shortcuts — the modifiable table
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -362,30 +373,33 @@ impl Default for Shortcuts {
 }
 
 impl Shortcuts {
-    /// Table par défaut (une seule source : `default_bindings`)
+    /// Default table (single source: `default_bindings`)
+    #[must_use]
     pub fn defaults() -> Self {
         Self {
             map: default_bindings().into_iter().collect(),
         }
     }
 
+    #[must_use]
     pub fn binding(&self, action: Action) -> Option<Binding> {
         self.map.get(&action).cloned()
     }
 
-    /// Libellé lisible de l'action ("Ctrl+N") ou vide
+    /// Readable action label ("Ctrl+N") or empty
+    #[must_use]
     pub fn label(&self, action: Action) -> String {
         self.binding(action).map(|b| b.label()).unwrap_or_default()
     }
 
-    /// Assigne un raccourci. Vole la combinaison à toute autre action qui
-    /// l'utilise déjà (comportement Photoshop).
+    /// Assign a shortcut. Steals combo from any other action that
+    /// already uses it (Photoshop behavior).
     pub fn set(&mut self, action: Action, binding: Binding) {
         self.map.retain(|a, b| !(*a != action && *b == binding));
         self.map.insert(action, binding);
     }
 
-    /// Remet le raccourci par défaut d'une action
+    /// Reset action's default shortcut
     pub fn reset(&mut self, action: Action) {
         if let Some((_, b)) = default_bindings().into_iter().find(|(a, _)| *a == action) {
             self.map.insert(action, b);
@@ -394,12 +408,13 @@ impl Shortcuts {
         }
     }
 
-    /// Remet toute la table par défaut
+    /// Reset entire table to defaults
     pub fn reset_all(&mut self) {
         self.map = default_bindings().into_iter().collect();
     }
 
-    /// Résout une pression clavier → action
+    /// Resolve key press → action
+    #[must_use]
     pub fn find(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> Option<Action> {
         self.map
             .iter()
@@ -409,7 +424,8 @@ impl Shortcuts {
 
     // -- Persistance (via ui::settings::AppSettings, settings.json) --
 
-    /// Charge la table utilisateur, complétée par les défauts
+    /// Load user table, completed with defaults
+    #[must_use]
     pub fn load() -> Self {
         let mut table = Self::defaults();
         let settings = crate::settings::AppSettings::load();
@@ -429,7 +445,7 @@ impl Shortcuts {
         table
     }
 
-    /// Sauvegarde la table dans settings.json (préserve les autres options)
+    /// Save table to settings.json (preserves other options)
     pub fn save(&self) {
         let mut settings = crate::settings::AppSettings::load();
         settings.shortcuts = self
@@ -455,18 +471,21 @@ impl Shortcuts {
 // Subscription clavier
 // ---------------------------------------------------------------------------
 
-/// Convertit un `iced::keyboard::Key` en clé normalisée de [`Binding`].
+/// Convert `iced::keyboard::Key` to normalized [`Binding`] key.
+#[must_use]
 pub fn key_string(key: &iced::keyboard::Key) -> Option<String> {
     use iced::keyboard::{Key, key::Named};
     match key {
         Key::Character(c) => {
             let ch = c.chars().next()?;
-            // Linux/X11 : Ctrl+N livre le caractère de contrôle \x0e (1+'n'-'a').
-            // On le reconvertit en lettre — sinon AUCUN raccourci Ctrl+lettre
-            // ne fonctionne sur X11.
+            // Linux/X11: Ctrl+N delivers control character \x0e (1+'n'-'a').
+            // Convert it back to letter — otherwise NO Ctrl+letter shortcut
+            // works on X11.
             let code = ch as u32;
             if (1..=26).contains(&code) {
-                Some(((b'a' + code as u8 - 1) as char).to_string())
+                #[allow(clippy::cast_possible_truncation)]
+                let byte = (b'a' + code as u8 - 1) as char;
+                Some(byte.to_string())
             } else {
                 Some(ch.to_lowercase().to_string())
             }
@@ -507,14 +526,14 @@ pub fn key_string(key: &iced::keyboard::Key) -> Option<String> {
     }
 }
 
-/// Écoute clavier global :
-/// - mode capture (`capturing == true`) : la prochaine touche devient le
-///   nouveau raccourci → `on_captured(Option<binding>)` (None = Échap/annule)
-/// - sinon : résout l'action et appelle `on_action`
+/// Global keyboard listening:
+/// - capture mode (`capturing == true`): next key becomes the
+///   new shortcut → `on_captured(Option<binding>)` (None = Esc/cancel)
+/// - otherwise: resolve action and call `on_action`
 ///
-/// Utilise la fonction libre `subscription::filter_map(id, f)` (et non la
-/// méthode équivalente) car la closure capture l'état (table + mode capture) ;
-/// l'id inclut `capturing` pour redémarrer le flux quand il bascule.
+/// Uses free function `subscription::filter_map(id, f)` (not the
+/// equivalent method) because closure captures state (table + capture mode);
+/// id includes `capturing` to restart stream when toggling.
 pub fn subscription<Message: Clone + Send + 'static>(
     shortcuts: &Shortcuts,
     capturing: bool,
@@ -538,7 +557,7 @@ pub fn subscription<Message: Clone + Send + 'static>(
             return None;
         };
         let key_str = key_string(&key)?;
-        // Ignore les touches modificateurs seules pendant la capture
+        // Ignore modifier keys alone during capture
         if matches!(
             key_str.as_str(),
             "control" | "shift" | "alt" | "meta" | "super"
@@ -547,7 +566,7 @@ pub fn subscription<Message: Clone + Send + 'static>(
         }
         let (ctrl, shift, alt) = (modifiers.control(), modifiers.shift(), modifiers.alt());
         if capturing {
-            // Échap annule la capture
+            // Esc cancels capture
             if key_str == "escape" && !ctrl && !shift && !alt {
                 return Some(on_captured(None));
             }

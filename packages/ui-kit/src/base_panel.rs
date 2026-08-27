@@ -20,6 +20,10 @@ use iced::widget::{container, row, text};
 use iced::{Alignment, Element};
 use iced_aw::ContextMenu;
 
+/// Renders a pane-grid panel with title bar and content.
+///
+/// `close_menu` provides an optional context-menu action for closing the panel.
+#[must_use]
 pub fn render<'a, Message>(
     title: impl Into<String>,
     content: impl Into<Element<'a, Message>>,
@@ -45,7 +49,7 @@ where
     .spacing(5);
 
     let title_area: Element<'_, Message> = match close_menu {
-        // ContextMenu natif : s'ouvre au clic droit, positionné au curseur
+        // Native ContextMenu: opens on right-click, positioned at cursor
         Some(msg) => ContextMenu::new(title_row, move || {
             crate::dropdown::menu_item("Fermer le panneau", "", msg.clone())
         })
@@ -70,7 +74,7 @@ where
         })
 }
 
-// --- STYLES UNIFIÉS ---
+// --- UNIFIED STYLES ---
 
 fn style_title_active(_theme: &iced::Theme) -> container::Style {
     container::Style {

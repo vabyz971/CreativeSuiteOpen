@@ -14,18 +14,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Canvas de calques — compositing GPU en render pass (zéro readback CPU).
+//! Layer canvas — GPU compositing in render pass (zero CPU readback).
 //!
-//! Architecture façon Affinity/Photoshop :
-//! - chaque calque est une texture GPU persistante (upload UNE fois par version)
-//! - la fusion se fait dans des render passes sur textures ping-pong, sur le
-//!   device wgpu D'ICED (via le widget shader) — jamais de transfert vers le CPU
-//! - l'affichage est un blit avec pan/zoom + fond pointillé procédural
-//! - si la pile ne change pas entre deux frames, les passes de fusion sont
-//!   sautées : seul le blit tourne
+//! Architecture ala Affinity/Photoshop:
+
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    clippy::unreadable_literal
+)]
+//! - each layer is a persistent GPU texture (uploaded ONCE per version)
+//! - compositing happens in render passes on ping-pong textures, on the
+//!   ICED wgpu device (via shader widget) — never transfers to CPU
+//! - display is a blit with pan/zoom + procedural dotted background
+//! - if stack doesn't change between two frames, blend passes are
+//!   skipped: only blit runs
 //!
-//! Les événements souris réutilisent [`image_canvas::ImageCanvasEvent`] pour
-//! rester compatible avec la logique applicative existante.
+//! Mouse events reuse [`image_canvas::ImageCanvasEvent`] to
+//! stay compatible with existing app logic.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,20 +48,20 @@ use iced::{Element, Length, Point, Rectangle, Size, Vector};
 use crate::image_canvas::{CanvasTool, ImageCanvasEvent};
 
 // ---------------------------------------------------------------------------
-// Modèle affiché
+// Displayed model
 // ---------------------------------------------------------------------------
 
-/// Un calque prêt pour l'upload GPU (pixels RGBA8 préconvertis, partagés).
+/// A layer ready for GPU upload (preconverted shared RGBA8 pixels).
 #[derive(Clone, Debug)]
 pub struct DisplayLayer {
-    /// Identité du contenu (clé de cache texture, ex : pointeur Arc)
+    /// Content identity (texture cache key, e.g. Arc pointer)
     pub key: u64,
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
-    /// Opacité 0..1
+    /// Opacity 0..1
     pub opacity: f32,
-    /// Mode de fusion (0 Normal … 5 Lighten)
+    /// Blend mode (0 Normal ... 5 Lighten)
     pub blend: u32,
     pub offset_x: f32,
     pub offset_y: f32,
@@ -59,13 +69,13 @@ pub struct DisplayLayer {
 
 pub struct LayerCanvas<Message> {
     pub layers: Vec<DisplayLayer>,
-    /// Dimensions du document en pixels (None = pas de document)
+    /// Document dimensions in pixels (None = no document)
     pub doc_size: Option<(f32, f32)>,
     pub pan: Vector,
     pub zoom: f32,
     pub tool: CanvasTool,
     pub selection: Option<Rectangle>,
-    /// Convertit les événements canvas en messages applicatifs
+    /// Convert canvas events to app messages
     pub on_event: std::rc::Rc<dyn Fn(ImageCanvasEvent) -> Message>,
 }
 
@@ -85,28 +95,33 @@ impl<Message> LayerCanvas<Message> {
         }
     }
 
+    #[must_use]
     pub fn with_layers(mut self, layers: Vec<DisplayLayer>) -> Self {
         self.layers = layers;
         self
     }
 
+    #[must_use]
     pub fn with_view(mut self, pan: Vector, zoom: f32) -> Self {
         self.pan = pan;
         self.zoom = zoom.clamp(0.08, 6.0);
         self
     }
 
+    #[must_use]
     pub fn with_tool(mut self, tool: CanvasTool) -> Self {
         self.tool = tool;
         self
     }
 
+    #[must_use]
     pub fn with_selection(mut self, sel: Option<Rectangle>) -> Self {
         self.selection = sel;
         self
     }
 }
 
+#[must_use]
 pub fn view<'a, Message>(canvas: LayerCanvas<Message>) -> Element<'a, Message>
 where
     Message: 'static + Clone,
@@ -118,7 +133,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// État d'interaction (même logique que image_canvas)
+// Interaction state (same logic as image_canvas)
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -146,7 +161,7 @@ where
         use iced::Event;
         use iced::mouse::{self, Button};
 
-        // Publie la taille du viewport à chaque changement
+        // Publish viewport size on each change
         if let Event::Window(iced::window::Event::RedrawRequested(_)) = event {
             if state.prev_bounds != Some(bounds.size()) {
                 state.prev_bounds = Some(bounds.size());
@@ -165,8 +180,8 @@ where
             return None;
         }
 
-        // Relâchement traité même hors bornes (la souris est capturée pendant
-        // un drag) — sinon l'état reste armé et les événements continuent.
+        // Release handled even outside bounds (mouse is captured during
+        // drag) — otherwise state stays armed and events keep coming.
         if let Event::Mouse(mouse::Event::ButtonReleased(Button::Left)) = event {
             if let Some((start, end)) = state.selecting.take() {
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
@@ -206,11 +221,10 @@ where
                             pan: new_pan,
                         },
                     )));
-                } else {
-                    return Some(shader::Action::publish((self.on_event)(
-                        ImageCanvasEvent::SelectRect(None),
-                    )));
                 }
+                return Some(shader::Action::publish((self.on_event)(
+                    ImageCanvasEvent::SelectRect(None),
+                )));
             }
             if state.dragging.take().is_some() && self.tool == CanvasTool::Move {
                 return Some(
@@ -240,7 +254,7 @@ where
                     state.selecting = Some((cursor_pos, cursor_pos));
                     Some(shader::Action::capture())
                 }
-                // Pinceau/gomme non supportés par le chemin GPU expérimental
+                // Brush/eraser not supported by experimental GPU path
                 CanvasTool::Brush | CanvasTool::Eraser => Some(shader::Action::capture()),
             },
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -254,8 +268,8 @@ where
                             )),
                         )));
                     } else if self.tool == CanvasTool::Move {
-                        // Delta écran brut ; la conversion pixels image se fait
-                        // côté app avec le zoom courant.
+                        // Raw screen delta; image pixel conversion happens
+                        // on app side with current zoom.
                         return Some(shader::Action::publish((self.on_event)(
                             ImageCanvasEvent::MoveLayer {
                                 dx: cursor_pos.x - start.x,
@@ -349,24 +363,24 @@ where
 // Primitive GPU
 // ---------------------------------------------------------------------------
 
-/// Hash de configuration : si inchangé, les passes de fusion sont sautées.
+/// Config hash: if unchanged, blend passes are skipped.
 fn config_hash(layers: &[DisplayLayer], doc: (f32, f32)) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     let feed = |v: u64, h: &mut u64| {
         *h ^= v;
         *h = h.wrapping_mul(0x100000001b3);
     };
-    feed(doc.0.to_bits() as u64, &mut h);
-    feed(doc.1.to_bits() as u64, &mut h);
+    feed(u64::from(doc.0.to_bits()), &mut h);
+    feed(u64::from(doc.1.to_bits()), &mut h);
     feed(layers.len() as u64, &mut h);
     for l in layers {
         feed(l.key, &mut h);
-        feed(l.opacity.to_bits() as u64, &mut h);
-        feed(l.blend as u64, &mut h);
-        feed(l.offset_x.to_bits() as u64, &mut h);
-        feed(l.offset_y.to_bits() as u64, &mut h);
-        feed(l.width as u64, &mut h);
-        feed(l.height as u64, &mut h);
+        feed(u64::from(l.opacity.to_bits()), &mut h);
+        feed(u64::from(l.blend), &mut h);
+        feed(u64::from(l.offset_x.to_bits()), &mut h);
+        feed(u64::from(l.offset_y.to_bits()), &mut h);
+        feed(u64::from(l.width), &mut h);
+        feed(u64::from(l.height), &mut h);
     }
     h
 }
@@ -397,7 +411,7 @@ impl shader::Primitive for CompositePrimitive {
     }
 
     fn draw(&self, _pipeline: &Self::Pipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
-        // La fusion nécessite ses propres passes hors écran → render()
+        // Blending requires its own offscreen passes → render()
         false
     }
 
@@ -416,7 +430,7 @@ impl shader::Primitive for CompositePrimitive {
 // Shaders WGSL
 // ---------------------------------------------------------------------------
 
-const SHADER: &str = r#"
+const SHADER: &str = r"
 struct VOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -424,10 +438,10 @@ struct VOut {
 
 struct Params {
     screen_doc: vec4<f32>,   // xy = viewport widget px, zw = document px
-    pan_zoom: vec4<f32>,     // xy = pan, z = zoom, w = opacite calque
-    mode_sizes: vec4<u32>,   // x = mode fusion, y/z = dims texture top, w = flag image
-    off_sel: vec4<f32>,      // xy = decalage calque, zw = position selection
-    sel_size: vec4<f32>,     // xy = taille selection (x > 0 = active)
+    pan_zoom: vec4<f32>,     // xy = pan, z = zoom, w = opacite layer
+    mode_sizes: vec4<u32>,   // x = blend mode, y/z = top texture dims, w = image flag
+    off_sel: vec4<f32>,      // xy = decalage layer, zw = position selection
+    sel_size: vec4<f32>,     // xy = size selection (x > 0 = active)
 };
 
 @vertex
@@ -451,7 +465,7 @@ fn blend_channel(b: f32, t: f32, mode: u32) -> f32 {
     return t;
 }
 
-// Un seul bind group (limite max_bind_groups = 2 sur le device iced)
+// Single bind group (max_bind_groups = 2 limit on iced device)
 @group(0) @binding(0) var base_tex: texture_2d<f32>;
 @group(0) @binding(1) var base_samp: sampler;
 @group(0) @binding(2) var top_tex: texture_2d<f32>;
@@ -464,7 +478,7 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
     let b = textureSampleLevel(base_tex, base_samp, uv, 0.0);
     // Coordonnees pixel document de ce fragment
     let doc_px = uv * bp.screen_doc.zw;
-    // Echantillonne le calque a (doc_px - offset), normalise par SES dimensions
+    // Echantillonne le layer a (doc_px - offset), normalise par SES dimensions
     let t_px = doc_px - bp.off_sel.xy;
     let t_uv = t_px / vec2<f32>(f32(bp.mode_sizes.y), f32(bp.mode_sizes.z));
     var t = vec4<f32>(0.0);
@@ -500,7 +514,7 @@ fn fs_present(in: VOut) -> @location(0) vec4<f32> {
     let pan = pp.pan_zoom.xy;
     let zoom = pp.pan_zoom.z;
 
-    // Fond uni — damier retiré pour performance et stabilité au resize
+    // Solid background — checker removed for performance and resize stability
     var col = GRID_BG;
 
     // Image composite (espace document), si document present
@@ -529,20 +543,20 @@ fn fs_present(in: VOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(col, 1.0);
 }
-"#;
+";
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
     /// xy = viewport widget px, zw = document px
     screen_doc: [f32; 4],
-    /// xy = pan, z = zoom, w = opacité calque
+    /// xy = pan, z = zoom, w = layer opacity
     pan_zoom: [f32; 4],
-    /// x = mode fusion, y/z = dims texture top, w = flag image présente
+    /// x = blend mode, y/z = top texture dims, w = image flag present
     mode_sizes: [u32; 4],
-    /// xy = décalage calque (px document), zw = position sélection
+    /// xy = layer offset (px document), zw = selection position
     off_sel: [f32; 4],
-    /// xy = taille sélection (x > 0 = active)
+    /// xy = selection size (x > 0 = active)
     sel_size: [f32; 4],
 }
 
@@ -560,11 +574,11 @@ pub struct CompositePipeline {
     bgl_all: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 
-    /// Textures de calques persistantes, clé = identité du contenu
+    /// Persistent layer textures, key = content identity
     layer_textures: HashMap<u64, LayerTex>,
-    /// Accumulateurs ping-pong (espace document)
+    /// Ping-pong accumulators (document space)
     accum: Option<Accum>,
-    /// Hash du dernier recomposite GPU (atomique : render() prend &self)
+    /// Hash of last GPU recomposite (atomic: `render()` takes &self)
     last_hash: std::sync::atomic::AtomicU64,
 }
 
@@ -576,7 +590,7 @@ struct LayerTex {
 
 struct Accum {
     views: [wgpu::TextureView; 2],
-    /// Index de la texture contenant le dernier composite
+    /// Index of texture containing last composite
     current: std::sync::atomic::AtomicUsize,
     size: (u32, u32),
 }
@@ -721,8 +735,8 @@ impl shader::Pipeline for CompositePipeline {
 }
 
 impl CompositePipeline {
-    /// Bind group complet : tex0 + sampler en slots base, `top` réutilisé
-    /// dans les slots top (inutilisés par le shader present).
+    /// Full bind group: tex0 + sampler in base slots, `top` reused
+    /// in top slots (unused by present shader).
     fn scene_bg(
         &self,
         view: &wgpu::TextureView,
@@ -758,7 +772,7 @@ impl CompositePipeline {
     }
 
     fn ensure_accum(&mut self, size: (u32, u32)) {
-        let need = size != self.accum.as_ref().map(|a| a.size).unwrap_or((0, 0));
+        let need = size != self.accum.as_ref().map_or((0, 0), |a| a.size);
         if need {
             let mk = || {
                 let tex = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -796,11 +810,11 @@ impl CompositePipeline {
         );
         self.ensure_accum(doc);
 
-        // Upload des nouvelles versions de calques + éviction des obsolètes
+        // Upload new layer versions + eviction of obsolete ones
         let live: Vec<u64> = prim.layers.iter().map(|l| l.key).collect();
         for l in &prim.layers {
             self.layer_textures.entry(l.key).or_insert_with(|| {
-                // Capture les erreurs de validation wgpu (sinon silencieuses)
+                // Capture wgpu validation errors (otherwise silent)
                 device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let w = l.width.max(1);
                 let h = l.height.max(1);
@@ -818,9 +832,9 @@ impl CompositePipeline {
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
                 });
-                // bytes_per_row doit être un multiple de 256 (COPY_ALIGNMENT
-                // wgpu). Sinon erreur de validation silencieuse → texture
-                // jamais téléversée → image invisible. On padde les lignes.
+                // bytes_per_row must be multiple of 256 (COPY_ALIGNMENT
+                // wgpu). Otherwise silent validation error → texture
+                // never uploaded → invisible image. Pad rows.
                 const ALIGN: u32 = 256;
                 let row_bytes = w * 4;
                 let padded_row = row_bytes.div_ceil(ALIGN) * ALIGN;
@@ -845,8 +859,8 @@ impl CompositePipeline {
                         },
                     );
                 } else {
-                    // Copie ligne à ligne dans un buffer paddé (une seule fois
-                    // par version de contenu — coût amorti)
+                    // Copy line by line into padded buffer (once
+                    // per content version — amortized cost)
                     let mut staged = vec![0u8; (padded_row * h) as usize];
                     for r in 0..h as usize {
                         let src = r * row_bytes as usize;
@@ -876,7 +890,7 @@ impl CompositePipeline {
                 }
                 let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 if let Some(err) = pollster::block_on(device.pop_error_scope()) {
-                    eprintln!("layer-canvas: échec upload calque {:#?}", err);
+                    eprintln!("layer-canvas: échec upload calque {err:#?}");
                 }
                 LayerTex {
                     view,
@@ -887,7 +901,7 @@ impl CompositePipeline {
         }
         self.layer_textures.retain(|k, _| live.contains(k));
 
-        // Recomposite décidé dans render() : comparaison du hash courant
+        // Recomposite decided in render(): compare current hash
         let _ = config_hash(&prim.layers, prim.doc_size);
     }
 
@@ -907,17 +921,18 @@ impl CompositePipeline {
             return;
         }
 
-        // --- PASSES DE FUSION (hors écran, ping-pong) ---
-        // Recomposite seulement si la pile a changé depuis la dernière frame
+        // --- BLEND PASSES (offscreen, ping-pong) ---
+        // Recomposite only if stack changed since last frame
         let hash = config_hash(&prim.layers, prim.doc_size);
         if hash != self.last_hash.load(Ordering::Relaxed) {
-            let mut cur = self.accum.as_ref().unwrap().current.load(Ordering::Relaxed);
+            let accum = self.accum.as_ref().expect("accum initialized in prepare");
+            let mut cur = accum.current.load(Ordering::Relaxed);
 
-            // Les textures wgpu démarrent avec un contenu indéfini.
-            // On efface la base initiale à transparent avant la première fusion,
-            // sinon le premier calque serait mélangé avec des pixels aléatoires.
+            // Wgpu textures start with undefined content.
+            // Clear initial base to transparent before first blend,
+            // otherwise first layer would be mixed with random pixels.
             {
-                let base_init = self.accum.as_ref().unwrap().views[cur].clone();
+                let base_init = self.accum.as_ref().expect("accum initialized").views[cur].clone();
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("layer-canvas-clear-base"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -940,9 +955,10 @@ impl CompositePipeline {
                     continue;
                 };
 
-                // Ping-pong : src = résultat précédent, dst = cible de ce calque
-                let src_view = self.accum.as_ref().unwrap().views[cur].clone();
-                let dst_view = self.accum.as_ref().unwrap().views[cur ^ 1].clone();
+                // Ping-pong: src = previous result, dst = target for this layer
+                let accum_ref = self.accum.as_ref().expect("accum initialized");
+                let src_view = accum_ref.views[cur].clone();
+                let dst_view = accum_ref.views[cur ^ 1].clone();
 
                 let scene_bg = self.scene_bg(&src_view, Some(&tex.view));
 
@@ -994,8 +1010,8 @@ impl CompositePipeline {
             self.last_hash.store(hash, Ordering::Relaxed);
         }
 
-        // --- PASS DE PRÉSENTATION (écran) ---
-        let acc = self.accum.as_ref().unwrap();
+        // --- PRESENTATION PASS (screen) ---
+        let acc = self.accum.as_ref().expect("accum initialized for present");
         let final_view = acc.views[acc.current.load(Ordering::Relaxed)].clone();
         let acc_bg = self.scene_bg(&final_view, None);
 
@@ -1011,7 +1027,7 @@ impl CompositePipeline {
                 prim.doc_size.1,
             ],
             pan_zoom: [prim.pan.x, prim.pan.y, prim.zoom, 1.0],
-            mode_sizes: [0, 0, 0, if prim.has_doc { 1 } else { 0 }],
+            mode_sizes: [0, 0, 0, u32::from(prim.has_doc)],
             off_sel: sel_pos,
             sel_size,
         };

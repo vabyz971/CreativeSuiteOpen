@@ -14,21 +14,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Shell minimaliste et modulaire — coque partagée Photo / Vidéo (Final Cut) / Audio (FL Studio)
-//! Une seule barre top + rail gauche icônes, le reste est injecté par l'app.
-//! Logique partagée avec core/shell (suite-shell).
+//! Minimal modular shell — shared shell for Photo / Video (Final Cut) / Audio (FL Studio)
+//! Single top bar + left icon rail, rest is injected by app.
+//! Shared logic with core/shell (suite-shell).
 
 pub use suite_shell::{AppKind, ShellState};
 
-/// Largeur réservée au logo + titre dans la top bar (esthétique)
+/// Width reserved for logo + title in top bar (aesthetic)
 const TITLE_RESERVED: f32 = 190.0;
 
 use crate::theme::{colors, fonts, metrics};
 use iced::widget::{Space, container, row, text};
 use iced::{Alignment, Color, Element, Font, Length, Padding};
 
-/// Barre supérieure façon Lumina Creative : logo + titre (largeur réservée),
-/// action notifications à droite.
+/// Top bar ala Lumina Creative: logo + title (reserved width),
+/// notifications action on right.
+#[must_use]
 pub fn top_bar<'a, Message>(title: &'a str) -> Element<'a, Message>
 where
     Message: 'a,
@@ -59,7 +60,7 @@ where
 
     container(
         row![
-            // Logo + titre : largeur réservée (esthétique)
+            // Logo + title: reserved width (aesthetic)
             container(
                 row![
                     container(
@@ -106,9 +107,9 @@ where
     .into()
 }
 
-/// Variante avec menus applicatifs insérés entre le titre et les actions.
-/// `menu_buttons` est produit par `ui::menu::buttons` — l'app garde la main
-/// sur ses Messages ; les dropdowns sont rendus en overlay racine via
+/// Variant with app menus inserted between title and actions.
+/// `menu_buttons` is produced by `ui::menu::buttons` — app keeps control
+/// over its Messages; dropdowns are rendered in root overlay via
 /// `ui::menu::dropdown_offset_x`.
 pub fn top_bar_with_menus<'a, Message>(
     title: &'a str,
@@ -169,9 +170,10 @@ where
     .into()
 }
 
-/// Actions globales de droite : spinner d'activité (traitements en
-/// arrière-plan) puis notifications. `spinner` = `Some(élément animé)`
-/// produit par l'app (`ui::spinner::circle`) quand un traitement tourne.
+/// Right global actions: activity spinner (background
+/// processing) then notifications. `spinner` = `Some(animated element)`
+/// produced by app (`ui::spinner::circle`) when processing.
+#[must_use]
 pub fn global_actions<'a, Message>(spinner: Option<Element<'a, Message>>) -> Element<'a, Message>
 where
     Message: 'a,
@@ -202,7 +204,7 @@ where
 
     let mut actions = row![].align_y(Alignment::Center).spacing(10);
     if let Some(sp) = spinner {
-        // Conteneur carré aligné sur les icônes, spinner centré dedans
+        // Square container aligned on icons, spinner centered inside
         actions = actions.push(
             container(sp)
                 .width(Length::Fixed(28.0))
@@ -215,7 +217,7 @@ where
     actions.into()
 }
 
-/// Rail gauche icon-only 48px (outils), collapsible
+/// Left icon-only rail 48px (tools), collapsible
 pub fn left_rail<'a, Message>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message>
 where
     Message: 'a,
@@ -236,7 +238,7 @@ where
         .into()
 }
 
-/// Layout minimaliste : top_bar + menus applicatifs + (left_rail + central)
+/// Minimal layout: `top_bar` + app menus + (`left_rail` + central)
 pub fn minimalist_layout_with_menus<'a, Message>(
     title: &'a str,
     menu_buttons: impl Into<Element<'a, Message>>,
@@ -268,8 +270,8 @@ where
     .into()
 }
 
-/// Variante SANS rail gauche : l'app gère ses outils en flottant
-/// (ex. Photo — barre verticale au-dessus du canvas)
+/// Variant WITHOUT left rail: app manages its tools floating
+/// (e.g. Photo — vertical bar above canvas)
 pub fn minimalist_layout_menus_only<'a, Message>(
     title: &'a str,
     menu_buttons: impl Into<Element<'a, Message>>,
@@ -295,7 +297,7 @@ where
         .into()
 }
 
-/// Layout minimaliste : top_bar + (left_rail + central) — apps distinctes, pas de switcher
+/// Minimal layout: `top_bar` + (`left_rail` + central) — distinct apps, no switcher
 pub fn minimalist_layout<'a, Message>(
     title: &'a str,
     left_rail_content: impl Into<Element<'a, Message>>,

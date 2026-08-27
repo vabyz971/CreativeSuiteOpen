@@ -24,7 +24,7 @@ pub fn menu_item<'a, Message>(
     message: Message,
 ) -> Element<'a, Message>
 where
-    Message: Clone + 'a, // Un bouton émet un message, il faut le Clone
+    Message: Clone + 'a, // A button emits a message, Clone is required
 {
     let content = row![
         text(label).size(13),
@@ -43,9 +43,10 @@ where
         .into()
 }
 
+#[must_use]
 pub fn menu_separator<'a, Message>() -> Element<'a, Message>
 where
-    Message: 'a, // CORRECTION : Garantie de durée de vie
+    Message: 'a, // FIX: Lifetime guarantee
 {
     column![
         Space::new().height(Length::Fixed(4.0)),
@@ -65,7 +66,7 @@ pub fn dropdown_box<'a, Message>(
     width: f32,
 ) -> Element<'a, Message>
 where
-    Message: 'a, // CORRECTION : Garantie de durée de vie
+    Message: 'a, // FIX: Lifetime guarantee
 {
     container(content)
         .width(Length::Fixed(width))
@@ -74,7 +75,7 @@ where
         .into()
 }
 
-// --- STYLES INTERNES PARTAGÉS ---
+// --- SHARED INTERNAL STYLES ---
 
 fn dropdown_item_style(_theme: &Theme, status: button::Status) -> button::Style {
     crate::style::menu_item(status)

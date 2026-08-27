@@ -79,6 +79,8 @@ pub struct History {
 }
 
 impl History {
+    /// Create a new history with default limit.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             undo: Vec::new(),
@@ -197,10 +199,14 @@ impl History {
         }
     }
 
+    /// Whether an undo is available.
+    #[must_use]
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
+    /// Whether a redo is available.
+    #[must_use]
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }

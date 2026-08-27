@@ -14,25 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Styles canoniques de la suite — UNE définition par famille visuelle.
+//! Canonical suite styles — ONE definition per visual family.
 //!
-//! Règle : un composant n'écrit JAMAIS une closure de style à la main ;
-//! il référence une fonction de ce module. Toute couleur/rayon consommé ici
-//! provient de [`crate::theme`] (DESIGN.md). Ajouter une variante ici plutôt
-//! que de dupliquer ailleurs.
+//! Rule: a component NEVER writes a style closure by hand;
+//! it references a function from this module. Every color/radius consumed here
+//! comes from [`crate::theme`] (DESIGN.md). Add a variant here rather
+//! than duplicating elsewhere.
 
 use iced::widget::{button, container};
 use iced::{Border, Color, Shadow};
 
 use crate::theme::{colors, metrics};
 
-/// Bouton « fantôme » : transparent au repos, voile blanc au survol.
-/// Famille Affinity — barres d'outils, en-têtes, actions discrètes.
+/// Ghost button: transparent at rest, white veil on hover.
+/// Affinity family — toolbars, headers, discreet actions.
+#[must_use]
 pub fn ghost(status: button::Status) -> button::Style {
     ghost_variant(status, false)
 }
 
-/// Variante sélectionnée du bouton fantôme : teinte accent fondue.
+/// Selected variant of ghost button: blended accent tint.
+#[must_use]
 pub fn ghost_selected(selected: bool, status: button::Status) -> button::Style {
     ghost_variant(status, selected)
 }
@@ -57,9 +59,10 @@ fn ghost_variant(status: button::Status, selected: bool) -> button::Style {
     }
 }
 
-/// Bouton d'outil de palette flottante (façon macOS) : icône discrète au
-/// repos, éclaircie au survol, sélection = teinte accent arrondie.
-/// Le texte enfant ne doit PAS fixer sa couleur : c'est ce style qui pilote.
+/// Floating palette tool button (macOS-style): discreet icon at
+/// rest, brightened on hover, selection = rounded accent tint.
+/// Child text must NOT set its color: this style drives it.
+#[must_use]
 pub fn tool_button(selected: bool, status: button::Status) -> button::Style {
     let hovered = status == button::Status::Hovered;
     let background: Option<Color> = if selected {
@@ -85,7 +88,8 @@ pub fn tool_button(selected: bool, status: button::Status) -> button::Style {
     }
 }
 
-/// Entrée de menu / dropdown : plein ACCENT au survol, texte inversé.
+/// Menu/dropdown entry: solid ACCENT on hover, inverted text.
+#[must_use]
 pub fn menu_item(status: button::Status) -> button::Style {
     if status == button::Status::Hovered {
         button::Style {
@@ -110,8 +114,9 @@ pub fn menu_item(status: button::Status) -> button::Style {
     }
 }
 
-/// Bouton primaire (DESIGN.md « Buttons > Primary ») : ACCENT plein,
-/// éclairci au survol. Actions principales uniquement (Créer, Exporter…).
+/// Primary button (DESIGN.md "Buttons > Primary"): solid ACCENT,
+/// brightened on hover. Primary actions only (Create, Export...).
+#[must_use]
 pub fn primary(status: button::Status) -> button::Style {
     let background = if status == button::Status::Hovered {
         colors::ACCENT_HOVER
@@ -129,8 +134,9 @@ pub fn primary(status: button::Status) -> button::Style {
     }
 }
 
-/// Puce posée sur une barre (sélecteur de projet, presets d'accueil) :
-/// surface avec bordure subtile, éclaircie au survol.
+/// Chip on a bar (project selector, home presets):
+/// surface with subtle border, brightened on hover.
+#[must_use]
 pub fn chip(status: button::Status) -> button::Style {
     let background = if status == button::Status::Hovered {
         colors::SURFACE_CONTAINER_HIGH
@@ -149,8 +155,9 @@ pub fn chip(status: button::Status) -> button::Style {
     }
 }
 
-/// Bouton fantôme à connotation destructive : voile rouge au survol
-/// (fermer/vider un réglage sensible).
+/// Ghost button with destructive connotation: red veil on hover
+/// (close/clear a sensitive setting).
+#[must_use]
 pub fn ghost_danger(status: button::Status) -> button::Style {
     let background = if status == button::Status::Hovered {
         Some(colors::ERROR_CONTAINER)
@@ -168,13 +175,15 @@ pub fn ghost_danger(status: button::Status) -> button::Style {
     }
 }
 
-/// Petit bouton d'action compact (tableaux de raccourcis, lignes de
-/// réglages) : pastille grise au repos, ACCENT au survol.
+/// Small compact action button (shortcut tables, setting rows):
+/// grey pill at rest, ACCENT on hover.
+#[must_use]
 pub fn action_chip(status: button::Status) -> button::Style {
     action_chip_colored(status, colors::ACCENT)
 }
 
-/// Variante destructive de [`action_chip`] : voile rouge au survol.
+/// Destructive variant of [`action_chip`]: red veil on hover.
+#[must_use]
 pub fn action_chip_danger(status: button::Status) -> button::Style {
     action_chip_colored(status, colors::ERROR_CONTAINER)
 }
@@ -203,8 +212,9 @@ fn action_chip_colored(status: button::Status, hover: Color) -> button::Style {
     }
 }
 
-/// Carte flottante (dropdown, menu de tâches, palette d'outils) — panneau
-/// « Floating Panel » du DESIGN.md : surface + bordure subtile + ombre.
+/// Floating card (dropdown, task menu, tool palette) — panel
+/// DESIGN.md "Floating Panel": surface + subtle border + shadow.
+#[must_use]
 pub fn floating_card(background: Color, radius: f32, shadow: Shadow) -> container::Style {
     container::Style {
         background: Some(background.into()),
@@ -218,7 +228,8 @@ pub fn floating_card(background: Color, radius: f32, shadow: Shadow) -> containe
     }
 }
 
-/// Carte posée dans un panneau (pas d'ombre) — fonds de listes, vignettes.
+/// Card inside a panel (no shadow) — list backgrounds, thumbnails.
+#[must_use]
 pub fn inset_card(background: Color, radius: f32) -> container::Style {
     container::Style {
         background: Some(background.into()),

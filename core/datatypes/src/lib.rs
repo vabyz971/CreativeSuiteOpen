@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Datatypes partagés pour toute la CreativeSuiteOpen
-//! Définit les briques nodales génériques utilisées par Photo, Vector, Video...
+//! Shared datatypes for `CreativeSuiteOpen`
+//! Defines generic node bricks used by Photo, Vector, Video...
 
 use std::collections::HashMap;
 
@@ -36,7 +36,7 @@ impl std::fmt::Display for NodeId {
 pub struct SocketId(pub u32);
 
 // ---------------------------------------------------------------------------
-// Types de sockets
+// Socket types
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,6 +49,7 @@ pub enum SocketType {
 }
 
 impl SocketType {
+    #[must_use]
     pub fn color(self) -> [f32; 3] {
         match self {
             SocketType::Image => [0.65, 0.45, 0.95],  // violet
@@ -59,6 +60,7 @@ impl SocketType {
         }
     }
 
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             SocketType::Image => "Image",
@@ -71,7 +73,7 @@ impl SocketType {
 }
 
 // ---------------------------------------------------------------------------
-// Valeurs
+// Values
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -93,6 +95,7 @@ pub struct ImageMeta {
 }
 
 impl DataValue {
+    #[must_use]
     pub fn socket_type(&self) -> Option<SocketType> {
         match self {
             DataValue::Float(_) => Some(SocketType::Float),
@@ -106,7 +109,7 @@ impl DataValue {
 }
 
 // ---------------------------------------------------------------------------
-// Paramètres éditables d'un node (inspecteur Properties)
+// Editable node parameters (Properties inspector)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -120,6 +123,7 @@ pub enum ParamValue {
 }
 
 impl ParamValue {
+    #[must_use]
     pub fn as_float(&self) -> Option<f32> {
         if let Self::Float(v) = self {
             Some(*v)
@@ -127,6 +131,7 @@ impl ParamValue {
             None
         }
     }
+    #[must_use]
     pub fn as_enum(&self) -> Option<&str> {
         if let Self::Enum(v) = self {
             Some(v.as_str())
@@ -137,7 +142,7 @@ impl ParamValue {
 }
 
 // ---------------------------------------------------------------------------
-// Définition d'un socket (métadonnée)
+// Socket definition (metadata)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -158,6 +163,7 @@ impl SocketDef {
         }
     }
 
+    #[must_use]
     pub fn with_default(mut self, v: DataValue) -> Self {
         self.default = Some(v);
         self
@@ -165,7 +171,7 @@ impl SocketDef {
 }
 
 // ---------------------------------------------------------------------------
-// Catégories (pour librairie Add Node)
+// Categories (for Add Node library)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -180,6 +186,7 @@ pub enum NodeCategory {
 }
 
 impl NodeCategory {
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             NodeCategory::Input => "Entrée",
@@ -194,7 +201,7 @@ impl NodeCategory {
 }
 
 // ---------------------------------------------------------------------------
-// Définition d'un type de node (registre)
+// Node type definition (registry)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -205,7 +212,7 @@ pub struct NodeDefinition {
     pub inputs: Vec<SocketDef>,
     pub outputs: Vec<SocketDef>,
     pub default_params: HashMap<String, ParamValue>,
-    /// Couleur d'en-tête du node
+    /// Node header color
     pub header_color: [f32; 3],
     pub description: String,
 }
@@ -228,26 +235,33 @@ impl NodeDefinition {
         }
     }
 
+    #[must_use]
     pub fn input(mut self, def: SocketDef) -> Self {
         self.inputs.push(def);
         self
     }
 
+    #[must_use]
     pub fn output(mut self, def: SocketDef) -> Self {
         self.outputs.push(def);
         self
     }
 
+    /// Adds a default parameter.
+    #[must_use]
     pub fn param(mut self, key: impl Into<String>, value: ParamValue) -> Self {
         self.default_params.insert(key.into(), value);
         self
     }
 
+    #[must_use]
     pub fn header_color(mut self, rgb: [f32; 3]) -> Self {
         self.header_color = rgb;
         self
     }
 
+    /// Sets the node description.
+    #[must_use]
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = d.into();
         self
@@ -255,7 +269,7 @@ impl NodeDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers géométriques partagés UI
+// Shared UI geometry helpers
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -265,6 +279,7 @@ pub struct Vec2 {
 }
 
 impl Vec2 {
+    #[must_use]
     pub fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }

@@ -14,12 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Piano Roll FL Studio-like — widget minimaliste pour l'app Audio
+//! Piano Roll FL Studio-like — minimal widget for Audio app
 
 use crate::theme::colors;
 use iced::widget::{Space, column, container, row, text};
 use iced::{Alignment, Color, Element, Length};
 
+#[must_use]
 pub fn view<'a, Message>() -> Element<'a, Message>
 where
     Message: 'a,

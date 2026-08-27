@@ -223,6 +223,7 @@ pub fn commit_stroke(
 
     let mut rgba = base.to_rgba8().into_raw();
     paint_stroke_rgba(&mut rgba, lw, lh, &pts, brush);
+    // BUG: raw length is w*h*4 by construction from to_rgba8().into_raw(); mismatch would be a logic error
     let painted = ::image::DynamicImage::ImageRgba8(
         ::image::RgbaImage::from_raw(lw, lh, rgba.clone()).expect("taille inchangée"),
     );

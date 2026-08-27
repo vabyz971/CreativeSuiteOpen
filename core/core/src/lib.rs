@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Moteur de graphe nodal générique pour CreativeSuiteOpen
-//! Utilisé par Photo, Vector, Video...
+//! Generic node graph engine for `CreativeSuiteOpen`
+//! Used by Photo, Vector, Video...
 
 use datatypes::{DataValue, NodeId, ParamValue, SocketType, Vec2};
 use std::collections::{HashMap, VecDeque};
@@ -32,7 +32,7 @@ pub struct Node {
     pub position: Vec2,
     pub params: HashMap<String, ParamValue>,
     pub preview_enabled: bool,
-    /// Nœud actif : si false, l'effet est bypassé (le flux passe à travers)
+    /// Active node: if false, effect is bypassed (flow passes through)
     pub enabled: bool,
 }
 
@@ -49,10 +49,11 @@ impl Node {
         }
     }
 
+    #[must_use]
     pub fn param_float(&self, key: &str, default: f32) -> f32 {
         self.params
             .get(key)
-            .and_then(|v| v.as_float())
+            .and_then(datatypes::ParamValue::as_float)
             .unwrap_or(default)
     }
 }
@@ -130,7 +131,7 @@ impl std::fmt::Display for GraphError {
             GraphError::NodeNotFound(id) => write!(f, "Node {id} introuvable"),
             GraphError::SocketNotFound(s) => write!(f, "Socket {s} introuvable"),
             GraphError::TypeMismatch { from, to } => {
-                write!(f, "Type mismatch {:?} -> {:?}", from, to)
+                write!(f, "Type mismatch {from:?} -> {to:?}")
             }
             GraphError::CycleDetected => write!(f, "Cycle détecté dans le graphe"),
             GraphError::InputAlreadyConnected { node, socket } => {
@@ -141,6 +142,7 @@ impl std::fmt::Display for GraphError {
 }
 
 impl Graph {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             nodes: HashMap::new(),
@@ -172,6 +174,7 @@ impl Graph {
         self.nodes.remove(&id)
     }
 
+    #[must_use]
     pub fn get(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(&id)
     }
@@ -192,6 +195,10 @@ impl Graph {
         }
     }
 
+    /// Connects two sockets, validating types and cycle-freeness.
+    ///
+    /// # Errors
+    /// Returns `GraphError` if nodes are missing, input already connected, or a cycle would be created.
     pub fn connect(&mut self, conn: Connection) -> Result<(), GraphError> {
         if !self.nodes.contains_key(&conn.from_node) {
             return Err(GraphError::NodeNotFound(conn.from_node));
@@ -199,7 +206,7 @@ impl Graph {
         if !self.nodes.contains_key(&conn.to_node) {
             return Err(GraphError::NodeNotFound(conn.to_node));
         }
-        // Vérifie input pas déjà connecté (single input)
+        // Check input not already connected (single input)
         if self
             .connections
             .iter()
@@ -210,7 +217,7 @@ impl Graph {
                 socket: conn.to_socket.clone(),
             });
         }
-        // Cycle check via topo sort après insertion tentative
+        // Cycle check via topo sort after tentative insertion
         self.connections.push(conn);
         if self.topological_order().is_err() {
             self.connections.pop();
@@ -228,6 +235,7 @@ impl Graph {
         self.connections.retain(|c| c != conn);
     }
 
+    #[must_use]
     pub fn connections_from(&self, node: NodeId) -> Vec<&Connection> {
         self.connections
             .iter()
@@ -235,6 +243,7 @@ impl Graph {
             .collect()
     }
 
+    #[must_use]
     pub fn connections_to(&self, node: NodeId) -> Vec<&Connection> {
         self.connections
             .iter()
@@ -242,7 +251,10 @@ impl Graph {
             .collect()
     }
 
-    /// Tri topologique (Kahn). Erreur si cycle.
+    /// Topological sort (Kahn).
+    ///
+    /// # Errors
+    /// Returns `GraphError::CycleDetected` if the graph contains a cycle.
     pub fn topological_order(&self) -> Result<Vec<NodeId>, GraphError> {
         let mut indeg: HashMap<NodeId, usize> = self.nodes.keys().map(|id| (*id, 0)).collect();
         for c in &self.connections {
@@ -253,7 +265,7 @@ impl Graph {
             .filter(|(_, d)| **d == 0)
             .map(|(id, _)| *id)
             .collect();
-        let mut order = Vec::new();
+        let mut order = Vec::with_capacity(self.nodes.len());
         let mut indeg_mut = indeg;
 
         while let Some(n) = q.pop_front() {
@@ -269,22 +281,25 @@ impl Graph {
             }
         }
 
-        if order.len() != self.nodes.len() {
-            Err(GraphError::CycleDetected)
-        } else {
+        if order.len() == self.nodes.len() {
             Ok(order)
+        } else {
+            Err(GraphError::CycleDetected)
         }
     }
 
-    /// Évaluation mock : parcourt en topo, produit DataValue factices.
-    /// Remplacera par vrai moteur wgpu/image plus tard.
+    /// Mock evaluation: traverses in topo order, produces dummy `DataValues`.
+    /// Will be replaced by real wgpu/image engine later.
+    ///
+    /// # Errors
+    /// Returns `GraphError::CycleDetected` if topological ordering fails.
     pub fn evaluate(&self) -> Result<HashMap<NodeId, DataValue>, GraphError> {
         let order = self.topological_order()?;
-        let mut results: HashMap<NodeId, DataValue> = HashMap::new();
+        let mut results: HashMap<NodeId, DataValue> = HashMap::with_capacity(order.len());
 
         for id in order {
             let node = &self.nodes[&id];
-            // Pour l'instant on simule : Output -> Image 1920x1080, autres -> Float
+            // For now simulating: Output -> Image 1920x1080, others -> Float
             let val = match node.type_id.as_str() {
                 "output" => DataValue::Image(datatypes::ImageMeta {
                     width: 1920,
@@ -297,7 +312,7 @@ impl Graph {
                     path: Some("input.jpg".into()),
                 }),
                 _ => {
-                    // Si connecté en entrée Image, propage Image
+                    // If connected to Image input, propagate Image
                     let has_image_input = self
                         .connections
                         .iter()
@@ -318,6 +333,7 @@ impl Graph {
         Ok(results)
     }
 
+    #[must_use]
     pub fn find_output_node(&self) -> Option<NodeId> {
         self.nodes
             .iter()
@@ -325,7 +341,8 @@ impl Graph {
             .map(|(id, _)| *id)
     }
 
-    /// Vérifie si le node est connecté (transitivement) à l'Output - évite recalcul si déconnecté
+    /// Check if node is (transitively) connected to Output — avoids recompute if disconnected
+    #[must_use]
     pub fn is_connected_to_output(&self, node_id: NodeId) -> bool {
         let Some(output) = self.find_output_node() else {
             return false;
@@ -333,7 +350,7 @@ impl Graph {
         if node_id == output {
             return true;
         }
-        // BFS inverse depuis Output en suivant les connexions à l'envers
+        // Reverse BFS from Output following connections backwards
         let mut visited = std::collections::HashSet::new();
         let mut stack = vec![output];
         visited.insert(output);
@@ -351,7 +368,8 @@ impl Graph {
         false
     }
 
-    /// Retourne tous les ancêtres de l'Output (nœuds qui influencent le rendu final)
+    /// Return all ancestors of Output (nodes influencing final render)
+    #[must_use]
     pub fn output_ancestors(&self) -> std::collections::HashSet<NodeId> {
         let mut ancestors = std::collections::HashSet::new();
         let Some(output) = self.find_output_node() else {
@@ -369,20 +387,24 @@ impl Graph {
         ancestors
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
-    /// Vérifie si une connexion est valide (types compatibles)
+    /// Check if connection is valid (compatible types)
+    #[must_use]
     pub fn can_connect(&self, from_ty: SocketType, to_ty: SocketType) -> bool {
         from_ty == to_ty || (from_ty == SocketType::Float && to_ty == SocketType::Float)
     }
 
-    /// Retourne tous les descendants (enfants, récursif) d'un nœud, inclusif
+    /// Return all descendants (children, recursive) of a node, inclusive
+    #[must_use]
     pub fn downstream_nodes(&self, start: NodeId) -> std::collections::HashSet<NodeId> {
         let mut visited = std::collections::HashSet::new();
         let mut stack = vec![start];
@@ -456,7 +478,7 @@ mod tests {
     #[test]
     fn cycle_rejected() {
         let mut g = make_graph();
-        // Trouve explicitement l'input (indeg 0) et l'output (dernier)
+        // Explicitly find input (indeg 0) and output (last)
         let input_id = g
             .nodes
             .iter()
@@ -464,7 +486,7 @@ mod tests {
             .map(|(id, _)| *id)
             .unwrap();
         let last = *g.topological_order().unwrap().last().unwrap();
-        // Crée un cycle output -> input en utilisant un socket libre
+        // Create cycle output -> input using a free socket
         g.disconnect_input(input_id, "image");
         let res = g.connect(Connection::create(
             last,

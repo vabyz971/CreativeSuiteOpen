@@ -17,13 +17,13 @@
 use iced::widget::{button, text};
 use iced::{Element, Font, Length};
 
-/// Police Material Design - chargée au démarrage via `application.font(bytes)`
-/// Codepoints Unicode Material Icons : https://fonts.google.com/icons
+/// Material Design font — loaded at startup via `application.font(bytes)`
+/// Material Icons Unicode codepoints: <https://fonts.google.com/icons>
 pub const MATERIAL_ICONS: Font = Font::with_name("Material Icons");
 const SIZE_BUTTON: f32 = 32.0;
 
-/// Bouton icône de palette flottante — style macOS : sans fond, icône
-/// discrète au repos, éclaircie au survol, sélection teintée accent.
+/// Floating palette icon button — macOS style: no background,
+/// discreet icon at rest, brightened on hover, selection tinted accent.
 pub fn render<'a, Message>(
     icon_unicode: &'a str,
     _label: &'a str,
@@ -33,8 +33,8 @@ pub fn render<'a, Message>(
 where
     Message: Clone + 'a,
 {
-    // Pas de .color() explicite : `style::tool_button` pilote la teinte
-    // selon l'état (repos discret / survol / sélection).
+    // No explicit .color(): `style::tool_button` drives tint
+    // per state (discreet rest / hover / selection).
     let icon = text(icon_unicode)
         .font(MATERIAL_ICONS)
         .size(20)
@@ -46,7 +46,7 @@ where
         .height(Length::Fixed(SIZE_BUTTON))
         .padding(0)
         .style(move |_theme: &iced::Theme, status| {
-            // Palette macOS : teinte accent si sélectionné
+            // macOS palette: accent tint if selected
             crate::style::tool_button(selected, status)
         })
         .on_press(on_press)

@@ -56,6 +56,8 @@ pub struct RgbaBuf {
 }
 
 impl RgbaBuf {
+    /// Create a shareable RGBA buffer from raw bytes.
+    #[must_use]
     pub fn from_vec(width: u32, height: u32, data: Vec<u8>) -> Self {
         Self {
             width,
@@ -100,6 +102,8 @@ impl BlendMode {
         BlendMode::Lighten,
     ];
 
+    /// Human-readable label for UI.
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             BlendMode::Normal => "Normal",
@@ -113,6 +117,7 @@ impl BlendMode {
 
     /// Identifiant numérique (shader GPU + CPU). Doit rester aligné sur
     /// `SHADER_BLEND` (gpu.rs) et les tests golden.
+    #[must_use]
     pub fn id(self) -> u32 {
         match self {
             BlendMode::Normal => 0,
@@ -190,6 +195,7 @@ pub struct FilterNode {
 }
 
 impl FilterNode {
+    /// Create a new enabled filter with empty params.
     pub fn new(type_id: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -231,6 +237,7 @@ pub struct PixelLayer {
 }
 
 impl PixelLayer {
+    /// Create a new pixel layer with given name and source image.
     pub fn new(name: impl Into<String>, image: Arc<DynamicImage>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -245,6 +252,8 @@ impl PixelLayer {
         }
     }
 
+    /// Source dimensions in pixels.
+    #[must_use]
     pub fn dimensions(&self) -> (u32, u32) {
         self.source_image.dimensions()
     }
@@ -514,8 +523,9 @@ impl Document {
     }
 
     /// Liste plate des calques pixels, ordre de dessin (bas → haut), DFS.
+    #[must_use]
     pub fn iter_pixels(&self) -> Vec<&PixelLayer> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(self.root.len());
         collect_pixels(&self.root, &mut out);
         out
     }
@@ -676,6 +686,9 @@ impl Document {
     // -- Éditions destructives (pixels) ---------------------------------------
 
     /// Retourne le calque horizontalement/verticalement (destructif).
+    ///
+    /// # Errors
+    /// Retourne une erreur si le calque n'existe pas.
     pub fn flip(&mut self, id: Uuid, horizontal: bool) -> Result<(), String> {
         let layer = self.pixel_layer_mut(id).ok_or("calque introuvable")?;
         let flipped = if horizontal {
@@ -690,6 +703,9 @@ impl Document {
     /// Rogne le calque au rect (coordonnées CALQUE, pixels). Destructif :
     /// le contenu reste en place dans le monde (le transform compense
     /// l'origine du crop). Erreur descriptive si le rect est invalide.
+    ///
+    /// # Errors
+    /// Retourne une erreur si le calque est introuvable ou si le rectangle dépasse les bords.
     pub fn crop(&mut self, id: Uuid, x: i32, y: i32, w: u32, h: u32) -> Result<(), String> {
         let layer = self.pixel_layer_mut(id).ok_or("calque introuvable")?;
         let (iw, ih) = layer.dimensions();

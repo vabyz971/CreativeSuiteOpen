@@ -14,26 +14,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Crate `ui` — bibliothèque de widgets transverses de la suite.
+//! Crate `ui` — cross-cutting widget library for the suite.
 //!
-//! Architecture en couches (du bas vers le haut) :
+//! Layered architecture (bottom to top):
 //!
-//! 1. **`theme`** — SEULE source de couleurs, tailles, rayons, ombres
-//!    (tokens du DESIGN.md). Aucun autre module ne code une couleur en dur.
-//! 2. **`style`** — styles canoniques par famille visuelle (boutons, cartes).
-//!    Les composants référencent ces fonctions au lieu d'écrire des closures.
-//! 3. **Primitives transverses** — réutilisables par TOUTES les apps sans
-//!    logique métier : `icon_button`, `spinner`, `dropdown`, `settings`,
+//! 1. **`theme`** — SINGLE source of colors, sizes, radii, shadows
+//!    (DESIGN.md tokens). No other module hard-codes a color.
+//! 2. **`style`** — canonical styles per visual family (buttons, cards).
+//!    Components reference these functions instead of writing closures.
+//! 3. **Cross-cutting primitives** — reusable by ALL apps without
+//!    business logic: `icon_button`, `spinner`, `dropdown`, `settings`,
 //!    `shortcuts`.
-//! 4. **Layouts structurels** — compositions d'interface communes :
+//! 4. **Structural layouts** — common interface compositions:
 //!    `shell`, `menu`, `base_panel`.
-//! 5. **Canvas domaine** — affichages spécialisés potentiellement partagés
-//!    entre apps : `image_canvas`, `layer_canvas`, `node_graph`,
+//! 5. **Domain canvases** — specialized displays potentially shared
+//!    between apps: `image_canvas`, `layer_canvas`, `node_graph`,
 //!    `timeline`, `piano_roll`.
 //!
-//! Les éléments SPÉCIFIQUES à une app ne vivent PAS ici : ils restent dans
-//! `apps/<app>/src/components/`. Un composant est promu dans `ui/`
-//! uniquement quand une deuxième app en a besoin.
+//! App-SPECIFIC elements do NOT live here: they stay in
+//! `apps/<app>/src/components/`. A component is promoted to `ui/`
+//! only when a second app needs it.
 
 pub mod base_panel;
 pub mod dropdown;

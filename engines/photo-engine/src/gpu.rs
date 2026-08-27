@@ -226,6 +226,7 @@ fn floats_to_image(floats: &[f32], w: u32, h: u32) -> DynamicImage {
     for &f in floats {
         raw.push((f.clamp(0.0, 1.0) * 255.0) as u8);
     }
+    // BUG: panic only if caller provides inconsistent w/h vs floats length — indicates logic error upstream
     let buf = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, raw)
         .expect("floats_to_image: dimensions invalides");
     DynamicImage::ImageRgba8(buf)

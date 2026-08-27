@@ -84,7 +84,7 @@ pub fn render_chain(source: &Arc<DynamicImage>, filters: &[FilterNode]) -> Arc<D
     }
 
     let mut graph = Graph::new();
-    let mut sources: HashMap<NodeId, Arc<DynamicImage>> = HashMap::new();
+    let mut sources: HashMap<NodeId, Arc<DynamicImage>> = HashMap::with_capacity(1);
 
     let input = chain_node(&mut graph, "input_image", HashMap::new());
     sources.insert(input, Arc::clone(source));

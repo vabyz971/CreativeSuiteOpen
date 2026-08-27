@@ -14,8 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Canvas image interactif avec pan/zoom - utilise iced::widget::canvas native
-//! Inspiré de examples/bezier_tool et game_of_life (pan/zoom infini)
+//! Interactive image canvas with pan/zoom — uses `iced::widget::canvas` native
+//! Inspired by `examples/bezier_tool` and `game_of_life` (infinite pan/zoom)
+
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::many_single_char_names
+)]
 
 use iced::mouse;
 use iced::widget::canvas::{self, Frame, Geometry, Path};
@@ -24,18 +33,20 @@ use iced::{Point, Rectangle, Size, Theme, Vector};
 
 use crate::theme::colors;
 
+/// Tool active on the image canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasTool {
     Hand,
     Zoom,
     Select,
     Move,
-    /// Pinceau : peint sur le calque sélectionné
+    /// Brush: paints on selected layer
     Brush,
-    /// Gomme : efface (réduit l'alpha) sur le calque sélectionné
+    /// Eraser: erases (reduces alpha) on selected layer
     Eraser,
 }
 
+/// Events emitted by the image canvas.
 #[derive(Debug, Clone)]
 pub enum ImageCanvasEvent {
     Pan(Vector),
@@ -48,70 +59,70 @@ pub enum ImageCanvasEvent {
         pan: Vector,
     },
     SelectRect(Option<Rectangle>),
-    /// Taille du viewport du canvas (pour calculer "ajuster à l'image")
+    /// Canvas viewport size (to compute "fit to image")
     Viewport(Size),
-    /// Début du déplacement du calque sélectionné
+    /// Start moving selected layer
     MoveLayerStart,
-    /// Déplacement du calque sélectionné (dx/dy en pixels image depuis le début du drag)
+    /// Move selected layer (dx/dy in image pixels since drag start)
     MoveLayer {
         dx: f32,
         dy: f32,
     },
-    /// Fin du déplacement — valide le décalage
+    /// End of move — commit offset
     MoveLayerEnd,
-    /// Début d'un trait (coordonnées document) — pinceau ou gomme
+    /// Stroke start (document coordinates) — brush or eraser
     BrushStart {
         x: f32,
         y: f32,
-        /// true = gomme (destination-out), false = pinceau
+        /// true = eraser (destination-out), false = brush
         erase: bool,
     },
-    /// Fin du trait — polyligne (commit pixels) + texture d'aperçu figée
-    /// jusqu'à l'application effective des pixels.
+    /// Stroke end — polyline (commit pixels) + frozen preview texture
+    /// until pixels are actually applied.
     BrushEnd {
         points: Vec<(f32, f32)>,
         tex: Option<StrokeTex>,
-        /// true = gomme (destination-out), false = pinceau
+        /// true = eraser (destination-out), false = brush
         erase: bool,
     },
 }
 
-/// Style du pinceau/gomme pour l'aperçu live (espace document).
+/// Brush/eraser style for live preview (document space).
 #[derive(Clone, Copy, Debug)]
 pub struct BrushStyle {
-    /// Couleur RGB 0-255 (ignorée pour la gomme : aperçu en anneau)
+    /// RGB color 0-255 (ignored for eraser: ring preview)
     pub color: [u8; 3],
-    /// Rayon en pixels DOCUMENT (= taille / 2)
+    /// Radius in DOCUMENT pixels (= size / 2)
     pub radius: f32,
     pub opacity: f32,
-    /// true = gomme → l'aperçu est un ANNEAU (empreinte) au lieu du disque
+    /// true = eraser → preview is a RING (imprint) instead of disc
     pub erase: bool,
 }
 
-/// Aperçu d'un trait — TUILES 512×512 en coordonnées document.
+/// Stroke preview — 512×512 TILES in document coordinates.
 ///
-/// Pourquoi une texture et pas des cercles vectoriels ? Le moteur iced
-/// impose par couche l'ordre de rendu figé quads -> meshes -> images :
-/// la géométrie vectorielle passerait SOUS les textures des calques.
-/// Une image, elle, est dessinée après les images de calques.
+/// Why a texture and not vector circles? The iced engine
+/// enforces per-layer fixed render order quads -> meshes -> images:
+/// vector geometry would go UNDER layer textures.
+/// An image, however, is drawn after layer images.
 ///
-/// Pourquoi des tuiles ? L'atlas de textures iced_wgpu limite une image à
-/// 2048×2048 (`atlas::MAX_SIZE`) : un grand tracé dans une texture unique
-/// dépassait la limite et DISPARAISSAIT de l'aperçu. Chaque tuile reste
-/// loin sous la limite, quelle que soit l'étendue du trait. Les tuiles
-/// étant alignées sur une grille entière, aucun ré-échantillonnage n'a
-/// lieu lors de l'extension du trait — l'aperçu ne « marche » plus.
+/// Why tiles? The `iced_wgpu` texture atlas limits an image to
+/// 2048×2048 (`atlas::MAX_SIZE`): a large stroke in a single texture
+/// exceeded the limit and DISAPPEARED from preview. Each tile stays
+/// well under the limit, whatever the stroke extent. Tiles
+/// being aligned on an integer grid, no resampling occurs
+/// when extending the stroke — preview no longer "crawls".
 #[derive(Clone, Debug, Default)]
 pub struct StrokeTex {
     tiles: Vec<Tile>,
 }
 
-/// Côté d'une tuile d'aperçu (pixels document).
+/// Side of a preview tile (document pixels).
 const TILE: u32 = 512;
 
 #[derive(Clone, Debug)]
 struct Tile {
-    /// Coordonnées tuile sur la grille (× TILE = origine document)
+    /// Tile coordinates on grid (× TILE = document origin)
     tx: i32,
     ty: i32,
     rgba: Vec<u8>,
@@ -131,8 +142,8 @@ impl StrokeTex {
         }
     }
 
-    /// Estampe un disque (couleur) ou un anneau (gomme) centré en (cx, cy)
-    /// document — écrit dans toutes les tuiles chevauchées.
+    /// Stamp a disc (color) or ring (eraser) centered at (cx, cy)
+    /// document — writes to all overlapped tiles.
     fn stamp_disc(
         &mut self,
         cx: f32,
@@ -162,7 +173,7 @@ impl StrokeTex {
         }
     }
 
-    /// Estampe des disques/anneaux le long du segment (pas ~ rayon/3).
+    /// Stamp discs/rings along segment (step ~ radius/3).
     fn stamp_segment(&mut self, from: (f32, f32), to: (f32, f32), b: &BrushStyle) {
         let dx = to.0 - from.0;
         let dy = to.1 - from.1;
@@ -182,7 +193,7 @@ impl StrokeTex {
         }
     }
 
-    /// Itère les tuiles touchées : (origine document x, y, pixels RGBA).
+    /// Iterate touched tiles: (document origin x, y, RGBA pixels).
     fn tiles(&self) -> impl Iterator<Item = (f32, f32, &[u8])> {
         self.tiles.iter().map(|t| {
             (
@@ -194,42 +205,44 @@ impl StrokeTex {
     }
 }
 
-/// Un calque affichable sur le canvas — dessiné à SA position monde.
-/// Déplacer = changer offset → simple redraw, zéro recomposite.
-/// L'opacité/rotation/scale sont appliqués AU DRAW (GPU) — zéro
-/// régénération de pixels.
+/// A displayable layer on canvas — drawn at its world position.
+/// Moving = change offset → simple redraw, zero recomposite.
+/// Opacity/rotation/scale are applied AT DRAW (GPU) — zero
+/// pixel regeneration.
 pub struct CanvasLayer {
     pub handle: image::Handle,
     pub width: f32,
     pub height: f32,
-    /// Position monde (0,0) = coin haut-gauche du document
+    /// World position (0,0) = top-left corner of document
     pub offset_x: f32,
     pub offset_y: f32,
-    /// Opacité 0..1 appliquée au draw (sans toucher aux pixels)
+    /// Opacity 0..1 applied at draw (without touching pixels)
     pub opacity: f32,
-    /// Rotation en degrés (autour du centre du calque)
+    /// Rotation in degrees (around layer center)
     pub rotation_deg: f32,
-    /// Échelle uniforme (1.0 = 100 %)
+    /// Uniform scale (1.0 = 100%)
     pub scale: f32,
 }
 
+/// Interactive image canvas program.
 pub struct ImageCanvas {
     pub layers: Vec<CanvasLayer>,
-    /// Dimensions du document (repère au sol, dessiné dans l'espace monde)
+    /// Document dimensions (ground reference, drawn in world space)
     pub doc_size: Option<Size>,
     pub pan: Vector,
     pub zoom: f32,
     pub tool: CanvasTool,
     pub selection: Option<Rectangle>,
-    /// Style du pinceau (rastérisation de l'aperçu live)
+    /// Brush style (live preview rasterization)
     pub brush: BrushStyle,
-    /// Pinceau autorisé (false = calque masqué → pas d'aperçu ni interaction)
+    /// Brush allowed (false = hidden layer → no preview nor interaction)
     pub can_paint: bool,
-    /// Aperçu figé pendant le commit asynchrone (après relâchement)
+    /// Frozen preview during async commit (after release)
     pub pending_preview: Option<StrokeTex>,
 }
 
 impl ImageCanvas {
+    #[must_use]
     pub fn new(doc_size: Option<Size>, pan: Vector, zoom: f32) -> Self {
         Self {
             layers: Vec::new(),
@@ -248,20 +261,23 @@ impl ImageCanvas {
             pending_preview: None,
         }
     }
+    #[must_use]
     pub fn with_brush(mut self, brush: BrushStyle) -> Self {
         self.brush = brush;
         self
     }
+    #[must_use]
     pub fn with_can_paint(mut self, can: bool) -> Self {
         self.can_paint = can;
         self
     }
+    #[must_use]
     pub fn with_pending_preview(mut self, preview: Option<StrokeTex>) -> Self {
         self.pending_preview = preview;
         self
     }
 
-    /// Convertit une position écran canvas en coordonnées DOCUMENT
+    /// Convert canvas screen position to DOCUMENT coordinates
     /// (inverse exact du transform de draw : centre + pan + zoom).
     fn screen_to_doc(&self, p: Point, bounds: Rectangle) -> Point {
         let center = Point::new(
@@ -270,21 +286,23 @@ impl ImageCanvas {
         );
         let (hw, hh) = self
             .doc_size
-            .map(|s| (s.width / 2.0, s.height / 2.0))
-            .unwrap_or((0.0, 0.0));
+            .map_or((0.0, 0.0), |s| (s.width / 2.0, s.height / 2.0));
         Point::new(
             (p.x - center.x) / self.zoom + hw,
             (p.y - center.y) / self.zoom + hh,
         )
     }
+    #[must_use]
     pub fn with_layers(mut self, layers: Vec<CanvasLayer>) -> Self {
         self.layers = layers;
         self
     }
+    #[must_use]
     pub fn with_tool(mut self, tool: CanvasTool) -> Self {
         self.tool = tool;
         self
     }
+    #[must_use]
     pub fn with_selection(mut self, sel: Option<Rectangle>) -> Self {
         self.selection = sel;
         self
@@ -294,22 +312,22 @@ impl ImageCanvas {
 #[derive(Default)]
 pub struct State {
     pub dragging: Option<(Point, Vector)>,
-    /// Points du trait en cours (coords document) — stockés dans le canvas
-    /// pour un aperçu sans aller-retour vers l'application (zéro latence,
-    /// redraw explicite à chaque déplacement).
+    /// Current stroke points (document coords) — stored in canvas
+    /// for preview without round-trip to app (zero latency,
+    /// explicit redraw on each move).
     pub stroke: Vec<(f32, f32)>,
-    /// Version rastérisée du trait (texture doc-space, au-dessus des calques)
+    /// Rasterized stroke version (doc-space texture, above layers)
     pub stroke_tex: Option<StrokeTex>,
     pub selecting: Option<(Point, Point)>, // start, current
-    /// Drag scrubby zoom — ancre écran + zoom/pan de départ
+    /// Scrubby zoom drag — screen anchor + initial zoom/pan
     pub zoom_dragging: Option<(Point, f32, Vector)>,
-    /// Position écran du curseur pour aperçu taille d'outil
+    /// Screen cursor position for tool size preview
     pub cursor_pos: Option<Point>,
-    /// Modificateurs clavier courants (Alt = zoom inversé avec l'outil loupe)
+    /// Common keyboard modifiers (Alt = inverted zoom with magnifier tool)
     pub modifiers: iced::keyboard::Modifiers,
-    /// Espace maintenu → pan temporaire (Photoshop)
+    /// Space held → temporary pan (Photoshop)
     pub space_held: bool,
-    /// Dernière taille de viewport publiée (évite spam d'événements)
+    /// Last published viewport size (avoids event spam)
     pub prev_bounds: Option<Size>,
 }
 
@@ -323,7 +341,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<ImageCanvasEvent>> {
-        // Redraw demandé à chaque frame : on en profite pour publier le viewport
+        // Redraw requested each frame: use it to publish viewport
         if let canvas::Event::Window(iced::window::Event::RedrawRequested(_)) = event {
             if state.prev_bounds != Some(bounds.size()) {
                 state.prev_bounds = Some(bounds.size());
@@ -334,7 +352,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             return None;
         }
 
-        // Suivi des modificateurs clavier (avant le early-return sur le curseur)
+        // Track keyboard modifiers (before early-return on cursor)
         if let canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) = event {
             state.modifiers = *m;
             return None;
@@ -349,7 +367,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             && *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Space)
         {
             state.space_held = false;
-            // Annule un drag en cours si on relâche l'espace
+            // Cancel ongoing drag if space is released
             if state.dragging.is_some() {
                 state.dragging = None;
                 return Some(canvas::Action::capture());
@@ -357,9 +375,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             return None;
         }
 
-        // Relâchement : DOIT être traité même hors des bornes du widget
-        // (la souris est capturée pendant un drag) — sinon l'état de drag
-        // reste armé et les événements de déplacement continuent d'arriver.
+        // Release: MUST be handled even outside widget bounds
+        // (mouse is captured during drag) — otherwise drag state
+        // stays armed and move events keep arriving.
         if let canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) = event {
             if let Some((anchor, start_zoom, start_pan)) = state.zoom_dragging.take() {
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
@@ -368,7 +386,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 let dx = cursor_pos.x - anchor.x;
                 let dy = cursor_pos.y - anchor.y;
                 let drag_dist = (dx * dx + dy * dy).sqrt();
-                // Clic sans déplacement significatif = zoom ponctuel sur l'ancre
+                // Click without significant move = point zoom on anchor
                 if drag_dist < 4.0 {
                     let base_factor = 1.4_f32;
                     let factor = if state.modifiers.alt() {
@@ -392,7 +410,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             }
             if let Some((start, end)) = state.selecting.take() {
                 let Some(_cursor_pos) = cursor.position_in(bounds) else {
-                    // Relâché hors du canvas : annule la sélection
+                    // Released outside canvas: cancel selection
                     return Some(canvas::Action::publish(ImageCanvasEvent::SelectRect(None)));
                 };
                 let rect = Rectangle::new(start, Size::new(end.x - start.x, end.y - start.y));
@@ -440,7 +458,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     state.dragging = Some((cursor_pos, self.pan));
                     return Some(canvas::Action::capture());
                 }
-                // Outils
+                // Tools
                 match self.tool {
                     CanvasTool::Hand => {
                         state.dragging = Some((cursor_pos, self.pan));
@@ -471,7 +489,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         )
                     }
                     CanvasTool::Zoom => {
-                        // Début scrubby zoom — ancre = point de clic
+                        // Start scrubby zoom — anchor = click point
                         state.zoom_dragging = Some((cursor_pos, self.zoom, self.pan));
                         Some(canvas::Action::capture())
                     }
@@ -482,10 +500,10 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 }
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                // Met à jour aperçu taille outil et scrubby zoom
+                // Update tool size preview and scrubby zoom
                 state.cursor_pos = Some(cursor_pos);
                 if let Some((anchor, start_zoom, start_pan)) = state.zoom_dragging {
-                    // Scrubby zoom : vertical = avance/recule, ancré sur le point de clic
+                    // Scrubby zoom: vertical = forward/back, anchored on click point
                     let dy = anchor.y - cursor_pos.y; // monter = zoom +
                     let dx = cursor_pos.x - anchor.x;
                     let delta = dy + dx * 0.5; // influence horizontale douce
@@ -518,7 +536,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         let new_pan = Vector::new(orig_pan.x + delta.x, orig_pan.y + delta.y);
                         return Some(canvas::Action::publish(ImageCanvasEvent::Pan(new_pan)));
                     } else if self.tool == CanvasTool::Move {
-                        // Delta écran BRUT : l'aperçu suit le curseur 1:1,
+                        // Raw screen delta: preview follows cursor 1:1,
                         // la conversion en pixels image se fait une seule fois au commit.
                         let dx = cursor_pos.x - start.x;
                         let dy = cursor_pos.y - start.y;
@@ -530,7 +548,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
                         let last = *state.stroke.last().unwrap_or(&(doc.x, doc.y));
                         let dist = ((doc.x - last.0).powi(2) + (doc.y - last.1).powi(2)).sqrt();
-                        // Échantillonnage : un point tous les ~1/3 de rayon
+                        // Sampling: one point every ~1/3 radius
                         if dist >= (self.brush.radius * 0.35).max(1.0) {
                             state.stroke.push((doc.x, doc.y));
                             rasterize_segment(
@@ -540,11 +558,11 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                                 &self.brush,
                             );
                         }
-                        // Aperçu purement local : redraw sans aller-retour app
+                        // Purely local preview: redraw without app round-trip
                         return Some(canvas::Action::request_redraw().and_capture());
                     }
                 }
-                // Survol pinceau/gomme : redessine pour déplacer le cercle d'aperçu
+                // Brush/eraser hover: redraw to move preview circle
                 if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) {
                     return Some(canvas::Action::request_redraw().and_capture());
                 }
@@ -558,7 +576,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 if delta_y.abs() < 0.01 {
                     return None;
                 }
-                // Alt enfoncé + outil loupe : inverse le sens du zoom
+                // Alt held + magnifier tool: invert zoom direction
                 let delta_y = if self.tool == CanvasTool::Zoom && state.modifiers.alt() {
                     -delta_y
                 } else {
@@ -591,7 +609,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
 
-        // Fond uni — damier retiré (causait ralentissements au dézoom et bugs au resize)
+        // Solid background — checker removed (caused slowdowns when zoomed out and resize bugs)
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), colors::BG_APP);
 
         let center = Point::new(
@@ -599,18 +617,17 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             bounds.height / 2.0 + self.pan.y,
         );
 
-        // Chaque calque dessiné à SA position monde — le drag ne change
-        // qu'un offset, aucun recomposite (modèle Affinity).
+        // Each layer drawn at its world position — drag only changes
+        // an offset, no recomposite (Affinity model).
         // Convention : offset (0,0) = coin haut-gauche DU DOCUMENT
-        // (même sémantique que le composite CPU et le panneau Propriétés).
+        // (same semantics as CPU composite and Properties panel).
         let (doc_half_w, doc_half_h) = self
             .doc_size
-            .map(|s| (s.width / 2.0, s.height / 2.0))
-            .unwrap_or((0.0, 0.0));
+            .map_or((0.0, 0.0), |s| (s.width / 2.0, s.height / 2.0));
         for l in &self.layers {
-            // Rotation appliquée autour du centre du rect par iced —
-            // le rect garde la taille d'origine (w_s×h_s), les coins
-            // tournés dépassent naturellement sans être rognés.
+            // Rotation applied around rect center by iced —
+            // rect keeps original size (w_s×h_s), corners
+            // naturally overflow without clipping.
             let w = l.width * l.scale * self.zoom;
             let h = l.height * l.scale * self.zoom;
             let top_left = Point::new(
@@ -625,11 +642,11 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             );
         }
 
-        // Aperçu pinceau : TEXTURES (une par tuile 512×512) dessinées après
-        // les images de calques. Ordre figé du moteur iced par couche :
-        // quads -> meshes -> images ; une géométrie vectorielle passerait
-        // SOUS les calques. Priorité au trait live (drag) ; sinon l'aperçu
-        // figé du commit.
+        // Brush preview: TEXTURES (one per 512×512 tile) drawn after
+        // layer images. Fixed iced engine order per layer:
+        // quads -> meshes -> images; vector geometry would go
+        // UNDER layers. Priority to live stroke (drag); otherwise frozen
+        // commit preview.
         let preview = state.stroke_tex.as_ref().or(self.pending_preview.as_ref());
         if let Some(t) = preview {
             for (x, y, rgba) in t.tiles() {
@@ -647,8 +664,8 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             }
         }
 
-        // Repère document dessiné DANS l'espace monde → insensible au zoom,
-        // parfaitement synchrone avec pan/zoom (l'overlay widget se déformait).
+        // Document marker drawn IN world space → zoom-insensitive,
+        // perfectly in sync with pan/zoom (overlay widget was distorting).
         if let Some(ds) = self.doc_size {
             let dw = ds.width * self.zoom;
             let dh = ds.height * self.zoom;
@@ -671,7 +688,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         }
 
         if self.layers.is_empty() && self.doc_size.is_none() {
-            // Pas d'image : texte centré
+            // No image: centered text
             frame.fill_text(iced::widget::canvas::Text {
                 content: "Aucune image - Fichier > Ouvrir".into(),
                 position: Point::new(bounds.width / 2.0, bounds.height / 2.0),
@@ -684,9 +701,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             });
         }
 
-        // Grille supprimée — fond uni uniquement
+        // Grid removed — solid background only
 
-        // Sélection rect (outil Select/Zoom) - comme dans l'exemple Bézier Pending
+        // Rect selection (Select/Zoom tool) — as in Bezier Pending example
         if let Some((start, current)) = state.selecting {
             let sel = Rectangle::new(start, Size::new(current.x - start.x, current.y - start.y));
             let norm = Rectangle::new(
@@ -712,15 +729,15 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             );
         }
 
-        // Aperçu taille d'outil — IMAGE au-dessus des calques (masqué si calque masqué)
+        // Tool size preview — IMAGE above layers (hidden if layer masked)
         if self.can_paint
             && matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser)
             && let Some(pos) = state.cursor_pos
             && bounds.contains(pos)
         {
             let r = (self.brush.radius * self.zoom).max(2.0);
-            // Génère une petite texture RGBA avec cercle gris — dessinée en IMAGE
-            // pour passer au-dessus des calques (ordre iced: quads->meshes->images)
+            // Generate small RGBA texture with grey circle — drawn as IMAGE
+            // to go above layers (iced order: quads->meshes->images)
             let size = ((r * 2.0 + 6.0).ceil() as u32).clamp(8, 512);
             let mut rgba = vec![0u8; (size * size * 4) as usize];
             let cx = size as f32 / 2.0;
@@ -762,10 +779,10 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     rgba[idx + 1] = 128;
                     rgba[idx + 2] = 128;
                     rgba[idx + 3] = a;
-                    // Liseré blanc/noir adouci via alpha déjà — le gris reste lisible
+                    // White/black edge softened via alpha — grey stays readable
                 }
             }
-            // Point central pour pinceau
+            // Center point for brush
             if !self.brush.erase {
                 let dot_r = 1.2;
                 for y in 0..size {
@@ -790,7 +807,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             );
             let label = format!("{} px", (self.brush.radius * 2.0).round() as u32);
             let label_pos = Point::new(pos.x, pos.y - r - 10.0);
-            // Fond semi-transparent derrière label pour lisibilité sur blanc/noir
+            // Semi-transparent background behind label for readability on white/black
             let label_bg = Rectangle::new(
                 Point::new(label_pos.x - 22.0, label_pos.y - 7.0),
                 Size::new(44.0, 14.0),
@@ -846,6 +863,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn view_with_tool<'a>(
     doc_size: Option<Size>,
     pan: Vector,
@@ -871,12 +889,12 @@ pub fn view_with_tool<'a>(
 }
 
 // ---------------------------------------------------------------------------
-// Rastérisation de l'aperçu du trait (par tuile 512×512)
+// Stroke preview rasterization (per 512×512 tile)
 // ---------------------------------------------------------------------------
 
-/// Rastérise le segment `from -> to` (coordonnées document) dans l'aperçu.
-/// Les tuiles manquantes sont créées à la volée ; les existantes ne sont
-/// JAMAIS déplacées (grille entière) → zéro dérive de l'aperçu.
+/// Rasterize segment `from -> to` (document coordinates) into preview.
+/// Missing tiles are created on the fly; existing ones are never
+/// moved (whole grid) → zero preview drift.
 fn rasterize_segment(
     tex: &mut Option<StrokeTex>,
     from: (f32, f32),
@@ -887,10 +905,10 @@ fn rasterize_segment(
     t.stamp_segment(from, to, brush);
 }
 
-/// Disque avec bord adouci sur 1 px ; alpha final = couverture x opacité
+/// Disc with 1px soft edge; final alpha = coverage x opacity
 fn stamp_circle(t: &mut Tile, cx: f32, cy: f32, r: f32, col: [u8; 3], opacity: f32) {
-    let w = TILE as i64;
-    let h = TILE as i64;
+    let w = i64::from(TILE);
+    let h = i64::from(TILE);
     let x0 = ((cx - r - 1.0).floor() as i64).clamp(0, w.saturating_sub(1));
     let y0 = ((cy - r - 1.0).floor() as i64).clamp(0, h.saturating_sub(1));
     let x1 = ((cx + r + 1.0).ceil() as i64).clamp(0, w - 1);
@@ -915,7 +933,7 @@ fn stamp_circle(t: &mut Tile, cx: f32, cy: f32, r: f32, col: [u8; 3], opacity: f
                 continue;
             }
             let idx = ((py * w + px) * 4) as usize;
-            // Fond transparent : source-over == MAX ; évite l'assombrissement
+            // Transparent background: source-over == MAX; avoids darkening
             // aux recouvrements de disques successifs.
             if a > t.rgba[idx + 3] {
                 t.rgba[idx] = col[0];
@@ -927,15 +945,15 @@ fn stamp_circle(t: &mut Tile, cx: f32, cy: f32, r: f32, col: [u8; 3], opacity: f
     }
 }
 
-/// Anneau blanc semi-transparent : empreinte visuelle de la gomme.
-/// L'intérieur reste TRANSPARENT — on montre OÙ l'effacement aura lieu,
-/// pas une couleur de peinture. Blanc pour rester lisible sur tout fond.
+/// Anneau blanc semi-transparent : empreinte visuelle de la eraser.
+/// Interior stays TRANSPARENT — show WHERE erasure will happen,
+/// not a paint color. White to stay readable on any background.
 fn stamp_ring(t: &mut Tile, cx: f32, cy: f32, r: f32, thickness: f32, col: [u8; 3], opacity: f32) {
     const RING_ALPHA: f32 = 0.85;
     let inner = (r - thickness).max(0.0);
     let outer = r + 1.0; // bord adouci externe 1 px
-    let w = TILE as i64;
-    let h = TILE as i64;
+    let w = i64::from(TILE);
+    let h = i64::from(TILE);
     let x0 = ((cx - outer).floor() as i64).clamp(0, w.saturating_sub(1));
     let y0 = ((cy - outer).floor() as i64).clamp(0, h.saturating_sub(1));
     let x1 = ((cx + outer).ceil() as i64).clamp(0, w - 1);
@@ -948,9 +966,9 @@ fn stamp_ring(t: &mut Tile, cx: f32, cy: f32, r: f32, thickness: f32, col: [u8; 
             let ddx = px as f32 + 0.5 - cx;
             let ddy = py as f32 + 0.5 - cy;
             let d = (ddx * ddx + ddy * ddy).sqrt();
-            // Bandeau [inner, r] plein, adouci sur 1 px de chaque côté ;
-            // l'INTÉRIEUR (d < inner-1) reste transparent — l'anneau montre
-            // l'empreinte de la gomme, pas une peinture.
+            // Band [inner, r] solid, softened by 1px on each side;
+            // INTERIOR (d < inner-1) stays transparent — ring shows
+            // eraser footprint, not paint.
             let cov = if d >= inner && d <= r {
                 255.0
             } else if d < inner {
@@ -990,21 +1008,21 @@ mod tests {
     #[test]
     fn disque_sur_frontiere_de_tuiles_ecrit_dans_les_deux() {
         let mut tex = StrokeTex::default();
-        // Disque centré sur la frontière x = 512
+        // Disc centered on border x = 512
         tex.stamp_disc(512.0, 100.0, 20.0, false, [255, 0, 0], 1.0);
         assert_eq!(tex.tiles.len(), 2, "tuiles (0,0) et (1,0) touchées");
 
         let right = &tex.tiles.iter().find(|t| t.tx == 1).expect("tuile droite");
-        // Centre du disque : local (0, 100) dans la tuile de droite
+        // Disc center: local (0, 100) in right tile
         assert_eq!(alpha_at(right, 0, 100), 255);
         let left = &tex.tiles.iter().find(|t| t.tx == 0).expect("tuile gauche");
-        // Bord gauche du disque : local (511, 100) dans la tuile de gauche
+        // Left edge of disc: local (511, 100) in left tile
         assert!(alpha_at(left, 511, 100) > 0);
     }
 
     #[test]
     fn trait_transfrontalier_sans_limite_de_taille() {
-        // Tracé de (0,0) à (3000, 3000) : dépasse largement l'ancienne
+        // Stroke from (0,0) to (3000,3000): far exceeds old
         // limite atlas de 2048 — chaque tuile reste ≤ 512×512
         let mut tex = StrokeTex::default();
         tex.stamp_segment(
@@ -1017,7 +1035,7 @@ mod tests {
                 erase: false,
             },
         );
-        // La diagonale traverse les tuiles (0,0)…(5,5) + voisines touchées
+        // Diagonal crosses tiles (0,0)…(5,5) + touched neighbors
         // par le rayon du disque
         assert!(
             tex.tiles.len() >= 12,
@@ -1032,7 +1050,7 @@ mod tests {
         for t in &tex.tiles {
             assert_eq!(t.rgba.len() as u32, TILE * TILE * 4);
         }
-        // Point de départ et d'arrivée bien estampés
+        // Start and end points well stamped
         let first = &tex.tiles.iter().find(|t| t.tx == 0 && t.ty == 0).unwrap();
         assert!(alpha_at(first, 0, 0) > 0);
         let last = &tex.tiles.iter().find(|t| t.tx == 5 && t.ty == 5).unwrap();
@@ -1042,8 +1060,8 @@ mod tests {
 
     #[test]
     fn extension_du_trait_ne_deplace_pas_les_tuiles_existantes() {
-        // Régression du bug de dérive : estampe proche, puis segment loin —
-        // les pixels de la première estampe restent EXACTEMENT en place.
+        // Drift bug regression: stamp near, then segment far —
+        // first stamp pixels stay EXACTLY in place.
         let mut tex = StrokeTex::default();
         tex.stamp_segment(
             (100.0, 100.0),
@@ -1057,7 +1075,7 @@ mod tests {
         );
         let before = tex.tiles.clone();
 
-        // Segment loin de la première estampe : aucune retouche possible
+        // Segment far from first stamp: no possible retouch
         // de la tuile (0,0) — elle doit rester byte-identique.
         tex.stamp_segment(
             (1200.0, 1200.0),
@@ -1085,9 +1103,9 @@ mod tests {
         let mut tex = StrokeTex::default();
         tex.stamp_disc(100.0, 100.0, 20.0, true, [255, 255, 255], 1.0);
         let t = &tex.tiles[0];
-        // Centre : intérieur de l'anneau → transparent
+        // Center: interior of ring → transparent
         assert_eq!(alpha_at(t, 100, 100), 0);
-        // Bande de l'anneau (d ≤ r) : opaque à 85 % (RING_ALPHA)
+        // Ring band (d ≤ r): opaque at 85% (RING_ALPHA)
         assert_eq!(alpha_at(t, 119, 100), 217);
     }
 }
