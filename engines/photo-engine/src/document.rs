@@ -1022,8 +1022,17 @@ fn hide_subtree(node: Option<&mut LayerNode>) {
 fn collect_pixels<'a>(nodes: &'a [LayerNode], out: &mut Vec<&'a PixelLayer>) {
     for n in nodes {
         match n {
-            LayerNode::Pixel(l) => out.push(l),
-            LayerNode::Group(g) => collect_pixels(&g.children, out),
+            LayerNode::Pixel(l) => {
+                if l.visible && l.opacity > 0.01 {
+                    out.push(l);
+                }
+            }
+            LayerNode::Group(g) => {
+                if !g.visible || g.opacity <= 0.01 {
+                    continue;
+                }
+                collect_pixels(&g.children, out)
+            }
             LayerNode::Adjustment(_) => {}
         }
     }

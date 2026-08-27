@@ -47,6 +47,7 @@ pub fn render<'a>(
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
+    dragged: Option<Uuid>,
 ) -> Element<'a, Message> {
     let sel_node = selected.and_then(|id| doc.find(id));
 
@@ -115,7 +116,7 @@ pub fn render<'a>(
     });
 
     // --- Arbre des calques (haut de la pile affiché en premier) ---
-    let list = tree_column(&doc.root, preview_cache, selected, 0).padding(6);
+    let list = tree_column(&doc.root, preview_cache, selected, dragged, 0).padding(6);
     let list_view: Element<'_, Message> = if doc.root.is_empty() {
         container(
             text("Aucun calque — ouvrez une image ou ajoutez un calque")
@@ -235,15 +236,22 @@ fn tree_column<'a>(
     nodes: &'a [LayerNode],
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
+    dragged: Option<Uuid>,
     depth: usize,
 ) -> iced::widget::Column<'a, Message> {
     let mut list = iced::widget::Column::new().spacing(2);
     for node in nodes.iter().rev() {
-        list = list.push(node_row(node, preview_cache, selected, depth));
+        list = list.push(node_row(node, preview_cache, selected, dragged, depth));
         if let LayerNode::Group(g) = node
             && !g.collapsed
         {
-            list = list.push(tree_column(&g.children, preview_cache, selected, depth + 1));
+            list = list.push(tree_column(
+                &g.children,
+                preview_cache,
+                selected,
+                dragged,
+                depth + 1,
+            ));
         }
     }
     list
@@ -253,8 +261,10 @@ fn node_row<'a>(
     node: &'a LayerNode,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
+    dragged: Option<Uuid>,
     depth: usize,
 ) -> Element<'a, Message> {
+    let _ = dragged;
     let material = ui_kit::icon_button::MATERIAL_ICONS;
     let id = node.id();
 
@@ -358,17 +368,36 @@ fn node_row<'a>(
 
     let is_visible = node.visible();
     let is_selected = Some(id) == selected;
+    let is_dragged = dragged == Some(id);
     let drag_handle = button(
         text("\u{e945}")
             .font(material)
             .size(14)
-            .color(colors::TEXT_MUTED),
+            .color(if is_dragged {
+                colors::ACCENT
+            } else {
+                colors::TEXT_MUTED
+            }),
     )
     .padding(2)
     .style(|_t, s| ui_kit::style::ghost(s))
     .on_press(Message::SetDraggedLayer(id));
 
-    let row_btn = button(
+    // Si un drag est en cours, cliquer sur une autre ligne = drop avant celle-ci
+    let row_action = if let Some(dragged_id) = dragged {
+        if dragged_id != id {
+            Some(Message::DropLayerOn(id))
+        } else {
+            // Cliquer sur la source annule le drag
+            Some(Message::SetDraggedLayer(id))
+        }
+    } else if is_visible {
+        Some(Message::SelectLayer(id))
+    } else {
+        None
+    };
+
+    let mut row_btn = button(
         row![
             drag_handle,
             eye,
@@ -385,24 +414,22 @@ fn node_row<'a>(
     .padding(Padding::new(4.0).left(4.0).right(6.0))
     .width(Length::Fill)
     .style(move |_t, s| {
-        if !is_visible {
+        if is_dragged {
+            ui_kit::style::ghost_selected(true, s)
+        } else if !is_visible {
             ui_kit::style::ghost(s)
         } else {
             ui_kit::style::ghost_selected(is_selected, s)
         }
     });
-    let row_btn = if is_visible {
-        row_btn.on_press(Message::SelectLayer(id))
-    } else {
-        row_btn
-    };
+    if let Some(msg) = row_action {
+        row_btn = row_btn.on_press(msg);
+    }
 
-    // Indentation hiérarchique + drop zone pour réordonnancement par drag & drop
+    // Indentation hiérarchique — scope drag & drop au panel calque
     let indent = 4.0 + (depth as f32) * 14.0;
-    let inner = container(row_btn)
+    container(row_btn)
         .width(Length::Fill)
-        .padding(Padding::new(0.0).left(indent));
-    iced::widget::mouse_area(inner)
-        .on_release(Message::DropLayerOn(id))
+        .padding(Padding::new(0.0).left(indent))
         .into()
 }

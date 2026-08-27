@@ -307,6 +307,8 @@ pub struct State {
     pub cursor_pos: Option<Point>,
     /// Modificateurs clavier courants (Alt = zoom inversé avec l'outil loupe)
     pub modifiers: iced::keyboard::Modifiers,
+    /// Espace maintenu → pan temporaire (Photoshop)
+    pub space_held: bool,
     /// Dernière taille de viewport publiée (évite spam d'événements)
     pub prev_bounds: Option<Size>,
 }
@@ -335,6 +337,23 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         // Suivi des modificateurs clavier (avant le early-return sur le curseur)
         if let canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) = event {
             state.modifiers = *m;
+            return None;
+        }
+        if let canvas::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event
+            && *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Space)
+        {
+            state.space_held = true;
+            return None;
+        }
+        if let canvas::Event::Keyboard(iced::keyboard::Event::KeyReleased { key, .. }) = event
+            && *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Space)
+        {
+            state.space_held = false;
+            // Annule un drag en cours si on relâche l'espace
+            if state.dragging.is_some() {
+                state.dragging = None;
+                return Some(canvas::Action::capture());
+            }
             return None;
         }
 
@@ -416,6 +435,11 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
 
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                // Espace maintenu → pan temporaire quel que soit l'outil
+                if state.space_held {
+                    state.dragging = Some((cursor_pos, self.pan));
+                    return Some(canvas::Action::capture());
+                }
                 // Outils
                 match self.tool {
                     CanvasTool::Hand => {
@@ -484,6 +508,11 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     return Some(canvas::Action::request_redraw().and_capture());
                 }
                 if let Some((start, orig_pan)) = state.dragging {
+                    if state.space_held {
+                        let delta = Vector::new(cursor_pos.x - start.x, cursor_pos.y - start.y);
+                        let new_pan = Vector::new(orig_pan.x + delta.x, orig_pan.y + delta.y);
+                        return Some(canvas::Action::publish(ImageCanvasEvent::Pan(new_pan)));
+                    }
                     if self.tool == CanvasTool::Hand {
                         let delta = Vector::new(cursor_pos.x - start.x, cursor_pos.y - start.y);
                         let new_pan = Vector::new(orig_pan.x + delta.x, orig_pan.y + delta.y);
@@ -801,10 +830,13 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) && !self.can_paint {
                 return mouse::Interaction::NotAllowed;
             }
+            if state.space_held {
+                return mouse::Interaction::Grab;
+            }
             return match self.tool {
                 CanvasTool::Hand => mouse::Interaction::Grab,
                 CanvasTool::Move => mouse::Interaction::Move,
-                CanvasTool::Brush | CanvasTool::Eraser => mouse::Interaction::Crosshair,
+                CanvasTool::Brush | CanvasTool::Eraser => mouse::Interaction::Hidden,
                 CanvasTool::Zoom => mouse::Interaction::ZoomIn,
                 CanvasTool::Select => mouse::Interaction::Crosshair,
             };

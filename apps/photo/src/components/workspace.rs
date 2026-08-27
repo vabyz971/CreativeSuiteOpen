@@ -34,6 +34,7 @@ pub fn render<'a>(
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected_layer: Option<Uuid>,
+    dragged_layer: Option<Uuid>,
     doc_size: Option<Size>,
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
@@ -45,6 +46,8 @@ pub fn render<'a>(
     image_path: Option<String>,
     image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
+    brush_color: iced::Color,
+    color_picker_open: bool,
     tools_visible: bool,
     canvas_pan: Vector,
     zoom_level: u32,
@@ -98,6 +101,8 @@ pub fn render<'a>(
                     canvas_selection,
                     canvas_viewport,
                     brush,
+                    brush_color,
+                    color_picker_open,
                     pending_preview.clone(),
                     new_doc_w,
                     new_doc_h,
@@ -120,7 +125,7 @@ pub fn render<'a>(
             ),
             PanelType::Layers => (
                 "Calques".to_string(),
-                layers_panel::render(doc, preview_cache, selected_layer),
+                layers_panel::render(doc, preview_cache, selected_layer, dragged_layer),
             ),
             PanelType::Generator => {
                 let g_clone = gen_graph.clone();
@@ -259,6 +264,8 @@ fn render_canvas_preview<'a>(
     canvas_selection: Option<iced::Rectangle>,
     _viewport: Size,
     brush: ui_kit::image_canvas::BrushStyle,
+    brush_color: iced::Color,
+    color_picker_open: bool,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
     new_doc_w: &'a str,
     new_doc_h: &'a str,
@@ -433,16 +440,20 @@ fn render_canvas_preview<'a>(
 
     // Barre d'outils FLOTTANTE verticale en HAUT à gauche du canvas
     let floating_tools: Element<'_, Message> = if tools_visible {
-        let tools_pill = container(toolpanel::render(selected_tool))
-            .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
-            .style(|_| {
-                // Palette flottante façon macOS : fond discret, ombre portée
-                ui_kit::style::floating_card(
-                    colors::SURFACE_CONTAINER_LOW,
-                    ui_kit::theme::metrics::RADIUS_NODE,
-                    ui_kit::theme::shadows::panel(),
-                )
-            });
+        let tools_pill = container(toolpanel::render(
+            selected_tool,
+            brush_color,
+            color_picker_open,
+        ))
+        .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
+        .style(|_| {
+            // Palette flottante façon macOS : fond discret, ombre portée
+            ui_kit::style::floating_card(
+                colors::SURFACE_CONTAINER_LOW,
+                ui_kit::theme::metrics::RADIUS_NODE,
+                ui_kit::theme::shadows::panel(),
+            )
+        });
         container(tools_pill.width(Length::Shrink))
             .width(Length::Fill)
             .height(Length::Fill)

@@ -20,7 +20,7 @@
 
 use crate::{Message, Tool};
 use iced::widget::column;
-use iced::{Alignment, Element};
+use iced::{Alignment, Color, Element};
 use ui_kit::icon_button;
 
 // Codepoints Material Icons - pas d'emoji en dur, police professionnelle
@@ -35,7 +35,34 @@ const ICON_BRUSH: &str = "\u{e3ae}"; // brush - Pinceau
 const ICON_ERASER: &str = "\u{e1b0}";
 const ICON_COLORIZE: &str = "\u{e3b7}"; // colorize - Pipette
 
-pub fn render<'a>(selected: Tool) -> Element<'a, Message> {
+pub fn render<'a>(selected: Tool, brush_color: Color, picker_open: bool) -> Element<'a, Message> {
+    let swatch = iced::widget::button(
+        iced::widget::container(
+            iced::widget::Space::new()
+                .width(iced::Length::Fixed(18.0))
+                .height(iced::Length::Fixed(18.0)),
+        )
+        .style(move |_| iced::widget::container::Style {
+            background: Some(brush_color.into()),
+            border: iced::Border {
+                width: 1.0,
+                color: ui_kit::theme::colors::BORDER_SUBTLE,
+                radius: ui_kit::theme::metrics::RADIUS_SM.into(),
+            },
+            ..Default::default()
+        }),
+    )
+    .padding(4)
+    .style(|_t, s| ui_kit::style::ghost(s))
+    .on_press(Message::ToggleColorPicker);
+    let global_color = iced_aw::widget::ColorPicker::new(
+        picker_open,
+        brush_color,
+        swatch,
+        Message::ToggleColorPicker,
+        Message::SetBrushColor,
+    );
+
     column![
         icon_button::render(
             ICON_PAN_TOOL,
@@ -79,6 +106,18 @@ pub fn render<'a>(selected: Tool) -> Element<'a, Message> {
             selected == Tool::Eyedropper,
             Message::SelectTool(Tool::Eyedropper)
         ),
+        iced::widget::Space::new().height(iced::Length::Fixed(8.0)),
+        iced::widget::container(
+            iced::widget::Space::new()
+                .width(iced::Length::Fixed(28.0))
+                .height(iced::Length::Fixed(1.0))
+        )
+        .style(|_| iced::widget::container::Style {
+            background: Some(ui_kit::theme::colors::BORDER_PANEL.into()),
+            ..Default::default()
+        }),
+        iced::widget::Space::new().height(iced::Length::Fixed(4.0)),
+        global_color,
     ]
     .spacing(4)
     .align_x(Alignment::Center)
