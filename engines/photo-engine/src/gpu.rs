@@ -1,4 +1,6 @@
 // CreativeSuiteOpen — Suite créative professionnelle open source
+// TODO chantier 5: shaders WGSL inline à externaliser en `shaders/*.wgsl` via
+// include_str! (à fusionner avec le futur v2 GPU des masques).
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify

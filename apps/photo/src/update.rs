@@ -17,6 +17,10 @@
 //! Boucle de mise à jour : un handler par message, effets de bord via Task.
 //! Toutes les mutations de calques passent par les méthodes du `Document`
 //! moteur (arbre LayerTree) — l'app n'écrit jamais dans les champs directement.
+//!
+//! TODO chantier 4: god-file ~1700 lignes (dispatch 139 arms) à découper en
+//! `update/{mod,layers,paint,project,panels,node_graph,misc}.rs` sans changer
+//! l'enum Message plat. À faire en PR dédiée.
 
 use std::sync::Arc;
 

@@ -16,6 +16,11 @@
 
 //! Suite Shell — couche minimaliste et modulaire partagée par Photo/Video/Audio
 //! Inspiré Final Cut (timeline) et FL Studio (mixer) mais avec même coque.
+//!
+//! TODO chantier 3: SuiteApp/AppKind non branchés (aucune app ne l'implémente).
+//! Décision à trancher: A) finaliser l'unification (et renommer `ui_kit::shell`
+//! vs `core::shell` pour lever l'ambiguïté) ou B) retirer le crate mort.
+//! Option B actuellement privilégiée — voir ARCHITECTURE.md.
 
 use datatypes::NodeId;
 use datatypes::{NodeDefinition, Vec2};

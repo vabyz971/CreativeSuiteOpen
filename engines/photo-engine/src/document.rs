@@ -17,6 +17,11 @@
 //! Modèle document « LayerTree » (arbre hiérarchique, style Affinity) +
 //! compositing rapide.
 //!
+//! TODO chantier 4: fichier god-file (~2300 lignes) à découper en
+//! `document/model.rs` + `document/tree.rs` + `document/compositing.rs` + tests
+//! locaux. À faire juste avant la prochaine feature majeure (masques déjà livrés,
+//! donc découpage à planifier en PR dédiée — aucune API externe ne doit changer).
+//!
 //! Architecture hybride :
 //! - [`Document`] possède un arbre de [`LayerNode`] : calques pixels,
 //!   groupes et calques d'ajustement, imbriqués à volonté.

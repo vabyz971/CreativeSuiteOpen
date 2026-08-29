@@ -68,6 +68,13 @@ Vérification : `cargo tree -p <crate> --depth 1`.
   par identité d'Arc (zéro copie), synchronisé au début de chaque message dans
   `update()` — point unique de conversion.
 
+## Chantier 3 — Décision `core::shell::SuiteApp` (en attente validation humaine)
+
+`SuiteApp`/`AppKind` ne sont implémentés par aucune app. Options : A) finaliser
+l'unification (et renommer `ui_kit::shell` vs `core::shell`) ou B) retirer le
+crate. **B privilégiée** (apps restent indépendantes) — à exécuter en PR
+dédiée (suppression `core/shell` du workspace + doc).
+
 ## Compilation
 
 ```bash
