@@ -1,6 +1,5 @@
 //! Handlers projet / image / document — extrait de update/mod.rs
 //! TODO: migrer les arms NewProject, OpenProject, SaveProject, ExportImage, Image* etc.
-#![allow(dead_code)]
 use crate::message::Message;
 use crate::state::PhotoApp;
 use iced::Task;

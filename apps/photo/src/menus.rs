@@ -189,12 +189,6 @@ pub fn app_menus(
                     message: Message::TogglePanel(PanelType::Layers),
                 },
                 ui_kit::menu::Item::Action {
-                    label: "Générateur de textures".into(),
-                    shortcut: "".to_string(),
-                    checked: false,
-                    message: Message::TogglePanel(PanelType::Generator),
-                },
-                ui_kit::menu::Item::Action {
                     label: "Barre d'outils".into(),
                     shortcut: "Tab".to_string(),
                     checked: tools_visible,

@@ -16,14 +16,11 @@
 
 use crate::components::{layers_panel, properties, toolpanel};
 use crate::{Message, PanelType, Tool};
-use datatypes::NodeId;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{Space, column, container, image, text};
+use iced::widget::{Space, container, image};
 use iced::{Element, Length, Size, Vector};
 use photo_engine::Document;
-use suite_core::Graph;
 use ui_kit::base_panel;
-use ui_kit::dropdown::{dropdown_box, menu_item, menu_separator};
 use ui_kit::theme::colors;
 use uuid::Uuid;
 
@@ -54,12 +51,6 @@ pub fn render<'a>(
     canvas_selection: Option<iced::Rectangle>,
     color_profile: String,
     canvas_viewport: Size,
-    // Générateur de textures (graphe nodal, futur usage filtres/génération)
-    gen_graph: &'a Graph,
-    gen_selected: Option<NodeId>,
-    gen_previews: &std::collections::HashMap<NodeId, image::Handle>,
-    node_context_menu: Option<iced::Point>,
-    node_context_world: Option<datatypes::Vec2>,
     // Style du pinceau + aperçu figé du commit en cours (texture)
     brush: ui_kit::image_canvas::BrushStyle,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
@@ -127,47 +118,6 @@ pub fn render<'a>(
                 "Calques".to_string(),
                 layers_panel::render(doc, preview_cache, selected_layer, dragged_layer),
             ),
-            PanelType::Generator => {
-                let g_clone = gen_graph.clone();
-                let previews = gen_previews.clone();
-                let busy_empty: std::collections::HashSet<NodeId> = Default::default();
-                let canvas = ui_kit::node_graph::view(
-                    g_clone,
-                    gen_selected,
-                    Vector::new(0.0, 0.0),
-                    1.0,
-                    previews,
-                    &busy_empty,
-                )
-                .map(Message::NodeGraphEvent);
-
-                // Menu contextuel ancré dans les coordonnées LOCALES du canvas
-                let content: Element<'_, Message> = if let Some(local) = node_context_menu {
-                    let world = node_context_world.unwrap_or(datatypes::Vec2::new(0.0, 0.0));
-                    let node_menu = build_node_context_menu(local, world);
-                    let outside = iced::widget::mouse_area(
-                        iced::widget::Space::new()
-                            .width(Length::Fill)
-                            .height(Length::Fill),
-                    )
-                    .on_press(Message::CloseNodeContextMenu);
-                    let menu_pos = container(node_menu)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(iced::Padding::default().top(local.y).left(local.x))
-                        .align_x(iced::alignment::Horizontal::Left)
-                        .align_y(iced::alignment::Vertical::Top);
-                    iced::widget::stack![
-                        container(canvas).width(Length::Fill).height(Length::Fill),
-                        outside,
-                        menu_pos
-                    ]
-                    .into()
-                } else {
-                    container(canvas).padding(0).clip(true).into()
-                };
-                ("Générateur de textures".to_string(), content)
-            }
         };
 
         // ContextMenu native sur le titre (clic droit → fermer le panneau)
@@ -196,53 +146,6 @@ pub fn render<'a>(
         });
 
     grid_container.into()
-}
-
-fn build_node_context_menu<'a>(
-    click_pos: iced::Point,
-    world: datatypes::Vec2,
-) -> Element<'a, Message> {
-    let categories: Vec<(&str, Vec<(&str, &str)>)> = vec![
-        (
-            "Couleur",
-            vec![
-                ("Luminosité / Contraste", "brightness_contrast"),
-                ("Correction Couleur", "color_correct"),
-            ],
-        ),
-        ("Filtre", vec![("Flou", "blur")]),
-        ("Compositing", vec![("Mélange", "mix")]),
-        ("Sortie", vec![("Sortie", "output")]),
-    ];
-
-    let mut col = column![
-        container(
-            text("Ajouter un nœud générateur")
-                .size(13)
-                .color(colors::TEXT_PRIMARY)
-        )
-        .padding(iced::Padding::new(4.0).left(8.0))
-    ]
-    .spacing(2);
-    for (cat_label, nodes) in categories {
-        col = col.push(
-            container(text(cat_label).size(11).color(colors::TEXT_MUTED))
-                .padding(iced::Padding::new(2.0).left(8.0)),
-        );
-        for (label, type_id) in nodes {
-            col = col.push(menu_item(
-                label,
-                "",
-                Message::AddNodeAt {
-                    type_id: type_id.to_string(),
-                    world_pos: world,
-                },
-            ));
-        }
-        col = col.push(menu_separator());
-    }
-    let _ = click_pos;
-    dropdown_box(col, 220.0)
 }
 
 #[allow(clippy::too_many_arguments)]

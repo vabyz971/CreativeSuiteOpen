@@ -17,7 +17,7 @@
 //! État applicatif Photo : document LayerTree, canvas, outils, préférences.
 
 use iced::widget::{image as iced_image, pane_grid};
-use iced::{Color, Point, Rectangle, Size, Task, Vector};
+use iced::{Color, Rectangle, Size, Task, Vector};
 use uuid::Uuid;
 
 use crate::components;
@@ -115,13 +115,6 @@ pub struct PhotoApp {
     pub preferences_window: Option<crate::preferences_window::PreferencesWindow>,
     /// Préférences persistantes chargées au démarrage
     pub preferences: preferences::Preferences,
-    // ---- Générateur de textures (graphe nodal — futur usage filtres/génération) ----
-    pub gen_graph: suite_core::Graph,
-    pub gen_selected_node: Option<datatypes::NodeId>,
-    pub gen_previews: std::collections::HashMap<datatypes::NodeId, iced_image::Handle>,
-    pub node_context_menu: Option<Point>,
-    pub node_context_world: Option<datatypes::Vec2>,
-    pub pending_connect: Option<(datatypes::NodeId, String, datatypes::SocketType, bool)>,
     // Options / Hardware
     pub gpu_info: Option<String>,
     pub gpu_available: bool,
@@ -325,12 +318,6 @@ impl Default for PhotoApp {
             preferences_window_id: None,
             preferences_window: None,
             preferences: preferences::Preferences::load("photo"),
-            gen_graph: components::node_registry::create_empty_graph(),
-            gen_selected_node: None,
-            gen_previews: Default::default(),
-            node_context_menu: None,
-            node_context_world: None,
-            pending_connect: None,
             gpu_info: None,
             gpu_available: components::gpu::GpuContext::is_available(),
             preview_cache: crate::ui_handles::PreviewCache::default(),

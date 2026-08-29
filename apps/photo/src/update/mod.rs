@@ -39,8 +39,6 @@ mod layers;
 #[allow(dead_code)]
 mod misc;
 #[allow(dead_code)]
-mod node_graph;
-#[allow(dead_code)]
 mod paint;
 #[allow(dead_code)]
 mod panels;
@@ -62,7 +60,6 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         Message::NewProject => {
             app.doc = photo_engine::Document::new(0, 0);
             app.selected_layer = None;
-            app.gen_graph = components::node_registry::create_empty_graph();
             app.canvas_pan = Vector::new(0.0, 0.0);
             app.zoom_level = 100;
             app.fallback_size = None;
@@ -1231,11 +1228,8 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                     .map(|(p, _)| *p);
 
                 if let Some(canvas_pane) = target_canvas_pane {
-                    let axis = match panel_type {
-                        PanelType::Generator => pane_grid::Axis::Horizontal,
-                        _ => pane_grid::Axis::Vertical,
-                    };
-                    app.panes.split(axis, canvas_pane, panel_type);
+                    app.panes
+                        .split(pane_grid::Axis::Vertical, canvas_pane, panel_type);
                 }
             }
         }
@@ -1252,85 +1246,6 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         Message::ClosePane(pane) => {
             app.panes.close(pane);
         }
-        Message::CloseNodeContextMenu => {
-            app.node_context_menu = None;
-        }
-        // ---- Générateur de textures (graphe nodal, usage futur filtres/génération) ----
-        Message::NodeGraphEvent(evt) => match evt {
-            ui_kit::node_graph::NodeGraphEvent::NodeSelected(id) => {
-                app.gen_selected_node = Some(id);
-                app.node_context_menu = None;
-            }
-            ui_kit::node_graph::NodeGraphEvent::NodeMoved { id, position } => {
-                app.gen_graph.move_node(id, position);
-            }
-            ui_kit::node_graph::NodeGraphEvent::BackgroundClicked => {
-                app.gen_selected_node = None;
-                app.node_context_menu = None;
-            }
-            ui_kit::node_graph::NodeGraphEvent::RequestContextMenu(world, local) => {
-                app.pending_connect = None;
-                app.node_context_menu = Some(local);
-                app.node_context_world = Some(world);
-            }
-            ui_kit::node_graph::NodeGraphEvent::Connect {
-                from,
-                from_socket,
-                to,
-                to_socket,
-            } => {
-                let existing = app
-                    .gen_graph
-                    .connections
-                    .iter()
-                    .find(|c| c.to_node == to && c.to_socket == to_socket)
-                    .cloned();
-                if let Some(conn) = existing {
-                    app.gen_graph.disconnect(&conn);
-                }
-                let from_ty = if from_socket == "factor" || to_socket == "factor" {
-                    datatypes::SocketType::Float
-                } else {
-                    datatypes::SocketType::Image
-                };
-                let _ = app.gen_graph.connect(suite_core::Connection::new(
-                    from,
-                    from_socket.clone(),
-                    to,
-                    to_socket.clone(),
-                    from_ty,
-                ));
-                app.node_context_menu = None;
-            }
-            ui_kit::node_graph::NodeGraphEvent::Disconnect { node, socket } => {
-                app.gen_graph.disconnect_input(node, &socket);
-            }
-            // Événements non utilisés par le générateur (ignorés silencieusement)
-            _ => {}
-        },
-        Message::UpdateParam { node, key, value } => {
-            app.gen_graph.update_param(node, key.clone(), value.clone());
-        }
-        Message::AddNodeAt { type_id, world_pos } => {
-            let pos = datatypes::Vec2::new(
-                world_pos.x.clamp(-2000.0, 3000.0),
-                world_pos.y.clamp(-2000.0, 3000.0),
-            );
-            if let Some(id) =
-                components::node_registry::create_node_for_type(&type_id, pos, &mut app.gen_graph)
-            {
-                app.gen_selected_node = Some(id);
-            }
-            app.node_context_menu = None;
-            app.node_context_world = None;
-        }
-        Message::DeleteSelectedNode => {
-            if let Some(id) = app.gen_selected_node {
-                app.gen_graph.remove_node(id);
-                app.gen_selected_node = None;
-            }
-        }
-
         Message::DetectGpu => {
             return Task::perform(
                 async { components::gpu::detect_gpu_info().await },

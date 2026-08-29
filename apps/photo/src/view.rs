@@ -153,11 +153,6 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             app.canvas_selection,
             app.color_profile.clone(),
             app.canvas_viewport,
-            &app.gen_graph,
-            app.gen_selected_node,
-            &app.gen_previews,
-            app.node_context_menu,
-            app.node_context_world,
             ui_kit::image_canvas::BrushStyle {
                 color: [
                     (app.brush_color.r * 255.0).clamp(0.0, 255.0) as u8,

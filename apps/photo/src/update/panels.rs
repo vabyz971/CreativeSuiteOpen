@@ -1,5 +1,4 @@
 //! Handlers panneaux / layout — extrait de update/mod.rs
-#![allow(dead_code)]
 use crate::message::Message;
 use crate::state::PhotoApp;
 use iced::Task;

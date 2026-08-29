@@ -40,7 +40,6 @@ pub enum PanelType {
     Canvas,
     Properties,
     Layers,
-    Generator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +98,6 @@ pub enum Message {
     CanvasFit,
     /// Affiche/masque la barre d'outils flottante
     ToggleToolsPanel,
-    CloseNodeContextMenu,
 
     // Outils
     SelectTool(Tool),
@@ -289,18 +287,6 @@ pub enum Message {
     // Drag & drop calques
     SetDraggedLayer(Uuid),
     DropLayerOn(Uuid),
-    // Générateur de textures (graphe nodal)
-    NodeGraphEvent(ui_kit::node_graph::NodeGraphEvent),
-    UpdateParam {
-        node: datatypes::NodeId,
-        key: String,
-        value: datatypes::ParamValue,
-    },
-    AddNodeAt {
-        type_id: String,
-        world_pos: datatypes::Vec2,
-    },
-    DeleteSelectedNode,
     // Document
     ShowResizeDialog,
     SetResizeWidth(String),
