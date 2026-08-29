@@ -88,6 +88,8 @@ pub struct PhotoApp {
     /// Opacité globale du trait [0.05..1]
     pub brush_opacity: f32,
     pub color_picker_open: bool,
+    /// Si Some, les traits peignent le MASQUE du nœud plutôt que ses pixels.
+    pub mask_paint_target: Option<Uuid>,
     /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
     pub stroke_layer: Option<Uuid>,
     /// Commit lourd EN COURS hors thread UI — l'aperçu reste figé à l'écran
@@ -310,6 +312,7 @@ impl Default for PhotoApp {
             brush_size: 12.0,
             brush_opacity: 1.0,
             color_picker_open: false,
+            mask_paint_target: None,
             stroke_layer: None,
             pending_paint: None,
             new_doc_w: "1920".to_string(),

@@ -42,6 +42,8 @@ const ICON_FOLDER: &str = "\u{e2c8}"; // folder_open
 const ICON_GROUP: &str = "\u{e2cc}"; // create_new_folder
 const ICON_ADJUST: &str = "\u{e39e}"; // filter_b_and_w → ajustement
 const ICON_PALETTE: &str = "\u{e40a}"; // palette → couleur uni
+const ICON_MASK: &str = "\u{e3b0}"; // mask
+const ICON_MASK_OFF: &str = "\u{e14c}"; // block
 
 pub fn render<'a>(
     doc: &'a Document,
@@ -145,6 +147,12 @@ pub fn render<'a>(
 
     // Le nœud sélectionné est-il déjà un groupe ? (grouper/dégrouper)
     let sel_is_group = matches!(sel_node, Some(LayerNode::Group(_)));
+    let sel_has_mask = sel_node.and_then(|n| n.mask()).is_some();
+    let sel_mask_enabled = sel_node
+        .and_then(|n| n.mask())
+        .map(|m| m.enabled)
+        .unwrap_or(true);
+    let can_have_mask = matches!(sel_node, Some(LayerNode::Pixel(_) | LayerNode::Group(_)));
     let nil = Uuid::nil();
     let actions = container(
         row![
@@ -195,6 +203,24 @@ pub fn render<'a>(
                 "Descendre",
                 Message::MoveLayerDown(selected.unwrap_or(nil)),
                 has_sel
+            ),
+            action_btn(
+                if sel_has_mask && !sel_mask_enabled {
+                    ICON_MASK_OFF
+                } else {
+                    ICON_MASK
+                },
+                if sel_has_mask {
+                    "Retirer le masque"
+                } else {
+                    "Ajouter un masque"
+                },
+                if sel_has_mask {
+                    Message::RemoveLayerMask(selected.unwrap_or(nil))
+                } else {
+                    Message::AddLayerMask(selected.unwrap_or(nil))
+                },
+                can_have_mask
             ),
             Space::new().width(Length::Fill),
             action_btn(
@@ -388,11 +414,27 @@ fn node_row<'a>(
         None
     };
 
+    let has_mask = node.mask().is_some();
+    let mask_indicator: Element<'_, Message> = if has_mask {
+        button(
+            text(ICON_MASK)
+                .font(material)
+                .size(14)
+                .color(colors::TEXT_SECONDARY),
+        )
+        .padding(2)
+        .style(|_t, s| ui_kit::style::ghost(s))
+        .on_press(Message::SetMaskPaintTarget(Some(id)))
+        .into()
+    } else {
+        Space::new().width(Length::Fixed(0.0)).into()
+    };
     let mut row_btn = button(
         row![
             drag_handle,
             eye,
             leading,
+            mask_indicator,
             column![
                 name_field,
                 text(subtitle).size(10).color(colors::TEXT_MUTED)

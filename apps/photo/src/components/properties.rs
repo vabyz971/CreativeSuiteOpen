@@ -130,6 +130,34 @@ pub fn render<'a>(doc: &'a Document, selected: Option<uuid::Uuid>) -> Element<'a
         }
     }
 
+    if let Some(mask) = node.mask() {
+        let mid = id;
+        let section = column![
+            text("Masque").size(12).color(colors::ON_SURFACE),
+            iced::widget::button(
+                text(if mask.enabled {
+                    "Désactiver"
+                } else {
+                    "Activer"
+                })
+                .size(11)
+            )
+            .on_press(Message::ToggleLayerMaskEnabled(mid)),
+            iced::widget::button(
+                text(if mask.inverted {
+                    "Inversé"
+                } else {
+                    "Inverser"
+                })
+                .size(11)
+            )
+            .on_press(Message::InvertLayerMask(mid)),
+            iced::widget::button(text("Supprimer le masque").size(11).color(colors::ERROR))
+                .on_press(Message::RemoveLayerMask(mid))
+        ]
+        .spacing(6);
+        common = common.push(container(section).padding(8));
+    }
     let mut content = column![header, container(column![common].padding(12))];
 
     // --- Chaîne de filtres (pixels et ajustements) ---

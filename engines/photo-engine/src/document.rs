@@ -210,7 +210,7 @@ impl FilterNode {
 /// ne désigne jamais deux contenus différents (undo/redo inclus).
 static APPEARANCE_VERSION: AtomicU64 = AtomicU64::new(1);
 
-fn next_appearance_version() -> u64 {
+pub(crate) fn next_appearance_version() -> u64 {
     APPEARANCE_VERSION.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -956,6 +956,36 @@ impl Document {
                     node.set_name(new.clone());
                 }
                 Command::RenameLayer {
+                    node_id,
+                    old: new,
+                    new: old,
+                }
+            }
+            Command::SetMaskEnabled { node_id, old, new } => {
+                if let Some(mask) = self
+                    .find_mut(node_id)
+                    .and_then(|n| n.mask_mut())
+                    .and_then(|m| m.as_mut())
+                {
+                    mask.enabled = new;
+                    mask.touch();
+                }
+                Command::SetMaskEnabled {
+                    node_id,
+                    old: new,
+                    new: old,
+                }
+            }
+            Command::SetMaskInverted { node_id, old, new } => {
+                if let Some(mask) = self
+                    .find_mut(node_id)
+                    .and_then(|n| n.mask_mut())
+                    .and_then(|m| m.as_mut())
+                {
+                    mask.inverted = new;
+                    mask.touch();
+                }
+                Command::SetMaskInverted {
                     node_id,
                     old: new,
                     new: old,

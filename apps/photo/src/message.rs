@@ -318,4 +318,11 @@ pub enum Message {
     // Hardware
     DetectGpu,
     GpuDetected(String),
+
+    // Masques de calque
+    SetMaskPaintTarget(Option<Uuid>),
+    AddLayerMask(Uuid),
+    RemoveLayerMask(Uuid),
+    ToggleLayerMaskEnabled(Uuid),
+    InvertLayerMask(Uuid),
 }

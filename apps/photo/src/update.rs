@@ -235,11 +235,28 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
             if let Some(id) = stroke_target
                 && app.pending_paint.is_none()
                 && points.len() > 1
-                && let Some(layer) = app.doc.pixel_layer(id)
                 && let Some(tex) = tex
             {
-                let source = Arc::clone(&layer.source_image);
-                let transform = layer.transform;
+                let is_mask = app.mask_paint_target == Some(id)
+                    && app.doc.find(id).and_then(|n| n.mask()).is_some();
+                let (source, transform) = if is_mask {
+                    let m = app.doc.find(id).and_then(|n| n.mask()).unwrap();
+                    let dyn_img = image::DynamicImage::ImageRgba8((*m.image).clone());
+                    (Arc::new(dyn_img), {
+                        // masque suit même transform que le calque
+                        match app.doc.find(id).unwrap() {
+                            photo_engine::LayerNode::Pixel(l) => l.transform,
+                            photo_engine::LayerNode::Group(_) => {
+                                crate::layers::Transform2D::default()
+                            }
+                            _ => crate::layers::Transform2D::default(),
+                        }
+                    })
+                } else if let Some(layer) = app.doc.pixel_layer(id) {
+                    (Arc::clone(&layer.source_image), layer.transform)
+                } else {
+                    return Task::none();
+                };
                 let pts = points;
                 app.pending_paint = Some(crate::message::PendingPaint {
                     layer_id: id,
@@ -250,11 +267,15 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
                 app.history.push_snapshot(app.snapshot());
                 let brush = photo_engine::paint::BrushParams {
                     radius: app.brush_size / 2.0,
-                    color: [
-                        (app.brush_color.r * 255.0) as u8,
-                        (app.brush_color.g * 255.0) as u8,
-                        (app.brush_color.b * 255.0) as u8,
-                    ],
+                    color: if is_mask {
+                        [255, 255, 255]
+                    } else {
+                        [
+                            (app.brush_color.r * 255.0) as u8,
+                            (app.brush_color.g * 255.0) as u8,
+                            (app.brush_color.b * 255.0) as u8,
+                        ]
+                    },
                     opacity: app.brush_opacity,
                     mode: if erase {
                         photo_engine::paint::StrokeMode::Erase
@@ -290,8 +311,19 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::PaintApplied { layer_id, buf } => {
             if let Some(img) = ::image::RgbaImage::from_raw(buf.width, buf.height, buf.rgba) {
-                app.doc
-                    .set_source_image(layer_id, ::image::DynamicImage::ImageRgba8(img));
+                if app.mask_paint_target == Some(layer_id)
+                    && let Some(mask) = app
+                        .doc
+                        .find_mut(layer_id)
+                        .and_then(|n| n.mask_mut())
+                        .and_then(|m| m.as_mut())
+                {
+                    mask.image = std::sync::Arc::new(img);
+                    mask.touch();
+                } else {
+                    app.doc
+                        .set_source_image(layer_id, ::image::DynamicImage::ImageRgba8(img));
+                }
             }
             app.pending_paint = None;
             app.invalidate_fallback();
@@ -309,6 +341,62 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
         }
         Message::ToggleColorPicker => {
             app.color_picker_open = !app.color_picker_open;
+        }
+        Message::SetMaskPaintTarget(id) => {
+            app.mask_paint_target = id;
+        }
+        Message::AddLayerMask(id) => {
+            let has_mask = app.doc.find(id).and_then(|n| n.mask()).is_some();
+            if !has_mask && app.doc.find(id).is_some() {
+                let pre = app.snapshot();
+                let (w, h) = match app.doc.find(id) {
+                    Some(photo_engine::LayerNode::Pixel(l)) => l.dimensions(),
+                    _ => (app.doc.width.max(1), app.doc.height.max(1)),
+                };
+                if let Some(slot) = app.doc.find_mut(id).and_then(|n| n.mask_mut()) {
+                    *slot = Some(photo_engine::LayerMask::full(w, h));
+                }
+                app.history.push_snapshot(pre);
+                app.invalidate_fallback();
+            }
+        }
+        Message::RemoveLayerMask(id) => {
+            let has_mask = app.doc.find(id).and_then(|n| n.mask()).is_some();
+            if has_mask {
+                let pre = app.snapshot();
+                if let Some(slot) = app.doc.find_mut(id).and_then(|n| n.mask_mut()) {
+                    *slot = None;
+                }
+                if app.mask_paint_target == Some(id) {
+                    app.mask_paint_target = None;
+                }
+                app.history.push_snapshot(pre);
+                app.invalidate_fallback();
+            }
+        }
+        Message::ToggleLayerMaskEnabled(id) => {
+            if let Some(m) = app.doc.find(id).and_then(|n| n.mask()) {
+                let cmd = photo_engine::Command::SetMaskEnabled {
+                    node_id: id,
+                    old: m.enabled,
+                    new: !m.enabled,
+                };
+                app.history.push_command_immediate(cmd.clone());
+                let _ = app.doc.apply_command(cmd);
+                app.invalidate_fallback();
+            }
+        }
+        Message::InvertLayerMask(id) => {
+            if let Some(m) = app.doc.find(id).and_then(|n| n.mask()) {
+                let cmd = photo_engine::Command::SetMaskInverted {
+                    node_id: id,
+                    old: m.inverted,
+                    new: !m.inverted,
+                };
+                app.history.push_command_immediate(cmd.clone());
+                let _ = app.doc.apply_command(cmd);
+                app.invalidate_fallback();
+            }
         }
 
         Message::NewDocWidth(v) => {

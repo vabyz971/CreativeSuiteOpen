@@ -79,6 +79,13 @@ enum LayerNodeDto {
 }
 
 #[derive(Serialize, Deserialize)]
+struct MaskDto {
+    png_base64: String,
+    enabled: bool,
+    inverted: bool,
+}
+
+#[derive(Serialize, Deserialize)]
 struct PixelDto {
     id: Uuid,
     name: String,
@@ -90,6 +97,8 @@ struct PixelDto {
     opacity: f32,
     blend_mode: BlendMode,
     visible: bool,
+    #[serde(default)]
+    mask: Option<MaskDto>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -102,6 +111,8 @@ struct GroupDto {
     opacity: f32,
     blend_mode: BlendMode,
     visible: bool,
+    #[serde(default)]
+    mask: Option<MaskDto>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -155,6 +166,25 @@ fn png_decode(png_base64: &str, name: &str) -> Result<DynamicImage, String> {
     image::load_from_memory(&png).map_err(|e| format!("Calque « {name} » illisible : {e}"))
 }
 
+fn mask_to_dto(mask: &crate::document::LayerMask, name: &str) -> Result<MaskDto, String> {
+    let dyn_img = image::DynamicImage::ImageRgba8((*mask.image).clone());
+    Ok(MaskDto {
+        png_base64: base64::engine::general_purpose::STANDARD.encode(png_encode(&dyn_img, name)?),
+        enabled: mask.enabled,
+        inverted: mask.inverted,
+    })
+}
+
+fn mask_from_dto(dto: MaskDto, name: &str) -> Result<crate::document::LayerMask, String> {
+    let img = png_decode(&dto.png_base64, name)?;
+    Ok(crate::document::LayerMask {
+        image: std::sync::Arc::new(img.to_rgba8()),
+        enabled: dto.enabled,
+        inverted: dto.inverted,
+        version: crate::document::next_appearance_version(),
+    })
+}
+
 fn node_to_dto(node: &LayerNode) -> Result<LayerNodeDto, String> {
     Ok(match node {
         LayerNode::Pixel(l) => {
@@ -169,6 +199,11 @@ fn node_to_dto(node: &LayerNode) -> Result<LayerNodeDto, String> {
                 opacity: l.opacity,
                 blend_mode: l.blend_mode,
                 visible: l.visible,
+                mask: l
+                    .mask
+                    .as_ref()
+                    .map(|m| mask_to_dto(m, &l.name))
+                    .transpose()?,
             })
         }
         LayerNode::Group(g) => {
@@ -182,6 +217,11 @@ fn node_to_dto(node: &LayerNode) -> Result<LayerNodeDto, String> {
                 opacity: g.opacity,
                 blend_mode: g.blend_mode,
                 visible: g.visible,
+                mask: g
+                    .mask
+                    .as_ref()
+                    .map(|m| mask_to_dto(m, &g.name))
+                    .transpose()?,
             })
         }
         LayerNode::Adjustment(a) => LayerNodeDto::Adjustment(AdjustmentDto {
@@ -207,7 +247,7 @@ fn node_from_dto(dto: LayerNodeDto) -> Result<LayerNode, String> {
     Ok(match dto {
         LayerNodeDto::Pixel(p) => {
             let img = png_decode(&p.png_base64, &p.name)?;
-            let mut layer = PixelLayer::new(p.name, Arc::new(img));
+            let mut layer = PixelLayer::new(p.name.clone(), Arc::new(img));
             layer.id = p.id;
             layer.live_filters = p
                 .live_filters
@@ -218,17 +258,19 @@ fn node_from_dto(dto: LayerNodeDto) -> Result<LayerNode, String> {
             layer.opacity = p.opacity.clamp(0.0, 100.0);
             layer.blend_mode = p.blend_mode;
             layer.visible = p.visible;
+            layer.mask = p.mask.map(|m| mask_from_dto(m, &p.name)).transpose()?;
             LayerNode::Pixel(layer)
         }
         LayerNodeDto::Group(g) => {
             let children: Result<Vec<LayerNode>, String> =
                 g.children.into_iter().map(node_from_dto).collect();
-            let mut group = GroupLayer::new(g.name, children?);
+            let mut group = GroupLayer::new(g.name.clone(), children?);
             group.id = g.id;
             group.collapsed = g.collapsed;
             group.opacity = g.opacity.clamp(0.0, 100.0);
             group.blend_mode = g.blend_mode;
             group.visible = g.visible;
+            group.mask = g.mask.map(|m| mask_from_dto(m, &g.name)).transpose()?;
             LayerNode::Group(group)
         }
         LayerNodeDto::Adjustment(a) => {
@@ -484,5 +526,34 @@ mod tests {
         assert_eq!(appearance.thumb.width, 48);
         // L'ajustement est bien présent et actif
         assert!(loaded.document.needs_fallback());
+    }
+
+    #[test]
+    fn aller_retour_masque_conserve_pixels_et_flags() {
+        let mut doc = Document::new(4, 4);
+        let img = Arc::new(DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([10, 20, 30, 255]),
+        )));
+        let mut layer = PixelLayer::new("masqué", img);
+        let mut mask = crate::document::LayerMask::full(2, 2);
+        mask.enabled = false;
+        mask.inverted = true;
+        // pixel distinct pour vérifier PNG
+        mask.image = std::sync::Arc::new(RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255])));
+        layer.mask = Some(mask);
+        doc.push_layer(LayerNode::Pixel(layer));
+        let path = temp_path("mask");
+        save(&path, &doc).expect("save masque");
+        let loaded = load(&path).expect("load masque");
+        std::fs::remove_file(&path).ok();
+        let Some(LayerNode::Pixel(l)) = loaded.document.root.first() else {
+            panic!("pixel attendu");
+        };
+        let m = l.mask.as_ref().expect("masque préservé");
+        assert!(!m.enabled);
+        assert!(m.inverted);
+        assert_eq!(m.image.get_pixel(0, 0)[0], 0);
     }
 }
