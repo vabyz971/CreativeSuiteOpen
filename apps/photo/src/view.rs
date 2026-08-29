@@ -55,14 +55,10 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     let spinning = !app.background_tasks.is_empty();
     let spinner_btn = iced::widget::button(
         // Canvas 20 px centré dans un bouton 30 px sans padding → pas de crop
-        iced::widget::container(ui_kit::spinner::circle(
+        iced::widget::center(ui_kit::spinner::circle(
             if spinning { app.spinner_angle } else { 0.0 },
             20.0,
-        ))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill),
+        )),
     )
     .width(Length::Fixed(30.0))
     .height(Length::Fixed(30.0))
@@ -258,15 +254,10 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
                 ui_kit::theme::shadows::dropdown(),
             )
         });
-        let overlay = iced::widget::container(dialog)
-            .width(iced::Length::Fill)
-            .height(iced::Length::Fill)
-            .center_x(iced::Length::Fill)
-            .center_y(iced::Length::Fill)
-            .style(|_| iced::widget::container::Style {
-                background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
-                ..Default::default()
-            });
+        let overlay = iced::widget::center(dialog).style(|_| iced::widget::container::Style {
+            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+            ..Default::default()
+        });
         return iced::widget::stack![base_layout, overlay].into();
     }
 

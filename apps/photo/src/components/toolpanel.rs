@@ -23,17 +23,16 @@ use iced::widget::column;
 use iced::{Alignment, Color, Element};
 use ui_kit::icon_button;
 
-// Codepoints Material Icons - pas d'emoji en dur, police professionnelle
-// Voir https://fonts.google.com/icons - Material Icons Regular
+// https://pictogrammers.com/library/mdi/ - Material Icons Regular
 const ICON_PAN_TOOL: &str = "\u{e925}"; // pan_tool - Main
 const ICON_ZOOM_IN: &str = "\u{e8ff}"; // zoom_in - Zoom
-const ICON_SELECT: &str = "\u{e86e}"; // select_all - Sélection
+const ICON_SELECT: &str = "\u{F01BF}"; // select_all - Sélection
 const ICON_MOVE: &str = "\u{e89f}"; // open_with - Déplacer
-const ICON_BRUSH: &str = "\u{e3ae}"; // brush - Pinceau
+const ICON_BRUSH: &str = "\u{F00E3}"; // brush - Pinceau
 /// Vérifié présent dans la cmap de MaterialIcons-Regular.ttf (format_color_reset).
 /// La police classique n'a pas de glyphe « eraser » dédié.
-const ICON_ERASER: &str = "\u{e1b0}";
-const ICON_COLORIZE: &str = "\u{e3b7}"; // colorize - Pipette
+const ICON_ERASER: &str = "\u{F01FE}";
+const ICON_COLORIZE: &str = "\u{F020A}"; // colorize - Pipette
 
 pub fn render<'a>(selected: Tool, brush_color: Color, picker_open: bool) -> Element<'a, Message> {
     let swatch = iced::widget::button(
@@ -106,17 +105,15 @@ pub fn render<'a>(selected: Tool, brush_color: Color, picker_open: bool) -> Elem
             selected == Tool::Eyedropper,
             Message::SelectTool(Tool::Eyedropper)
         ),
-        iced::widget::Space::new().height(iced::Length::Fixed(8.0)),
         iced::widget::container(
             iced::widget::Space::new()
-                .width(iced::Length::Fixed(28.0))
+                .width(iced::Length::Fill)
                 .height(iced::Length::Fixed(1.0))
         )
         .style(|_| iced::widget::container::Style {
             background: Some(ui_kit::theme::colors::BORDER_PANEL.into()),
             ..Default::default()
         }),
-        iced::widget::Space::new().height(iced::Length::Fixed(4.0)),
         global_color,
     ]
     .spacing(4)

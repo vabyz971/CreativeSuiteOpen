@@ -40,7 +40,7 @@ where
                 background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
                 ..Default::default()
             }),
-            container(
+            iced::widget::center(
                 column![
                     text("FL Studio • Channel Rack / Mixer")
                         .size(12)
@@ -53,10 +53,6 @@ where
                 .padding(16)
                 .align_x(Alignment::Center)
             )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
             .style(|_| container::Style {
                 background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
                 ..Default::default()

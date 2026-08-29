@@ -422,11 +422,7 @@ fn render_canvas_preview<'a>(
             let welcome = crate::components::welcome::render(new_doc_w, new_doc_h, welcome_error);
             iced::widget::stack![
                 container(canvas).width(Length::Fill).height(Length::Fill),
-                container(welcome)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
+                iced::widget::center(welcome),
             ]
             .into()
         } else {
