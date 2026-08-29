@@ -76,14 +76,13 @@ pub fn render<'a>(
             .spacing(6),
             row![
                 text("Opacité").size(11).color(colors::TEXT_MUTED),
-                Space::new().width(Length::Fill),
                 container(
                     text(format!("{:.0} %", opacity))
                         .size(11)
                         .color(colors::TEXT_PRIMARY)
                 )
                 .padding(2)
-                .width(Length::Fixed(44.0))
+                .width(Length::Fixed(48.0))
                 .style(|_t| container::Style {
                     background: Some(colors::SURFACE_CONTAINER_HIGH.into()),
                     border: iced::Border {
@@ -106,12 +105,7 @@ pub fn render<'a>(
         .padding(10),
     )
     .style(|_| container::Style {
-        background: Some(colors::BG_MENU_BAR.into()),
-        border: iced::Border {
-            width: 1.0,
-            color: colors::BORDER_PANEL,
-            ..Default::default()
-        },
+        background: Some(colors::BG_TRANSPARENT.into()),
         ..Default::default()
     });
 
@@ -215,12 +209,7 @@ pub fn render<'a>(
     )
     .padding(Padding::new(6.0).left(8.0).right(8.0))
     .style(|_| container::Style {
-        background: Some(colors::BG_MENU_BAR.into()),
-        border: iced::Border {
-            width: 1.0,
-            color: colors::BORDER_PANEL,
-            ..Default::default()
-        },
+        background: Some(colors::BG_TRANSPARENT.into()),
         ..Default::default()
     });
 
@@ -334,9 +323,11 @@ fn node_row<'a>(
         .into(),
     };
 
+    // Champ de nom avec style inline (transparent sauf au focus)
     let name_field = text_input("Nom", node.name())
         .size(12)
         .padding(Padding::new(4.0).top(2.0).bottom(2.0))
+        .style(|_t, s| ui_kit::style::inline_name_input(s))
         .on_input(move |s| Message::RenameLayer { id, name: s });
 
     // Sous-titre par type : opacité • fusion | Ajustement • filtres

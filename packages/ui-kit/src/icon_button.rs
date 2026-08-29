@@ -45,10 +45,7 @@ where
         .width(Length::Fixed(SIZE_BUTTON))
         .height(Length::Fixed(SIZE_BUTTON))
         .padding(0)
-        .style(move |_theme: &iced::Theme, status| {
-            // macOS palette: accent tint if selected
-            crate::style::tool_button(selected, status)
-        })
+        .style(move |_theme: &iced::Theme, status| crate::style::tool_button(selected, status))
         .on_press(on_press)
         .into()
 }

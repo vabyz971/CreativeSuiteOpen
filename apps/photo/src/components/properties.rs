@@ -25,18 +25,13 @@ use datatypes::ParamValue;
 use iced::widget::{Space, column, container, row, scrollable, slider, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use photo_engine::{Document, FilterNode};
-use ui_kit::theme::{colors, fonts};
+use ui_kit::theme::colors;
 
 pub fn render<'a>(doc: &'a Document, selected: Option<uuid::Uuid>) -> Element<'a, Message> {
     let node = selected.and_then(|id| doc.find(id));
     let Some(node) = node else {
         return container(
             column![
-                text("Propriétés")
-                    .size(14)
-                    .font(fonts::SANS_SEMIBOLD)
-                    .color(colors::TEXT_PRIMARY),
-                Space::new().height(Length::Fixed(12.0)),
                 text("Aucun calque sélectionné")
                     .size(13)
                     .color(colors::TEXT_SECONDARY),
@@ -83,7 +78,7 @@ pub fn render<'a>(doc: &'a Document, selected: Option<uuid::Uuid>) -> Element<'a
     }
     .padding(12)
     .style(|_t| container::Style {
-        background: Some(colors::BG_NODE_HEADER.into()),
+        background: Some(colors::BG_TRANSPARENT.into()),
         ..Default::default()
     });
 

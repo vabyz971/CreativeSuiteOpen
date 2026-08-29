@@ -309,7 +309,7 @@ fn move_section<'a>(
             has_layer && has_selection,
         ),
     ]
-    .spacing(6)
+    .spacing(10)
     .align_y(Alignment::Center)
     .padding(Padding::new(5.0))
     .into()

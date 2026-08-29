@@ -93,6 +93,7 @@ pub mod colors {
     pub const BG_CANVAS_CHECKER_B: Color = SURFACE_CONTAINER_HIGH;
     pub const BG_GRAPH_GRID: Color = SURFACE_CONTAINER_LOWEST;
     pub const BG_GRAPH_DOT: Color = SURFACE_CONTAINER_HIGHEST;
+    pub const BG_TRANSPARENT: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.0);
 
     pub const BORDER_PANEL: Color = BORDER_SUBTLE;
     pub const BORDER_FOCUSED: Color = ACCENT;
@@ -147,12 +148,13 @@ pub mod colors {
 // ---------------------------------------------------------------------------
 
 pub mod metrics {
-    // --- Radii scale (DESIGN.md "rounded"): sm=2 / default=4 / md=6 / lg=8
+    // --- Radii scale updated (PANEL=16, BUTTON=10, DROPDOWN=12, PILL=20) ---
     pub const RADIUS_SM: f32 = 2.0;
-    pub const RADIUS_BUTTON: f32 = 4.0; // = DEFAULT
-    pub const RADIUS_PANEL: f32 = 4.0; // floating panel DESIGN.md
-    pub const RADIUS_DROPDOWN: f32 = 6.0; // = MD
-    pub const RADIUS_NODE: f32 = 8.0; // = LG
+    pub const RADIUS_BUTTON: f32 = 10.0;
+    pub const RADIUS_PANEL: f32 = 16.0;
+    pub const RADIUS_DROPDOWN: f32 = 12.0;
+    pub const RADIUS_PILL: f32 = 20.0;
+    pub const RADIUS_NODE: f32 = 8.0;
 
     pub const BORDER_WIDTH_PANEL: f32 = 1.0;
     pub const BORDER_WIDTH_NODE: f32 = 1.0;
@@ -172,22 +174,13 @@ pub mod metrics {
 }
 
 /// Typographic scale (DESIGN.md) — ALL text sizes go through here.
-/// Intermediate sizes (12/13/16/20/22) exist for pro densities
-/// pro; do not introduce others without adding to this list.
 pub mod type_scale {
-    /// DESIGN.md label-sm (11 px) — field labels, metadata
     pub const LABEL_SM: u16 = 11;
-    /// Dense lines (layer list, menus)
     pub const LABEL_MD: u16 = 12;
-    /// Compact section titles
     pub const BODY_SM: u16 = 13;
-    /// DESIGN.md body-md (14 px)
     pub const BODY_MD: u16 = 14;
-    /// Standard larger interface text (text icon buttons...)
     pub const BODY_LG: u16 = 16;
-    /// DESIGN.md headline-md (18 px)
     pub const HEADLINE_MD: u16 = 18;
-    /// Screen titles (welcome)
     pub const HEADLINE_LG: u16 = 22;
 }
 

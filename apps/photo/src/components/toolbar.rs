@@ -15,8 +15,6 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Barre contextuelle haute : actions globales de droite (Export).
-//! Le nom du fichier/document est porté par le titre du panneau Canvas —
-//! pas de sélecteur redondant ici.
 
 use crate::{Message, Tool};
 use iced::widget::{button, row, text};
@@ -36,7 +34,7 @@ pub fn context_bar<'a>(
 ) -> Element<'a, Message> {
     let material = ui_kit::icon_button::MATERIAL_ICONS;
 
-    // Bouton primaire Export — couleur via ui_kit::theme::colors::ACCENT (#007AFF)
+    // Bouton Exporter en pilule arrondie
     let export_btn = button(
         row![
             text("\u{e2c6}").font(material).size(16), // file_upload
@@ -46,10 +44,9 @@ pub fn context_bar<'a>(
         .align_y(Alignment::Center),
     )
     .padding(Padding::new(6.0).left(14.0).right(14.0))
-    .style(|_, s| ui_kit::style::primary(s))
+    .style(|_, s| ui_kit::style::primary_pill(s))
     .on_press(Message::MockAction);
 
-    // Menu du tool à gauche d'Exporter, sans fond — juste les btn/sliders
     if let Some(controls) = crate::components::options_bar::tool_controls(
         selected_tool,
         selected_layer,

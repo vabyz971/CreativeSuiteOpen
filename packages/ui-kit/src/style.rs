@@ -21,7 +21,7 @@
 //! comes from [`crate::theme`] (DESIGN.md). Add a variant here rather
 //! than duplicating elsewhere.
 
-use iced::widget::{button, container};
+use iced::widget::{button, container, text_input};
 use iced::{Border, Color, Shadow};
 
 use crate::theme::{colors, metrics};
@@ -33,7 +33,7 @@ pub fn ghost(status: button::Status) -> button::Style {
     ghost_variant(status, false)
 }
 
-/// Selected variant of ghost button: blended accent tint.
+/// Selected variant of ghost button: blended accent tint with rounded radius.
 #[must_use]
 pub fn ghost_selected(selected: bool, status: button::Status) -> button::Style {
     ghost_variant(status, selected)
@@ -41,6 +41,7 @@ pub fn ghost_selected(selected: bool, status: button::Status) -> button::Style {
 
 fn ghost_variant(status: button::Status, selected: bool) -> button::Style {
     let background: Option<Color> = if selected {
+        // Fond bleu translucide pour la ligne sélectionnée
         Some(colors::BG_PANEL_HEADER_FOCUSED)
     } else if status == button::Status::Hovered {
         Some(colors::HOVER_OVERLAY)
@@ -51,9 +52,28 @@ fn ghost_variant(status: button::Status, selected: bool) -> button::Style {
         background: background.map(iced::Background::Color),
         text_color: colors::TEXT_PRIMARY,
         border: Border {
-            radius: metrics::RADIUS_BUTTON.into(),
+            radius: metrics::RADIUS_BUTTON.into(), // 10.0
             width: 0.0,
             color: Color::TRANSPARENT,
+        },
+        ..Default::default()
+    }
+}
+
+/// Primary button in pill shape (Export button) — RADIUS_PILL=20
+#[must_use]
+pub fn primary_pill(status: button::Status) -> button::Style {
+    let background = if status == button::Status::Hovered {
+        colors::ACCENT_HOVER
+    } else {
+        colors::ACCENT
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color: colors::TEXT_ON_ACCENT,
+        border: Border {
+            radius: metrics::RADIUS_PILL.into(), // 20.0
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -239,5 +259,32 @@ pub fn inset_card(background: Color, radius: f32) -> container::Style {
             radius: radius.into(),
         },
         ..Default::default()
+    }
+}
+
+/// Inline text input for layer names: transparent at rest, subtle accent border on focus.
+/// Eliminates the "form field" look on every layer row.
+#[must_use]
+pub fn inline_name_input(status: text_input::Status) -> text_input::Style {
+    let is_focused = matches!(status, text_input::Status::Focused { .. });
+    text_input::Style {
+        background: if is_focused {
+            iced::Background::Color(colors::SURFACE_CONTAINER_LOWEST)
+        } else {
+            iced::Background::Color(Color::TRANSPARENT)
+        },
+        border: iced::Border {
+            radius: iced::border::Radius::from(metrics::RADIUS_SM),
+            width: if is_focused { 1.0 } else { 0.0 },
+            color: if is_focused {
+                colors::ACCENT
+            } else {
+                Color::TRANSPARENT
+            },
+        },
+        icon: colors::TEXT_MUTED,
+        placeholder: colors::TEXT_MUTED,
+        value: colors::TEXT_PRIMARY,
+        selection: colors::ACCENT,
     }
 }
