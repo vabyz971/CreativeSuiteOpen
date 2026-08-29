@@ -37,8 +37,15 @@ use photo_engine::{Command, UndoAction};
 #[allow(dead_code)]
 mod layers;
 #[allow(dead_code)]
+mod misc;
+#[allow(dead_code)]
+mod node_graph;
+#[allow(dead_code)]
 mod paint;
-// TODO: project, panels, node_graph, misc à extraire ensuite
+#[allow(dead_code)]
+mod panels;
+#[allow(dead_code)]
+mod project;
 
 /// Point d'entrée : délègue au dispatch puis synchronise les handles UI
 /// (cache dérivé des buffers purs du moteur — UN seul point de sync).
