@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "core/core",
     "core/datatypes",
-    "core/shell",
     "engines/photo-engine",
     "engines/video-engine",
     "engines/audio-engine",

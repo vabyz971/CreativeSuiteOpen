@@ -16,9 +16,6 @@
 
 //! Minimal modular shell — shared shell for Photo / Video (Final Cut) / Audio (FL Studio)
 //! Single top bar + left icon rail, rest is injected by app.
-//! Shared logic with core/shell (suite-shell).
-
-pub use suite_shell::{AppKind, ShellState};
 
 /// Width reserved for logo + title in top bar (aesthetic)
 const TITLE_RESERVED: f32 = 190.0;

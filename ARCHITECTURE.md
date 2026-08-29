@@ -11,7 +11,7 @@ graphe nodal générique, widgets et bibliothèques utilitaires.
 ```
 apps/       Applications finales (binaires indépendants)
 engines/    Moteurs métier PURS — zéro dépendance UI
-core/       Socle commun : suite-core (graphe nodal), datatypes, shell
+core/       Socle commun : suite-core (graphe nodal), datatypes
 packages/   Bibliothèques réutilisables : ui-kit, math-utils, file-utils
 assets/     Ressources partagées (polices)
 ```
@@ -40,7 +40,8 @@ Ils peuvent dépendre de `core/*` et de `packages/*` (hors UI).
 
 ### core/
 Socle transverse : `suite-core` (graphe nodal générique), `datatypes`
-(nœuds, sockets, `Vec2`), `suite-shell` (layout, menus, fenêtre).
+(nœuds, sockets, `Vec2`). `suite-shell` supprimé (chantier 3, 2026) :
+Photo/Video/Audio restent des apps indépendantes sans coque partagée.
 
 ### apps/
 Applications finales qui combinent packages, core et engines. Découpage par rôle :
@@ -67,13 +68,6 @@ Vérification : `cargo tree -p <crate> --depth 1`.
 - **Frontière moteur→UI** : `PreviewCache` dérive les handles iced des `RgbaBuf`
   par identité d'Arc (zéro copie), synchronisé au début de chaque message dans
   `update()` — point unique de conversion.
-
-## Chantier 3 — Décision `core::shell::SuiteApp` (en attente validation humaine)
-
-`SuiteApp`/`AppKind` ne sont implémentés par aucune app. Options : A) finaliser
-l'unification (et renommer `ui_kit::shell` vs `core::shell`) ou B) retirer le
-crate. **B privilégiée** (apps restent indépendantes) — à exécuter en PR
-dédiée (suppression `core/shell` du workspace + doc).
 
 ## Compilation
 

@@ -14,7 +14,6 @@ iced_aw.workspace = true
 ui-kit = { path = "../../packages/ui-kit" }
 suite-core = { path = "../../core/core", package = "suite-core" }
 datatypes = { path = "../../core/datatypes" }
-suite-shell = { path = "../../core/shell" }
 photo-engine = { path = "../../engines/photo-engine" }
 preferences = { path = "../../packages/preferences" }
 uuid.workspace = true
