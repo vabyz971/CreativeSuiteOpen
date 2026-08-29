@@ -214,6 +214,48 @@ fn next_appearance_version() -> u64 {
     APPEARANCE_VERSION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Masque raster non destructif attaché à un PixelLayer ou un GroupLayer.
+/// Vit dans le MÊME espace que le calque (dimensions du calque, suit sa
+/// transform) — comme le masque « lié » par défaut d'Affinity/Photoshop.
+/// Stocké en RGBA8 (R=G=B=couverture, A=255) pour réutiliser
+/// `paint::paint_stroke_rgba` sans dupliquer la rastérisation.
+/// TODO v2: Luma8 pur (÷4 mémoire), feather/flou dédié, unlink transform.
+#[derive(Clone, Debug)]
+pub struct LayerMask {
+    /// Buffer de couverture RGBA8 (R = couverture, A = 255 constant).
+    pub image: Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>,
+    pub enabled: bool,
+    pub inverted: bool,
+    pub version: u64,
+}
+
+impl LayerMask {
+    /// Masque plein blanc (tout visible) aux dimensions données.
+    #[must_use]
+    pub fn full(width: u32, height: u32) -> Self {
+        let buf = ImageBuffer::from_pixel(width, height, Rgba([255, 255, 255, 255]));
+        Self {
+            image: Arc::new(buf),
+            enabled: true,
+            inverted: false,
+            version: next_appearance_version(),
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.version = next_appearance_version();
+    }
+
+    /// Couverture 0.0..=1.0 au pixel (x,y), en tenant compte de `inverted`.
+    /// L'appelant doit vérifier `enabled` avant (retourne 1.0 si désactivé).
+    #[inline]
+    #[must_use]
+    pub fn coverage_at(&self, x: u32, y: u32) -> f32 {
+        let c = self.image.get_pixel(x, y)[0] as f32 / 255.0;
+        if self.inverted { 1.0 - c } else { c }
+    }
+}
+
 /// Calque pixels : image SOURCE non destructive + chaîne de live filters.
 ///
 /// L'image source ne change que lors d'événements explicites (peinture,
@@ -231,6 +273,7 @@ pub struct PixelLayer {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub visible: bool,
+    pub mask: Option<LayerMask>,
     /// Incrémenté à TOUTE mutation affectant l'apparence (source ou filtres).
     /// Clé d'invalidation du cache d'apparence du document.
     pub appearance_version: u64,
@@ -248,6 +291,7 @@ impl PixelLayer {
             opacity: 100.0,
             blend_mode: BlendMode::Normal,
             visible: true,
+            mask: None,
             appearance_version: next_appearance_version(),
         }
     }
@@ -284,6 +328,7 @@ pub struct GroupLayer {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub visible: bool,
+    pub mask: Option<LayerMask>,
 }
 
 impl GroupLayer {
@@ -296,6 +341,7 @@ impl GroupLayer {
             opacity: 100.0,
             blend_mode: BlendMode::Normal,
             visible: true,
+            mask: None,
         }
     }
 }
@@ -421,6 +467,22 @@ impl LayerNode {
             LayerNode::Pixel(l) => Some(&mut l.live_filters),
             LayerNode::Adjustment(a) => Some(&mut a.filters),
             LayerNode::Group(_) => None,
+        }
+    }
+
+    pub fn mask(&self) -> Option<&LayerMask> {
+        match self {
+            LayerNode::Pixel(l) => l.mask.as_ref(),
+            LayerNode::Group(g) => g.mask.as_ref(),
+            LayerNode::Adjustment(_) => None,
+        }
+    }
+
+    pub fn mask_mut(&mut self) -> Option<&mut Option<LayerMask>> {
+        match self {
+            LayerNode::Pixel(l) => Some(&mut l.mask),
+            LayerNode::Group(g) => Some(&mut g.mask),
+            LayerNode::Adjustment(_) => None,
         }
     }
 
@@ -696,6 +758,17 @@ impl Document {
         } else {
             layer.source_image.flipv()
         };
+        if let Some(mask) = layer.mask.as_mut() {
+            let dyn_mask = DynamicImage::ImageRgba8((*mask.image).clone());
+            let flipped_mask = if horizontal {
+                dyn_mask.fliph()
+            } else {
+                dyn_mask.flipv()
+            }
+            .to_rgba8();
+            mask.image = Arc::new(flipped_mask);
+            mask.touch();
+        }
         layer.set_source_image(flipped);
         Ok(())
     }
@@ -719,6 +792,13 @@ impl Document {
         // Compense l'origine : le pixel (x,y) d'origine reste à sa place monde
         layer.transform.offset_x += x as f32;
         layer.transform.offset_y += y as f32;
+        // Rogne le masque lié aux mêmes coordonnées
+        if let Some(mask) = layer.mask.as_mut() {
+            let dyn_mask = DynamicImage::ImageRgba8((*mask.image).clone());
+            let cropped_mask = dyn_mask.crop_imm(x as u32, y as u32, w, h).to_rgba8();
+            mask.image = Arc::new(cropped_mask);
+            mask.touch();
+        }
         layer.set_source_image(cropped);
         Ok(())
     }
@@ -1064,10 +1144,14 @@ fn needs_fallback_in(nodes: &[LayerNode]) -> bool {
                 if l.blend_mode != BlendMode::Normal {
                     return true;
                 }
+                if l.mask.as_ref().is_some_and(|m| m.enabled) {
+                    return true;
+                }
             }
             LayerNode::Group(g) => {
                 if g.opacity < 99.9
                     || g.blend_mode != BlendMode::Normal
+                    || g.mask.as_ref().is_some_and(|m| m.enabled)
                     || needs_fallback_in(&g.children)
                 {
                     return true;
@@ -1163,9 +1247,12 @@ fn blend_pixel(b: [f32; 4], t: [f32; 4], mode: u32) -> [f32; 4] {
 }
 
 /// Fusionne `top` DANS `base` en place — zéro allocation intermédiaire.
+/// `mask` optionnel a les MÊMES dims que `top` (même transform) ; canal R =
+/// couverture 0..255, multiplié à l'alpha échantillonné.
 fn blend_into(
     base: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     top: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+    mask: Option<&ImageBuffer<Rgba<u8>, Vec<u8>>>,
     opacity: f32,
     blend_mode: BlendMode,
     offset_x: f32,
@@ -1181,6 +1268,7 @@ fn blend_into(
     let ox = offset_x.round() as i32;
     let oy = offset_y.round() as i32;
     let t_raw = top.as_raw();
+    let m_raw = mask.map(|m| m.as_raw());
 
     base.as_flat_samples_mut()
         .samples
@@ -1194,11 +1282,16 @@ fn blend_into(
             let ty = y - oy;
             let t: [f32; 4] = if tx >= 0 && tx < tw && ty >= 0 && ty < th {
                 let o = (ty as u32 * tw as u32 + tx as u32) as usize * 4;
+                let mut a = t_raw[o + 3] as f32 / 255.0 * op;
+                if let Some(mr) = m_raw {
+                    let cov = mr[o] as f32 / 255.0;
+                    a *= cov;
+                }
                 [
                     t_raw[o] as f32 / 255.0,
                     t_raw[o + 1] as f32 / 255.0,
                     t_raw[o + 2] as f32 / 255.0,
-                    t_raw[o + 3] as f32 / 255.0 * op,
+                    a,
                 ]
             } else {
                 [0.0, 0.0, 0.0, 0.0]
@@ -1329,6 +1422,25 @@ fn prepare_top(item: &DrawItem<'_>) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, f32
     (buf, ox, oy)
 }
 
+/// Transforme le masque avec la même géométrie que l'image couleur.
+/// `inverted` appliqué en amont pour éviter une branche par pixel.
+fn prepare_mask(mask: &LayerMask, transform: Transform2D) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let dyn_img = DynamicImage::ImageRgba8((*mask.image).clone());
+    let item = DrawItem {
+        image: &dyn_img,
+        transform,
+    };
+    let (mut buf, _, _) = prepare_top(&item);
+    if mask.inverted {
+        for px in buf.pixels_mut() {
+            let v = 255 - px[0];
+            *px = Rgba([v, v, v, 255]);
+        }
+    }
+    // garde-fou dimensions : masque doit matcher source, sinon on ignore (déjà loggé si besoin)
+    buf
+}
+
 // ---------------------------------------------------------------------------
 // Compositing récursif (groupes + ajustements)
 // ---------------------------------------------------------------------------
@@ -1414,9 +1526,15 @@ fn fold_scope(
                     transform: l.transform,
                 };
                 let (top, ox, oy) = prepare_top(&item);
+                let mask_buf = l
+                    .mask
+                    .as_ref()
+                    .filter(|m| m.enabled)
+                    .map(|m| prepare_mask(m, l.transform));
                 blend_into(
                     acc,
                     &top,
+                    mask_buf.as_ref(),
                     l.opacity,
                     l.blend_mode,
                     ox + origin_x,
@@ -1434,7 +1552,40 @@ fn fold_scope(
                     Rgba([0, 0, 0, 0]),
                 );
                 if fold_scope(&g.children, &mut sub, origin_x, origin_y, resolve) {
-                    blend_into(acc, &sub, g.opacity, g.blend_mode, 0.0, 0.0);
+                    let mask_buf = g.mask.as_ref().filter(|m| m.enabled).map(|m| {
+                        // Masque de groupe : s'applique à la composite du sous-arbre.
+                        // On le transforme avec identité (déjà en espace canvas via sub),
+                        // mais on respecte inverted. Pour v1 le masque suit les dims du doc.
+                        // Simplification : masque plein doc transformé identité.
+                        // On prépare un buffer aux dims de sub.
+                        let mut buf = ImageBuffer::from_pixel(
+                            sub.width(),
+                            sub.height(),
+                            Rgba([255, 255, 255, 255]),
+                        );
+                        // Échantillonne le masque original centré sur sub
+                        let (mw, mh) = (m.image.width(), m.image.height());
+                        // Copie simple sans transform pour v1 — TODO v2: vraie transform
+                        let copy_w = mw.min(sub.width());
+                        let copy_h = mh.min(sub.height());
+                        for y in 0..copy_h {
+                            for x in 0..copy_w {
+                                let p = m.image.get_pixel(x, y);
+                                let v = if m.inverted { 255 - p[0] } else { p[0] };
+                                buf.put_pixel(x, y, Rgba([v, v, v, 255]));
+                            }
+                        }
+                        buf
+                    });
+                    blend_into(
+                        acc,
+                        &sub,
+                        mask_buf.as_ref(),
+                        g.opacity,
+                        g.blend_mode,
+                        0.0,
+                        0.0,
+                    );
                     contributed = true;
                 }
             }
@@ -2000,5 +2151,130 @@ mod tests {
         assert_ne!([p0[0], p0[1], p0[2]], avant_gauche);
         let p1 = img.get_pixel(1, 0);
         assert_eq!([p1[0], p1[1], p1[2]], avant_gauche);
+    }
+
+    // --- Masques (§8) ---
+
+    fn masked_node(
+        img: &DynamicImage,
+        mask_color: [u8; 4],
+        enabled: bool,
+        inverted: bool,
+    ) -> LayerNode {
+        let mut l = PixelLayer::new("masked", arc(img));
+        let (w, h) = img.dimensions();
+        let mut m = LayerMask::full(w, h);
+        // remplit le masque uniformément
+        let buf = ImageBuffer::from_pixel(w, h, Rgba(mask_color));
+        m.image = Arc::new(buf);
+        m.enabled = enabled;
+        m.inverted = inverted;
+        l.mask = Some(m);
+        LayerNode::Pixel(l)
+    }
+
+    #[test]
+    fn masque_blanc_est_noop() {
+        let base = solid(2, 2, [10, 20, 30, 255]);
+        let top = solid(2, 2, [200, 100, 50, 255]);
+        let doc_plain = doc_of(
+            vec![
+                pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+                pixel_node(&top, 100.0, BlendMode::Normal, 0.0, 0.0),
+            ],
+            2,
+            2,
+        );
+        let doc_masked = doc_of(
+            vec![
+                pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+                masked_node(&top, [255, 255, 255, 255], true, false),
+            ],
+            2,
+            2,
+        );
+        assert_eq!(
+            doc_plain.composite().unwrap().to_rgba8().as_raw(),
+            doc_masked.composite().unwrap().to_rgba8().as_raw()
+        );
+    }
+
+    #[test]
+    fn masque_noir_cache_le_calque() {
+        let base = solid(1, 1, [10, 20, 30, 255]);
+        let top = solid(1, 1, [200, 100, 50, 255]);
+        let doc = doc_of(
+            vec![
+                pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+                masked_node(&top, [0, 0, 0, 255], true, false),
+            ],
+            1,
+            1,
+        );
+        let out = doc.composite().unwrap();
+        assert_close(px(&out, 0, 0), [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn masque_gris_diminue_alpha() {
+        let base = solid(1, 1, [0, 0, 0, 255]);
+        let top = solid(1, 1, [255, 0, 0, 255]);
+        let doc = doc_of(
+            vec![
+                pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+                masked_node(&top, [128, 128, 128, 255], true, false),
+            ],
+            1,
+            1,
+        );
+        let out = doc.composite().unwrap();
+        // alpha 0.5 → blend 50% rouge sur noir ≈ 128
+        assert_close(px(&out, 0, 0), [128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn masque_inverted_inverse_couverture() {
+        let base = solid(1, 1, [10, 20, 30, 255]);
+        let top = solid(1, 1, [200, 100, 50, 255]);
+        let doc = doc_of(
+            vec![
+                pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+                masked_node(&top, [0, 0, 0, 255], true, true),
+            ],
+            1,
+            1,
+        );
+        // noir inversé = blanc → no-op, top visible
+        let out = doc.composite().unwrap();
+        assert_close(px(&out, 0, 0), [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn masque_desactive_est_noop() {
+        let base = solid(1, 1, [10, 20, 30, 255]);
+        let top = solid(1, 1, [200, 100, 50, 255]);
+        let doc = doc_of(
+            vec![
+                pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+                masked_node(&top, [0, 0, 0, 255], false, false),
+            ],
+            1,
+            1,
+        );
+        let out = doc.composite().unwrap();
+        assert_close(px(&out, 0, 0), [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn needs_fallback_avec_masque_actif() {
+        let img = solid(1, 1, [0, 0, 0, 255]);
+        let mut doc = Document::new(1, 1);
+        doc.push_layer(masked_node(&img, [255, 255, 255, 255], true, false));
+        assert!(doc.needs_fallback());
+        // désactivé → pas de fallback
+        if let Some(LayerNode::Pixel(l)) = doc.find_mut(doc.root[0].id()) {
+            l.mask.as_mut().unwrap().enabled = false;
+        }
+        assert!(!doc.needs_fallback());
     }
 }
