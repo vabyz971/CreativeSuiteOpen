@@ -1631,3 +1631,71 @@ fn pick_image_task(map: fn(Option<std::path::PathBuf>) -> Message) -> Task<Messa
         map,
     )
 }
+
+#[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
+mod tests {
+    use super::*;
+    use crate::state::PhotoApp;
+
+    #[allow(dead_code)]
+    fn solid_img(w: u32, h: u32) -> std::sync::Arc<image::DynamicImage> {
+        std::sync::Arc::new(image::DynamicImage::ImageRgba8(
+            image::ImageBuffer::from_pixel(w, h, image::Rgba([10, 20, 30, 255])),
+        ))
+    }
+
+    #[test]
+    fn cycle_calque_undo_redo() {
+        let mut app = PhotoApp::default();
+        app.doc = photo_engine::Document::new(4, 4);
+        let _ = update(&mut app, Message::AddEmptyLayer);
+        let id = app.selected_layer.expect("sélection");
+        let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: 42.0 });
+        assert_eq!(app.doc.find(id).unwrap().opacity(), 42.0);
+        let _ = update(&mut app, Message::Undo);
+        assert_eq!(app.doc.find(id).unwrap().opacity(), 100.0);
+        let _ = update(&mut app, Message::Redo);
+        assert_eq!(app.doc.find(id).unwrap().opacity(), 42.0);
+    }
+
+    #[test]
+    fn duplication_produit_nouvel_id() {
+        let mut app = PhotoApp::default();
+        app.doc = photo_engine::Document::new(2, 2);
+        let _ = update(&mut app, Message::AddEmptyLayer);
+        let id = app.selected_layer.unwrap();
+        // ajoute second calque pour pouvoir dupliquer
+        let _ = update(&mut app, Message::AddEmptyLayer);
+        let id2 = app.selected_layer.unwrap();
+        let _ = update(&mut app, Message::DuplicateLayer(id2));
+        let dup = app.selected_layer.unwrap();
+        assert_ne!(dup, id2);
+        assert_ne!(dup, id);
+        assert_eq!(app.doc.pixel_count(), 3);
+    }
+
+    #[test]
+    fn suppression_dernier_calque_refusee() {
+        let mut app = PhotoApp::default();
+        app.doc = photo_engine::Document::new(2, 2);
+        let _ = update(&mut app, Message::AddEmptyLayer);
+        let id = app.selected_layer.unwrap();
+        assert_eq!(app.doc.pixel_count(), 1);
+        let _ = update(&mut app, Message::DeleteLayer(id));
+        assert_eq!(app.doc.pixel_count(), 1, "dernier calque non supprimable");
+    }
+
+    #[test]
+    fn coalescing_opacite_en_un_undo() {
+        let mut app = PhotoApp::default();
+        app.doc = photo_engine::Document::new(2, 2);
+        let _ = update(&mut app, Message::AddEmptyLayer);
+        let id = app.selected_layer.unwrap();
+        for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: v });
+        }
+        let _ = update(&mut app, Message::Undo);
+        assert_eq!(app.doc.find(id).unwrap().opacity(), 100.0);
+    }
+}
