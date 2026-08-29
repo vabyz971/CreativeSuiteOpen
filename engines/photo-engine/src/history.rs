@@ -392,7 +392,7 @@ mod tests {
             steps += 1;
             assert!(steps < 300, "boucle infinie");
         }
-        assert!(steps >= 40 && steps <= 51, "limite non respectée: {steps}");
+        assert!((40..=51).contains(&steps), "limite non respectée: {steps}");
     }
 
     #[test]

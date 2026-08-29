@@ -2122,7 +2122,7 @@ mod tests {
         let mut doc = Document::new(4, 4);
         let mut b = ImageBuffer::from_pixel(4, 2, Rgba([0, 0, 0, 255]));
         b.put_pixel(3, 0, Rgba([200, 10, 20, 255]));
-        let mut l = PixelLayer::new("crop", Arc::new(DynamicImage::ImageRgba8(b)));
+        let l = PixelLayer::new("crop", Arc::new(DynamicImage::ImageRgba8(b)));
         let id = l.id;
         doc.push_layer(LayerNode::Pixel(l));
 
@@ -2169,7 +2169,7 @@ mod tests {
         let mut doc = Document::new(4, 4);
         let mut b = ImageBuffer::from_pixel(2, 1, Rgba([0, 0, 0, 255]));
         b.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
-        let mut l = PixelLayer::new("flip", Arc::new(DynamicImage::ImageRgba8(b)));
+        let l = PixelLayer::new("flip", Arc::new(DynamicImage::ImageRgba8(b)));
         let id = l.id;
         doc.push_layer(LayerNode::Pixel(l));
         doc.flip(id, true).expect("flip");

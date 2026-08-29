@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn sync_tree_elague_les_calques_supprimes() {
         let mut doc = Document::new(4, 4);
-        let mut l1 = PixelLayer::new("a", solid(1));
+        let l1 = PixelLayer::new("a", solid(1));
         let l2 = PixelLayer::new("b", solid(2));
         let id1 = l1.id;
         let _ = l2.id;

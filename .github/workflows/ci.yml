@@ -34,8 +34,8 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Clippy (erreurs = échec)
-        run: cargo clippy --workspace --all-targets
+      - name: Clippy (erreurs = échec, warnings inclus)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
         run: cargo test --workspace
