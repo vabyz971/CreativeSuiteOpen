@@ -1,4 +1,5 @@
 ---
+covers: []
 name: CreativeSuiteOpen (Rust/Iced Edition)
 framework: Iced 0.14
 language: Rust
