@@ -815,12 +815,12 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             frame.fill_rectangle(
                 label_bg.position(),
                 label_bg.size(),
-                iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+                colors::CANVAS_LABEL_BG,
             );
             frame.fill_text(iced::widget::canvas::Text {
                 content: label,
                 position: label_pos,
-                color: iced::Color::from_rgba(0.95, 0.95, 0.95, 1.0),
+                color: colors::CANVAS_LABEL_FG,
                 size: iced::Pixels(10.0),
                 align_x: iced::alignment::Horizontal::Center.into(),
                 align_y: iced::alignment::Vertical::Center,

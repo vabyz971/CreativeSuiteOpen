@@ -389,7 +389,10 @@ fn handle_image_read_err(app: &mut PhotoApp, e: String) -> Task<Message> {
 }
 
 fn handle_image_decoded_ok(app: &mut PhotoApp, decoded: DecodedLayer) -> Task<Message> {
-    app.background_tasks.clear();
+    // Ne nettoie QUE les tâches de décodage/lecture : un Export ou une
+    // sauvegarde concurrente ne doivent pas être effacés.
+    app.background_tasks
+        .retain(|t| !t.starts_with("Décodage") && !t.starts_with("Lecture"));
     let node = LayerNode::Pixel(decoded.0);
     // The document takes the dimensions of the first image
     if app.doc.width == 0 || app.doc.height == 0 {
@@ -409,7 +412,8 @@ fn handle_image_decoded_ok(app: &mut PhotoApp, decoded: DecodedLayer) -> Task<Me
 }
 
 fn handle_image_decoded_err(app: &mut PhotoApp, e: String) -> Task<Message> {
-    app.background_tasks.clear();
+    app.background_tasks
+        .retain(|t| !t.starts_with("Décodage") && !t.starts_with("Lecture"));
     app.image_error = Some(e);
     Task::none()
 }

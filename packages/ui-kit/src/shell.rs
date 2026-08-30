@@ -21,8 +21,81 @@
 const TITLE_RESERVED: f32 = 190.0;
 
 use crate::theme::{colors, fonts, metrics};
-use iced::widget::{Space, container, row, text};
+use iced::widget::center;
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Alignment, Color, Element, Font, Length, Padding};
+use iced_aw::DropDown;
+
+/// Indicateur de tâches d'arrière-plan (spinner + menu déroulant).
+///- `spinning`: true si au moins une tâche est active.
+///- `angle`: angle actuel du spinner (animé par l'app).
+///- `tasks`: liste des labels des tâches en cours.
+///- `open`: état d'ouverture du menu.
+///- `on_toggle`: message déclenché au clic sur le spinner.
+///- `on_dismiss`: message déclenché à la fermeture du dropdown.
+pub fn task_indicator<'a, Message>(
+    spinning: bool,
+    angle: f32,
+    tasks: &'a [String],
+    open: bool,
+    on_toggle: Message,
+    on_dismiss: Message,
+) -> Element<'a, Message>
+where
+    Message: 'a + Clone + 'static,
+{
+    let spinner_btn = button(center(crate::spinner::circle(
+        if spinning { angle } else { 0.0 },
+        20.0,
+    )))
+    .width(Length::Fixed(30.0))
+    .height(Length::Fixed(30.0))
+    .padding(0)
+    .style(|_, s| crate::style::ghost(s))
+    .on_press(on_toggle);
+
+    let task_menu = {
+        let items: Vec<Element<'_, Message>> = if tasks.is_empty() {
+            vec![
+                container(
+                    text("Aucun traitement en cours")
+                        .size(12)
+                        .color(colors::TEXT_MUTED),
+                )
+                .padding(Padding::new(8.0).left(10.0).right(10.0))
+                .into(),
+            ]
+        } else {
+            tasks
+                .iter()
+                .map(|label| {
+                    row![
+                        text(label).size(12).color(colors::TEXT_PRIMARY),
+                        Space::new().width(Length::Fill),
+                        crate::spinner::circle(angle, 12.0),
+                    ]
+                    .align_y(Alignment::Center)
+                    .into()
+                })
+                .collect()
+        };
+        container(column(items).spacing(2).padding(4))
+            .width(Length::Fixed(240.0))
+            .style(|_| {
+                crate::style::floating_card(
+                    colors::BG_DROPDOWN,
+                    metrics::RADIUS_DROPDOWN,
+                    crate::theme::shadows::dropdown(),
+                )
+            })
+    };
+
+    DropDown::new(spinner_btn, task_menu, open)
+        .width(Length::Fixed(240.0))
+        .alignment(iced_aw::drop_down::Alignment::BottomEnd)
+        .on_dismiss(on_dismiss)
+        .into()
+}
 
 /// Top bar ala Lumina Creative: logo + title (reserved width),
 /// notifications action on right.

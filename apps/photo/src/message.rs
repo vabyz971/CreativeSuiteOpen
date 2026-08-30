@@ -18,6 +18,7 @@
 
 use iced::Color;
 use iced::widget::pane_grid;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::layers::PixelLayer;
@@ -207,6 +208,14 @@ pub enum Message {
     SaveProjectPathPicked(Option<std::path::PathBuf>),
     /// Résultat d'un enregistrement (nom du fichier pour statut/erreur)
     ProjectSaved(Result<String, String>),
+    /// Opération destructrice terminée (Flip, Crop, etc.) — porte les
+    /// nouveaux buffers (source + masques). Les échecs transportent un
+    /// message d'erreur ; le calque reste inchangé.
+    DestructiveOpComputed {
+        layer_id: Uuid,
+        op: DestructiveOp,
+        result: Result<DestructiveResult, String>,
+    },
     /// Ouvre la boîte « Exporter l'image » (PNG/JPEG)
     ExportImage,
     /// Chemin d'export choisi — le décodage du format vient de l'extension
@@ -237,6 +246,12 @@ pub enum Message {
     },
     /// Fond de drag (composite sans le sous-arbre déplacé) prêt
     DragBackgroundComputed {
+        layer_id: Uuid,
+        result: Option<(Vec<u8>, u32, u32)>,
+    },
+    /// Composite du calque seul (avec masque) prêt — affiché en surimpression
+    /// pendant le drag en mode fallback, pour préserver le rendu du masque.
+    DragLayerCompositeComputed {
         layer_id: Uuid,
         result: Option<(Vec<u8>, u32, u32)>,
     },
@@ -313,6 +328,10 @@ pub enum Message {
     // ciblent un masque précis par (layer_id, mask_id).
     SetActiveMask(Option<MaskTarget>),
     AddLayerMask(Uuid),
+    AddLayerMaskComputed {
+        layer_id: Uuid,
+        mask: photo_engine::LayerMask,
+    },
     RemoveLayerMask(Uuid, Uuid),
     ToggleLayerMaskEnabled(Uuid, Uuid),
     InvertLayerMask(Uuid, Uuid),
@@ -327,4 +346,24 @@ pub enum Message {
 pub struct MaskTarget {
     pub layer_id: Uuid,
     pub mask_id: Uuid,
+}
+
+/// Type d'opération destructrice asynchrone (Flip, Crop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestructiveOp {
+    FlipHorizontal,
+    FlipVertical,
+    Crop,
+}
+
+/// Résultat d'une opération destructrice calculée hors thread UI.
+/// Contient le nouveau buffer source et les nouveaux buffers de masques
+/// (un par masque existant, dans le même ordre). Pour Crop, contient
+/// aussi le décalage de transform à appliquer.
+#[derive(Debug, Clone)]
+pub struct DestructiveResult {
+    pub source: Arc<image::DynamicImage>,
+    pub masks: Vec<Arc<image::DynamicImage>>,
+    /// Décalage de transform à ajouter (Crop seulement ; `(0, 0)` pour Flip).
+    pub offset_delta: (f32, f32),
 }

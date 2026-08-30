@@ -141,6 +141,13 @@ pub mod colors {
 
     // Cables
     pub const CABLE_SHADOW: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.4);
+
+    // Canvas measurement labels (zoom %, ruler): pill background + foreground
+    pub const CANVAS_LABEL_BG: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.55);
+    pub const CANVAS_LABEL_FG: Color = Color::from_rgba(0.95, 0.95, 0.95, 1.0);
+
+    // Dialog scrim — modal overlay
+    pub const SCRIM: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.45);
 }
 
 // ---------------------------------------------------------------------------

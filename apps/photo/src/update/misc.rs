@@ -194,10 +194,23 @@ fn handle_image_canvas_event(
                     // During the few ms of computation the drag already
                     // displays layer-by-layer (approximation), then the exact
                     // background arrives without ever freezing the UI.
-                    if app.needs_fallback()
-                        && let Some(task) = app.drag_background_task(id)
-                    {
-                        return task;
+                    if app.needs_fallback() {
+                        // Calque masqué : il faut aussi un composite COURT
+                        // du calque avec son masque (sinon le rendu live
+                        // perd le masque → "saut" / gel visuel).
+                        let has_mask = app
+                            .doc
+                            .find(id)
+                            .map(|n| n.masks().iter().any(|m| m.enabled))
+                            .unwrap_or(false);
+                        let mut task = app.drag_background_task(id);
+                        if has_mask && let Some(t2) = app.drag_layer_composite_task(id) {
+                            task = Some(match task {
+                                Some(t1) => Task::batch([t1, t2]),
+                                None => t2,
+                            });
+                        }
+                        return task.unwrap_or_else(Task::none);
                     }
                 }
             }
@@ -210,16 +223,26 @@ fn handle_image_canvas_event(
             {
                 let zoom = app.zoom_level as f32 / 100.0;
                 if zoom > 0.001 {
-                    // ZERO recomposite in both paths:
-                    // - fast: the canvas redraws the texture at its new
-                    //   position (Affinity model)
-                    // - fallback: pre-computed background + layer drawn on
-                    //   top (Normal approximation during the gesture)
+                    // ZERO recomposite dans les deux chemins :
+                    // - fast : le canvas redessine la texture à sa nouvelle
+                    //   position (modèle Affinity)
+                    // - fallback : fond pré-calculé + calque composite (avec
+                    //   masque si présent) par-dessus → approximation
+                    //   « Normal » pendant le geste, le blend final est
+                    //   recalculé UNE fois au relâchement.
                     let new_x = anchor_t.offset_x + dx / zoom;
                     let new_y = anchor_t.offset_y + dy / zoom;
                     if let Some(LayerNode::Pixel(l)) = app.doc.find_mut(id) {
                         l.transform.offset_x = new_x;
                         l.transform.offset_y = new_y;
+                    }
+                    // Invalide la fallback stale : elle contient le calque
+                    // à l'ancienne position. L'UI ne s'en sert pas pendant
+                    // le drag (workspace.rs ne l'affiche que si !dragging),
+                    // mais on l'élimine pour libérer la mémoire GPU.
+                    if app.fallback_handle.is_some() {
+                        app.fallback_handle = None;
+                        app.fallback_size = None;
                     }
                 }
             }
@@ -227,6 +250,13 @@ fn handle_image_canvas_event(
         }
         ui_kit::image_canvas::ImageCanvasEvent::MoveLayerEnd => {
             app.drag_bg_in_flight = None;
+            // Fin du geste : on purge IMMÉDIATEMENT les buffers drag — la
+            // prochaine frame affichera le fallback complet (recalculé
+            // hors-thread si besoin) sans laisser d'artefacts.
+            app.drag_background = None;
+            app.drag_background_size = None;
+            app.drag_layer_composite = None;
+            app.drag_layer_composite_size = None;
             // End of gesture: ONE light anchor->final command replaces the
             // old start-of-drag snapshot. Immobile drag = no history entry at all.
             if let Some((id, anchor_t)) = app.move_anchor.take()
@@ -242,10 +272,7 @@ fn handle_image_canvas_event(
             }
             // True recomposite: the layer's real blend at its final position
             // replaces the drag approximation
-            let was_fallback = app.needs_fallback();
-            app.drag_background = None;
-            app.drag_background_size = None;
-            if was_fallback {
+            if app.needs_fallback() {
                 app.invalidate_fallback();
             }
             Task::none()
@@ -337,6 +364,23 @@ fn handle_drag_background_computed(
     Task::none()
 }
 
+fn handle_drag_layer_composite_computed(
+    app: &mut PhotoApp,
+    layer_id: uuid::Uuid,
+    result: Option<(Vec<u8>, u32, u32)>,
+) -> Task<Message> {
+    app.drag_layer_composite_in_flight = false;
+    // Valide seulement si on DRAG toujours CE calque — sinon le buffer est
+    // orphelin et écrasé au prochain MoveLayerStart.
+    if app.move_anchor.map(|(id, _)| id) == Some(layer_id)
+        && let Some((rgba, w, h)) = result
+    {
+        app.drag_layer_composite = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
+        app.drag_layer_composite_size = Some(Size::new(w as f32, h as f32));
+    }
+    Task::none()
+}
+
 fn handle_zoom_in(app: &mut PhotoApp) -> Task<Message> {
     app.zoom_level = (app.zoom_level + 10).clamp(5, 1600);
     Task::none()
@@ -376,6 +420,9 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         }
         Message::DragBackgroundComputed { layer_id, result } => {
             Some(handle_drag_background_computed(app, layer_id, result))
+        }
+        Message::DragLayerCompositeComputed { layer_id, result } => {
+            Some(handle_drag_layer_composite_computed(app, layer_id, result))
         }
         Message::ZoomInPressed => Some(handle_zoom_in(app)),
         Message::ZoomOutPressed => Some(handle_zoom_out(app)),

@@ -17,7 +17,7 @@
 //! Rendu de l'interface + abonnements (spinner, raccourcis clavier).
 
 use iced::widget::container;
-use iced::{Alignment, Element, Length, Subscription};
+use iced::{Element, Length, Subscription};
 
 use crate::components;
 use crate::menus::app_menus;
@@ -51,66 +51,17 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     let menu_buttons = ui_kit::menu::bar(&menus);
 
     // Bouton spinner façon Final Cut Pro : toujours visible, tourne pendant
-    // un traitement en arrière-plan, clic → menu des tâches en cours
+    // un traitement en arrière-plan, clic → menu des tâches en cours.
+    // La primitive vit dans ui_kit::shell (réutilisable par vidéo/audio).
     let spinning = !app.background_tasks.is_empty();
-    let spinner_btn = iced::widget::button(
-        // Canvas 20 px centré dans un bouton 30 px sans padding → pas de crop
-        iced::widget::center(ui_kit::spinner::circle(
-            if spinning { app.spinner_angle } else { 0.0 },
-            20.0,
-        )),
-    )
-    .width(Length::Fixed(30.0))
-    .height(Length::Fixed(30.0))
-    .padding(0)
-    .style(|_, s| ui_kit::style::ghost(s))
-    .on_press(Message::ToggleTaskMenu);
-
-    let task_menu = {
-        let items: Vec<iced::Element<'_, Message>> = if app.background_tasks.is_empty() {
-            vec![
-                iced::widget::container(
-                    iced::widget::text("Aucun traitement en cours")
-                        .size(12)
-                        .color(ui_kit::theme::colors::TEXT_MUTED),
-                )
-                .padding(iced::Padding::new(8.0).left(10.0).right(10.0))
-                .into(),
-            ]
-        } else {
-            app.background_tasks
-                .iter()
-                .map(|label| {
-                    iced::widget::row![
-                        iced::widget::text(label)
-                            .size(12)
-                            .color(ui_kit::theme::colors::TEXT_PRIMARY),
-                        iced::widget::Space::new().width(Length::Fill),
-                        ui_kit::spinner::circle(app.spinner_angle, 12.0),
-                    ]
-                    .align_y(Alignment::Center)
-                    .into()
-                })
-                .collect()
-        };
-        iced::widget::container(iced::widget::column(items).spacing(2).padding(4))
-            .width(Length::Fixed(240.0))
-            .style(|_| {
-                ui_kit::style::floating_card(
-                    ui_kit::theme::colors::BG_DROPDOWN,
-                    ui_kit::theme::metrics::RADIUS_DROPDOWN,
-                    ui_kit::theme::shadows::dropdown(),
-                )
-            })
-    };
-
-    let spinner = Some(
-        iced_aw::DropDown::new(spinner_btn, task_menu, app.task_menu_open)
-            .width(Length::Fixed(240.0))
-            .alignment(iced_aw::drop_down::Alignment::BottomEnd)
-            .on_dismiss(Message::ToggleTaskMenu)
-            .into(),
-    );
+    let spinner = Some(ui_kit::shell::task_indicator(
+        spinning,
+        app.spinner_angle,
+        &app.background_tasks,
+        app.task_menu_open,
+        Message::ToggleTaskMenu,
+        Message::ToggleTaskMenu,
+    ));
 
     // Barre haute : Export + menu du tool à sa droite, sans fond
     let selected_scale_percent = app
@@ -145,6 +96,8 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             app.move_anchor.map(|(id, _)| id),
             app.drag_background.clone(),
             app.drag_background_size,
+            app.drag_layer_composite.clone(),
+            app.drag_layer_composite_size,
             app.image_path.clone(),
             app.image_error.clone(),
             app.selected_tool,
@@ -253,7 +206,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             )
         });
         let overlay = iced::widget::center(dialog).style(|_| iced::widget::container::Style {
-            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+            background: Some(ui_kit::theme::colors::SCRIM.into()),
             ..Default::default()
         });
         return iced::widget::stack![base_layout, overlay].into();

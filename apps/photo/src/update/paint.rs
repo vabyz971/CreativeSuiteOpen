@@ -214,28 +214,52 @@ pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         })
         .unwrap_or(false);
     if can {
-        let pre = app.snapshot();
         let (w, h) = match app.doc.find(id) {
             Some(photo_engine::LayerNode::Pixel(l)) => l.dimensions(),
             _ => (app.doc.width.max(1), app.doc.height.max(1)),
         };
-        let mask = photo_engine::LayerMask::full(w, h);
-        let mask_id = mask.id;
-        if let Some(masks) = app.doc.find_mut(id).and_then(|n| n.masks_mut()) {
-            masks.push(mask);
-        }
-        // Le nouveau masque devient immédiatement le masque actif à éditer et
-        // sa liste est dépliée pour le voir.
-        app.expanded_masks.insert(id);
-        app.active_mask = Some(crate::message::MaskTarget {
-            layer_id: id,
-            mask_id,
-        });
-        app.history.push_snapshot(pre);
-        app.invalidate_fallback();
+        app.background_tasks
+            .push("Ajout d'un masque...".to_string());
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let mask = photo_engine::LayerMask::full(w, h);
+                    (id, mask)
+                })
+                .await
+                .map_err(|e| format!("Tâche annulée : {e}"))
+            },
+            |res| match res {
+                Ok((id, mask)) => Message::AddLayerMaskComputed { layer_id: id, mask },
+                Err(e) => Message::ImageDecoded(Err(e)),
+            },
+        )
+    } else {
+        Task::none()
     }
+}
+pub fn handle_add_mask_computed(
+    app: &mut PhotoApp,
+    id: Uuid,
+    mask: photo_engine::LayerMask,
+) -> Task<Message> {
+    app.background_tasks
+        .retain(|t| !t.starts_with("Ajout d'un masque"));
+    let pre = app.snapshot();
+    let mask_id = mask.id;
+    if let Some(masks) = app.doc.find_mut(id).and_then(|n| n.masks_mut()) {
+        masks.push(mask);
+    }
+    app.expanded_masks.insert(id);
+    app.active_mask = Some(crate::message::MaskTarget {
+        layer_id: id,
+        mask_id,
+    });
+    app.history.push_snapshot(pre);
+    app.invalidate_fallback();
     Task::none()
 }
+
 pub fn handle_remove_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> Task<Message> {
     let existed = app
         .doc
@@ -320,6 +344,9 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::ToggleToolsPanel => Some(handle_toggle_tools(app)),
         Message::SetActiveMask(target) => Some(handle_set_active_mask(app, target)),
         Message::AddLayerMask(id) => Some(handle_add_mask(app, id)),
+        Message::AddLayerMaskComputed { layer_id, mask } => {
+            Some(handle_add_mask_computed(app, layer_id, mask))
+        }
         Message::RemoveLayerMask(layer_id, mask_id) => {
             Some(handle_remove_mask(app, layer_id, mask_id))
         }

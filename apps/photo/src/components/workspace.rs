@@ -43,6 +43,11 @@ pub fn render<'a>(
     // Fond composite pré-calculé sans le calque déplacé
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
+    // Composite court du calque seul AVEC son masque — affiché en
+    // surimpression pendant le drag en mode fallback pour préserver le
+    // rendu du masque. `None` tant que le worker n'a pas répondu.
+    drag_layer_composite: Option<image::Handle>,
+    drag_layer_composite_size: Option<Size>,
     image_path: Option<String>,
     image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
@@ -83,6 +88,8 @@ pub fn render<'a>(
                     drag_layer,
                     drag_background.clone(),
                     drag_background_size,
+                    drag_layer_composite.clone(),
+                    drag_layer_composite_size,
                     doc,
                     preview_cache,
                     doc_size,
@@ -166,6 +173,8 @@ fn render_canvas_preview<'a>(
     drag_layer: Option<Uuid>,
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
+    drag_layer_composite: Option<image::Handle>,
+    drag_layer_composite_size: Option<Size>,
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     doc_size: Option<Size>,
@@ -254,16 +263,28 @@ fn render_canvas_preview<'a>(
         && has_drag_bg
         && let Some(l) = drag_layer.and_then(|id| doc.pixel_layer(id))
         && l.visible
-        && let Some(handle) = preview_cache.preview(l.id).cloned()
     {
-        // Uniquement en fallback : le fond pré-calculé exclut ce sous-arbre,
-        // on dessine ce calque par-dessus. En chemin rapide il est DÉJÀ dans
-        // canvas_layers — le push ici le dessinerait deux fois.
-        let (w, h) = l.dimensions();
+        // Fallback drag : on insère le calque par-dessus le fond pré-calculé.
+        // 1) calque masqué + composite dispo → on utilise le composite (le
+        //    masque est respecté, ZÉRO recomposite par frame)
+        // 2) sinon → preview brut (approximation, le blend réel est
+        //    recalculé au relâchement)
+        let (handle, w, h) = if let (Some(h), Some(sz)) =
+            (drag_layer_composite.as_ref(), drag_layer_composite_size)
+        {
+            (h.clone(), sz.width, sz.height)
+        } else if let Some(handle) = preview_cache.preview(l.id).cloned() {
+            let (lw, lh) = l.dimensions();
+            (handle, lw as f32, lh as f32)
+        } else {
+            // Pas de buffer disponible : on laisse l'UI afficher sans le
+            // calque plutôt que de planter.
+            (image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]), 1.0, 1.0)
+        };
         canvas_layers.push(ui_kit::image_canvas::CanvasLayer {
             handle,
-            width: w as f32,
-            height: h as f32,
+            width: w,
+            height: h,
             offset_x: l.transform.offset_x,
             offset_y: l.transform.offset_y,
             opacity: (l.opacity / 100.0).clamp(0.0, 1.0),

@@ -65,6 +65,14 @@ pub struct PhotoApp {
     /// par-dessus. Le vrai blend est recalculé au relâchement.
     pub drag_background: Option<iced_image::Handle>,
     pub drag_background_size: Option<Size>,
+    /// Composite du calque seul (avec son masque) pré-calculé HORS thread UI
+    /// pour les drags en mode fallback. Évite de re-rendre le calque à chaque
+    /// frame (60 fps) tout en préservant le rendu du masque — le buffer est
+    /// calculé UNE fois au MoveLayerStart, puis réutilisé pour le geste.
+    pub drag_layer_composite: Option<iced_image::Handle>,
+    pub drag_layer_composite_size: Option<Size>,
+    /// Verrou anti-doublon pour [`Self::drag_layer_composite_task`].
+    pub(crate) drag_layer_composite_in_flight: bool,
     /// Traitements en arrière-plan (libellés affichés dans le menu du spinner)
     pub background_tasks: Vec<String>,
     /// Menu des tâches ouvert (clic sur le spinner)
@@ -252,6 +260,45 @@ impl PhotoApp {
             },
         ))
     }
+
+    /// Calcule EN ARRIÈRE-PLAN le composite du calque seul AVEC son masque
+    /// appliqué (mode Normal uniquement — le blend final du calque dans le
+    /// document est recalculé au relâchement via [`Self::invalidate_fallback`]).
+    /// Lancé une seule fois au début du drag en mode fallback : le buffer
+    /// est réutilisé pour toutes les frames suivantes, car le calque change
+    /// de POSITION (pas de pixels) pendant le geste.
+    pub(crate) fn drag_layer_composite_task(&mut self, layer_id: Uuid) -> Option<Task<Message>> {
+        if !self.needs_fallback() || self.drag_layer_composite_in_flight {
+            return None;
+        }
+        self.drag_layer_composite_in_flight = true;
+
+        let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
+        doc_copy.restore_snapshot(self.doc.snapshot());
+
+        Some(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    // clone() le calque est sans Arc donc peu coûteux (les
+                    // buffers partagés ne sont pas dupliqués) ; on isole le
+                    // calque dans un documentjeté pour utiliser le pipeline
+                    // standard de compositing (prepare_top + combine_masks +
+                    // blend_into sur fond transparent).
+                    let mut tmp = photo_engine::Document::new(doc_copy.width, doc_copy.height);
+                    if let Some(node) = doc_copy.find(layer_id).cloned() {
+                        tmp.root.push(node);
+                        tmp.composite_preview()
+                            .map(|img| (img.to_rgba8().into_raw(), img.width(), img.height()))
+                    } else {
+                        None
+                    }
+                })
+                .await
+                .unwrap_or(None)
+            },
+            move |result| Message::DragLayerCompositeComputed { layer_id, result },
+        ))
+    }
 }
 
 impl Default for PhotoApp {
@@ -296,6 +343,9 @@ impl Default for PhotoApp {
             move_anchor: None,
             drag_background: None,
             drag_background_size: None,
+            drag_layer_composite: None,
+            drag_layer_composite_size: None,
+            drag_layer_composite_in_flight: false,
             background_tasks: Vec::new(),
             task_menu_open: false,
             spinner_angle: 0.0,

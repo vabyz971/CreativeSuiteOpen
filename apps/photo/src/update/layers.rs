@@ -46,54 +46,33 @@ fn rename_duplicate_suffix(doc: &mut photo_engine::Document, new_id: Uuid) {
     }
 }
 
-fn crop_layer_to_selection(app: &mut PhotoApp) {
-    let Some(sel) = app.canvas_selection else {
-        return;
-    };
-    let Some(id) = app.selected_layer else { return };
-    let Some(layer) = app.doc.pixel_layer(id) else {
-        return;
-    };
-    let to_layer = |x: f32, y: f32| {
-        let t = layer.transform;
-        let cx = x - t.offset_x;
-        let cy = y - t.offset_y;
-        (cx, cy)
-    };
-    let (x0, y0) = to_layer(sel.x, sel.y);
-    let (x1, y1) = to_layer(sel.x + sel.width, sel.y + sel.height);
-    let cx0 = x0.min(x1).round() as i32;
-    let cy0 = y0.min(y1).round() as i32;
-    let cw = ((x1 - x0).abs().round() as u32).max(1);
-    let ch = ((y1 - y0).abs().round() as u32).max(1);
-    let pre = app.snapshot();
-    match app.doc.crop(id, cx0, cy0, cw, ch) {
-        Ok(()) => {
-            app.history.push_snapshot(pre);
-            app.image_error = None;
-            app.invalidate_fallback();
-        }
-        Err(e) => app.image_error = Some(e),
-    }
-}
-
-fn add_empty_layer(app: &mut PhotoApp) {
+fn handle_add_empty(app: &mut PhotoApp) -> Task<Message> {
     let (w, h) = app.doc_dims().unwrap_or((800, 600));
-    let img = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
-        w,
-        h,
-        image::Rgba([0, 0, 0, 0]),
-    ));
-    let layer = PixelLayer::new("Calque vide", std::sync::Arc::new(img));
-    let id = layer.id;
-    let pre = app.snapshot();
-    app.doc.push_layer(LayerNode::Pixel(layer));
-    app.selected_layer = Some(id);
-    app.history.push_snapshot(pre);
-    app.invalidate_fallback();
+    app.background_tasks
+        .push("Création d'un calque vide...".to_string());
+
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let img = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+                    w,
+                    h,
+                    image::Rgba([0, 0, 0, 0]),
+                ));
+                let layer = PixelLayer::new("Calque vide", std::sync::Arc::new(img));
+                crate::message::DecodedLayer(layer)
+            })
+            .await
+            .map_err(|e| format!("Tâche annulée : {e}"))
+        },
+        |res| match res {
+            Ok(dl) => Message::ImageDecoded(Ok(dl)),
+            Err(e) => Message::ImageDecoded(Err(e)),
+        },
+    )
 }
 
-fn add_solid_color_layer(app: &mut PhotoApp, color: iced::Color) {
+fn handle_add_solid(app: &mut PhotoApp, color: iced::Color) -> Task<Message> {
     let (w, h) = app.doc_dims().unwrap_or((800, 600));
     let rgba = image::Rgba([
         (color.r * 255.0) as u8,
@@ -101,14 +80,25 @@ fn add_solid_color_layer(app: &mut PhotoApp, color: iced::Color) {
         (color.b * 255.0) as u8,
         (color.a * 255.0) as u8,
     ]);
-    let img = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(w, h, rgba));
-    let layer = PixelLayer::new("Couleur uni", std::sync::Arc::new(img));
-    let id = layer.id;
-    let pre = app.snapshot();
-    app.doc.push_layer(LayerNode::Pixel(layer));
-    app.selected_layer = Some(id);
-    app.history.push_snapshot(pre);
-    app.invalidate_fallback();
+    app.background_tasks
+        .push("Création d'un calque de couleur...".to_string());
+
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let img =
+                    image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(w, h, rgba));
+                let layer = PixelLayer::new("Couleur uni", std::sync::Arc::new(img));
+                crate::message::DecodedLayer(layer)
+            })
+            .await
+            .map_err(|e| format!("Tâche annulée : {e}"))
+        },
+        |res| match res {
+            Ok(dl) => Message::ImageDecoded(Ok(dl)),
+            Err(e) => Message::ImageDecoded(Err(e)),
+        },
+    )
 }
 
 pub fn handle_select_layer(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
@@ -255,14 +245,82 @@ pub fn handle_rotate90(app: &mut PhotoApp, id: Uuid, clockwise: bool) -> Task<Me
 pub fn handle_flip(app: &mut PhotoApp, id: Uuid, horizontal: bool) -> Task<Message> {
     let target = resolve_target(app, id);
     if let Some(tid) = target {
-        let pre = app.snapshot();
-        match app.doc.flip(tid, horizontal) {
-            Ok(()) => app.history.push_snapshot(pre),
-            Err(e) => app.image_error = Some(e),
-        }
-        app.invalidate_fallback();
+        let op = if horizontal {
+            crate::message::DestructiveOp::FlipHorizontal
+        } else {
+            crate::message::DestructiveOp::FlipVertical
+        };
+        // Clone des buffers nécessaires : le Document n'est pas Sync, on
+        // ne peut pas l'expédier au worker. Les calques sources et masques
+        // sont déjà des Arc<DynamicImage>, le clone est peu coûteux.
+        let (source_rgba, w, h, masks_rgba, mask_dims) = match app.doc.pixel_layer(tid) {
+            Some(l) => {
+                let s = (*l.source_image).clone();
+                let (w, h) = (s.width(), s.height());
+                let rgba = s.to_rgba8().into_raw();
+                let mut masks_rgba = Vec::with_capacity(l.masks.len());
+                let mut mask_dims = Vec::with_capacity(l.masks.len());
+                for m in &l.masks {
+                    let img = (*m.image).clone();
+                    let (mw, mh) = (img.width(), img.height());
+                    masks_rgba.push(img.into_raw());
+                    mask_dims.push((mw, mh));
+                }
+                (rgba, w, h, masks_rgba, mask_dims)
+            }
+            None => return Task::none(),
+        };
+        app.background_tasks.push("Miroir du calque...".to_string());
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let source = image::DynamicImage::ImageRgba8(
+                        image::RgbaImage::from_raw(w, h, source_rgba)
+                            .expect("dimensions source conservées"),
+                    );
+                    let source = if horizontal {
+                        source.fliph().to_owned()
+                    } else {
+                        source.flipv().to_owned()
+                    };
+                    let mut masks = Vec::with_capacity(masks_rgba.len());
+                    for (rgba, (mw, mh)) in masks_rgba.into_iter().zip(mask_dims) {
+                        let m = image::DynamicImage::ImageRgba8(
+                            image::RgbaImage::from_raw(mw, mh, rgba)
+                                .expect("dimensions masque conservées"),
+                        );
+                        let m = if horizontal {
+                            m.fliph().to_owned()
+                        } else {
+                            m.flipv().to_owned()
+                        };
+                        masks.push(std::sync::Arc::new(m));
+                    }
+                    Ok(crate::message::DestructiveResult {
+                        source: std::sync::Arc::new(source),
+                        masks,
+                        offset_delta: (0.0, 0.0),
+                    })
+                })
+                .await
+                .map_err(|e| format!("Tâche annulée : {e}"))?
+            },
+            move |res| match res {
+                Ok(r) => Message::DestructiveOpComputed {
+                    layer_id: tid,
+                    op,
+                    result: Ok(r),
+                },
+                Err(e) => Message::DestructiveOpComputed {
+                    layer_id: tid,
+                    op,
+                    result: Err(e),
+                },
+            },
+        )
+    } else {
+        Task::none()
     }
-    Task::none()
 }
 
 pub fn handle_rotate(app: &mut PhotoApp, id: Uuid, delta: f32) -> Task<Message> {
@@ -326,21 +384,148 @@ pub fn handle_reset_transform(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
 }
 
 pub fn handle_crop(app: &mut PhotoApp) -> Task<Message> {
-    crop_layer_to_selection(app);
-    Task::none()
+    let target = resolve_target(app, app.selected_layer.unwrap_or(Uuid::nil()));
+    if let Some(tid) = target {
+        let Some(sel) = app.canvas_selection else {
+            return Task::none();
+        };
+        let Some(layer) = app.doc.pixel_layer(tid) else {
+            return Task::none();
+        };
+        let t = layer.transform;
+        let x0 = (sel.x - t.offset_x).min(sel.x + sel.width - t.offset_x);
+        let y0 = (sel.y - t.offset_y).min(sel.y + sel.height - t.offset_y);
+        let x1 = (sel.x - t.offset_x).max(sel.x + sel.width - t.offset_x);
+        let y1 = (sel.y - t.offset_y).max(sel.y + sel.height - t.offset_y);
+        let (iw, ih) = (
+            layer.source_image.width() as i32,
+            layer.source_image.height() as i32,
+        );
+        let mut cx = x0.round().max(0.0) as i32;
+        let mut cy = y0.round().max(0.0) as i32;
+        let mut cw = ((x1 - x0).abs().round() as i32).max(1);
+        let mut ch = ((y1 - y0).abs().round() as i32).max(1);
+        // Clamp aux bornes du calque (la version sync du moteur le faisait
+        // aussi) — évite le panic de `image::imageops::crop_imm`.
+        if cx < 0 {
+            cw += cx;
+            cx = 0;
+        }
+        if cy < 0 {
+            ch += cy;
+            cy = 0;
+        }
+        if cx + cw > iw {
+            cw = iw - cx;
+        }
+        if cy + ch > ih {
+            ch = ih - cy;
+        }
+        if cw <= 0 || ch <= 0 {
+            app.image_error = Some("Rognage : sélection hors calque".into());
+            return Task::none();
+        }
+        let (cx_u, cy_u, cw_u, ch_u) = (cx as u32, cy as u32, cw as u32, ch as u32);
+        let dx = cx as f32;
+        let dy = cy as f32;
+
+        let source_rgba = layer.source_image.to_rgba8().into_raw();
+        let (w, h) = (iw as u32, ih as u32);
+        let mut masks_rgba = Vec::with_capacity(layer.masks.len());
+        let mut mask_dims = Vec::with_capacity(layer.masks.len());
+        for m in &layer.masks {
+            let img = (*m.image).clone();
+            let (mw, mh) = (img.width(), img.height());
+            masks_rgba.push(img.into_raw());
+            mask_dims.push((mw, mh));
+        }
+        app.background_tasks
+            .push("Rognage du calque...".to_string());
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let buf = image::RgbaImage::from_raw(w, h, source_rgba)
+                        .expect("dimensions source conservées");
+                    let cropped =
+                        image::imageops::crop_imm(&buf, cx_u, cy_u, cw_u, ch_u).to_image();
+                    let mut masks = Vec::with_capacity(masks_rgba.len());
+                    for (rgba, (mw, mh)) in masks_rgba.into_iter().zip(mask_dims) {
+                        let m = image::RgbaImage::from_raw(mw, mh, rgba)
+                            .expect("dimensions masque conservées");
+                        let cm = image::imageops::crop_imm(&m, cx_u, cy_u, cw_u, ch_u).to_image();
+                        masks.push(std::sync::Arc::new(image::DynamicImage::ImageRgba8(cm)));
+                    }
+                    Ok(crate::message::DestructiveResult {
+                        source: std::sync::Arc::new(image::DynamicImage::ImageRgba8(cropped)),
+                        masks,
+                        offset_delta: (dx, dy),
+                    })
+                })
+                .await
+                .map_err(|e| format!("Tâche annulée : {e}"))?
+            },
+            move |res| match res {
+                Ok(r) => Message::DestructiveOpComputed {
+                    layer_id: tid,
+                    op: crate::message::DestructiveOp::Crop,
+                    result: Ok(r),
+                },
+                Err(e) => Message::DestructiveOpComputed {
+                    layer_id: tid,
+                    op: crate::message::DestructiveOp::Crop,
+                    result: Err(e),
+                },
+            },
+        )
+    } else {
+        Task::none()
+    }
 }
-pub fn handle_add_empty(app: &mut PhotoApp) -> Task<Message> {
-    add_empty_layer(app);
-    Task::none()
-}
-pub fn handle_add_solid(app: &mut PhotoApp, color: iced::Color) -> Task<Message> {
-    add_solid_color_layer(app, color);
-    Task::none()
-}
+
 pub fn handle_set_dragged(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     app.dragged_layer = Some(id);
     Task::none()
 }
+
+pub fn handle_destructive_op_computed(
+    app: &mut PhotoApp,
+    layer_id: Uuid,
+    _op: crate::message::DestructiveOp,
+    result: Result<crate::message::DestructiveResult, String>,
+) -> Task<Message> {
+    app.background_tasks
+        .retain(|t| !t.starts_with("Miroir") && !t.starts_with("Rognage"));
+    match result {
+        Ok(r) => {
+            let pre = app.snapshot();
+            // Source : remplace via l'API moteur (cache-friendly).
+            if app.doc.set_source_image(layer_id, (*r.source).clone()) {
+                // Masques : remplace un par un (le moteur n'a pas d'API
+                // batch, mais l'opération est O(N_masks) avec N petit).
+                if let Some(LayerNode::Pixel(layer)) = app.doc.find_mut(layer_id) {
+                    for (i, new_mask) in r.masks.iter().enumerate() {
+                        if let Some(m) = layer.masks.get_mut(i) {
+                            let rgba_buf = new_mask.to_rgba8();
+                            m.image = std::sync::Arc::new(rgba_buf);
+                            m.touch();
+                        }
+                    }
+                    // Crop : compense l'origine monde (le pixel (x,y)
+                    // d'origine reste à sa place).
+                    if r.offset_delta != (0.0, 0.0) {
+                        layer.transform.offset_x += r.offset_delta.0;
+                        layer.transform.offset_y += r.offset_delta.1;
+                    }
+                }
+                app.history.push_snapshot(pre);
+            }
+            app.invalidate_fallback();
+        }
+        Err(e) => app.image_error = Some(e),
+    }
+    Task::none()
+}
+
 pub fn handle_drop_on(app: &mut PhotoApp, target: Uuid) -> Task<Message> {
     if let Some(dragged) = app.dragged_layer.take() {
         if dragged != target && app.doc.find(dragged).is_some() && app.doc.find(target).is_some() {
@@ -545,6 +730,11 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
             let c = app.brush_color;
             Some(handle_add_solid(app, c))
         }
+        Message::DestructiveOpComputed {
+            layer_id,
+            op,
+            result,
+        } => Some(handle_destructive_op_computed(app, layer_id, op, result)),
         Message::SetDraggedLayer(id) => Some(handle_set_dragged(app, id)),
         Message::DropLayerOn(id) => Some(handle_drop_on(app, id)),
         Message::ReorderLayer {
