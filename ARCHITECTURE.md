@@ -20,7 +20,7 @@ assets/     Ressources partagées (polices)
 Bibliothèques partagées réutilisables entre toutes les applications.
 - `ui-kit` (crate `ui_kit`) : widgets iced en couches — `theme` (seule source des
   couleurs/tailles, tokens DESIGN.md), `style` (styles canoniques), primitives
-  transverses, layouts, canvas domaine (`image_canvas`, `node_graph`, `timeline`,
+  transverses, layouts, canvas domaine (`image_canvas`, `timeline`,
   `piano_roll`).
 - `math-utils` : mathématiques communes (`Vec3`, `Matrix4`, courbes de Bézier) ;
   le `Vec2` canonique reste `datatypes::Vec2`, réexporté.

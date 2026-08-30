@@ -1,5 +1,20 @@
-// CreativeSuiteOpen — handlers calques (extrait de update/mod.rs)
-//! Chantier 4 : découpage god-file — ce module porte les messages liés à l'arbre LayerTree.
+// CreativeSuiteOpen — Suite créative professionnelle open source
+// Copyright (C) 2026 vabyz971
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+//! Layer tree message handlers — extracted from update/mod.rs.
 
 use iced::Task;
 use uuid::Uuid;
@@ -28,14 +43,6 @@ fn rename_duplicate_suffix(doc: &mut photo_engine::Document, new_id: Uuid) {
     if let Some(node) = doc.find_mut(new_id) {
         let base = node.name().to_string();
         node.set_name(format!("{base} copie"));
-    }
-}
-
-fn node_dimensions(node: &LayerNode) -> (u32, u32) {
-    match node {
-        LayerNode::Pixel(l) => l.dimensions(),
-        LayerNode::Group(_) => (0, 0),
-        LayerNode::Adjustment(_) => (0, 0),
     }
 }
 
@@ -425,4 +432,148 @@ pub fn handle_toggle_collapsed(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         g.collapsed = !g.collapsed;
     }
     Task::none()
+}
+
+pub fn handle_add_live_filter(app: &mut PhotoApp, id: Uuid, type_id: String) -> Task<Message> {
+    if let Some(filter) = photo_engine::new_filter(&type_id) {
+        let pre = app.snapshot();
+        if app.doc.add_filter(id, filter).is_some() {
+            app.history.push_snapshot(pre);
+            app.invalidate_fallback();
+        }
+    }
+    Task::none()
+}
+
+pub fn handle_remove_live_filter(
+    app: &mut PhotoApp,
+    layer_id: Uuid,
+    filter_id: Uuid,
+) -> Task<Message> {
+    let pre = app.snapshot();
+    if app.doc.remove_filter(layer_id, filter_id).is_some() {
+        app.history.push_snapshot(pre);
+        app.invalidate_fallback();
+    }
+    Task::none()
+}
+
+pub fn handle_set_filter_param(
+    app: &mut PhotoApp,
+    layer_id: Uuid,
+    filter_id: Uuid,
+    key: String,
+    value: datatypes::ParamValue,
+) -> Task<Message> {
+    // Micro-edit par excellence: light coalesced command.
+    // Pixel layer: the appearance recomputes itself via the version cache
+    // (zero global recomposite). Adjustment: the global blend changes ->
+    // recomposite.
+    let old_value = app
+        .doc
+        .find(layer_id)
+        .and_then(|n| n.filters())
+        .and_then(|fs| fs.iter().find(|f| f.id == filter_id))
+        .and_then(|f| f.params.get(&key))
+        .cloned();
+    match old_value {
+        Some(old) => {
+            let cmd = Command::SetFilterParam {
+                layer_id,
+                filter_id,
+                param_name: key.clone(),
+                old,
+                new: value.clone(),
+            };
+            app.history
+                .push_command(coalesce_key(filter_id, 5), cmd.clone());
+            let _ = app.doc.apply_command(cmd);
+        }
+        None => {
+            // Missing parameter (initialization): outside history
+            app.doc.set_filter_param(layer_id, filter_id, key, value);
+        }
+    }
+    // Cooked in the fallback composite if it is active; on the fast path it
+    // is a simple flag with no cost.
+    app.invalidate_fallback();
+    Task::none()
+}
+
+pub fn handle_toggle_filter_enabled(
+    app: &mut PhotoApp,
+    layer_id: Uuid,
+    filter_id: Uuid,
+) -> Task<Message> {
+    let pre = app.snapshot();
+    if app.doc.set_filter_enabled(layer_id, filter_id, {
+        // invert the current state
+        app.doc
+            .find(layer_id)
+            .and_then(|n| n.filters())
+            .and_then(|fs| fs.iter().find(|f| f.id == filter_id))
+            .map(|f| !f.enabled)
+            .unwrap_or(false)
+    }) {
+        app.history.push_snapshot(pre);
+        app.invalidate_fallback();
+    }
+    Task::none()
+}
+
+pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
+    match msg {
+        Message::SelectLayer(id) => Some(handle_select_layer(app, id)),
+        Message::ToggleLayerVisible(id) => Some(handle_toggle_visible(app, id)),
+        Message::SetLayerOpacity { id, opacity } => Some(handle_set_opacity(app, id, opacity)),
+        Message::SetLayerBlend { id, mode } => Some(handle_set_blend(app, id, mode)),
+        Message::RenameLayer { id, name } => Some(handle_rename(app, id, name)),
+        Message::SetLayerOffset { id, axis, value } => {
+            Some(handle_set_offset(app, id, axis, value))
+        }
+        Message::SetLayerRotation { id, degrees } => Some(handle_set_rotation(app, id, degrees)),
+        Message::RotateLayer90 { id, clockwise } => Some(handle_rotate90(app, id, clockwise)),
+        Message::FlipLayer { id, horizontal } => Some(handle_flip(app, id, horizontal)),
+        Message::RotateLayer { id, delta } => Some(handle_rotate(app, id, delta)),
+        Message::SetLayerScale { id, scale } => Some(handle_set_scale(app, id, scale)),
+        Message::ResetLayerTransform(id) => Some(handle_reset_transform(app, id)),
+        Message::CropLayerToSelection => Some(handle_crop(app)),
+        Message::AddEmptyLayer => Some(handle_add_empty(app)),
+        Message::AddSolidColorLayer => {
+            let c = app.brush_color;
+            Some(handle_add_solid(app, c))
+        }
+        Message::SetDraggedLayer(id) => Some(handle_set_dragged(app, id)),
+        Message::DropLayerOn(id) => Some(handle_drop_on(app, id)),
+        Message::ReorderLayer {
+            dragged,
+            target,
+            before,
+        } => Some(handle_reorder(app, dragged, target, before)),
+        Message::DuplicateLayer(id) => Some(handle_duplicate(app, id)),
+        Message::DeleteLayer(id) => Some(handle_delete(app, id)),
+        Message::MoveLayerUp(id) => Some(handle_move_up(app, id)),
+        Message::MoveLayerDown(id) => Some(handle_move_down(app, id)),
+        Message::GroupLayers(id) => Some(handle_group(app, id)),
+        Message::UngroupLayers(id) => Some(handle_ungroup(app, id)),
+        Message::ToggleGroupCollapsed(id) => Some(handle_toggle_collapsed(app, id)),
+        Message::AddLiveFilter { id, type_id } => Some(handle_add_live_filter(app, id, type_id)),
+        Message::RemoveLiveFilter {
+            layer_id,
+            filter_id,
+        } => Some(handle_remove_live_filter(app, layer_id, filter_id)),
+        Message::SetFilterParam {
+            layer_id,
+            filter_id,
+            key,
+            value,
+        } => Some(handle_set_filter_param(
+            app, layer_id, filter_id, key, value,
+        )),
+        Message::ToggleFilterEnabled {
+            layer_id,
+            filter_id,
+        } => Some(handle_toggle_filter_enabled(app, layer_id, filter_id)),
+        _ => None,
+    }
 }

@@ -1,3 +1,21 @@
+// CreativeSuiteOpen — Suite créative professionnelle open source
+// Copyright (C) 2026 vabyz971
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+//! Paint / brush / mask message handlers — extracted from update/mod.rs.
+
 use crate::message::Message;
 use crate::state::PhotoApp;
 use iced::Task;
@@ -208,4 +226,25 @@ pub fn handle_invert_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         app.invalidate_fallback();
     }
     Task::none()
+}
+
+pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
+    match msg {
+        Message::BrushStart { x, y, erase } => Some(handle_brush_start(app, x, y, erase)),
+        Message::BrushEnd { points, tex, erase } => Some(handle_brush_end(app, points, tex, erase)),
+        Message::PaintFailed { layer_id } => Some(handle_paint_failed(app, layer_id)),
+        Message::PaintApplied { layer_id, buf } => Some(handle_paint_applied(app, layer_id, buf)),
+        Message::SetBrushColor(c) => Some(handle_set_brush_color(app, c)),
+        Message::SetBrushSize(s) => Some(handle_set_brush_size(app, s)),
+        Message::SetBrushOpacity(o) => Some(handle_set_brush_opacity(app, o)),
+        Message::ToggleColorPicker => Some(handle_toggle_picker(app)),
+        Message::SelectTool(t) => Some(handle_select_tool(app, t)),
+        Message::ToggleToolsPanel => Some(handle_toggle_tools(app)),
+        Message::SetMaskPaintTarget(id) => Some(handle_set_mask_target(app, id)),
+        Message::AddLayerMask(id) => Some(handle_add_mask(app, id)),
+        Message::RemoveLayerMask(id) => Some(handle_remove_mask(app, id)),
+        Message::ToggleLayerMaskEnabled(id) => Some(handle_toggle_mask_enabled(app, id)),
+        Message::InvertLayerMask(id) => Some(handle_invert_mask(app, id)),
+        _ => None,
+    }
 }

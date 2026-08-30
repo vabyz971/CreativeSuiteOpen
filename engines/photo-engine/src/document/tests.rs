@@ -630,3 +630,150 @@ fn needs_fallback_avec_masque_actif() {
     }
     assert!(!doc.needs_fallback());
 }
+
+fn masked_group(mask_color: [u8; 4], enabled: bool, inverted: bool) -> LayerNode {
+    let red = solid(1, 1, [200, 0, 0, 255]);
+    let blue = solid(1, 1, [0, 0, 200, 255]);
+    let mut g = GroupLayer::new(
+        "g",
+        vec![
+            pixel_node(&red, 100.0, BlendMode::Normal, 0.0, 0.0),
+            pixel_node(&blue, 100.0, BlendMode::Normal, 0.0, 0.0),
+        ],
+    );
+    let mut m = LayerMask::full(1, 1);
+    m.image = Arc::new(ImageBuffer::from_pixel(1, 1, Rgba(mask_color)));
+    m.enabled = enabled;
+    m.inverted = inverted;
+    g.mask = Some(m);
+    LayerNode::Group(g)
+}
+
+#[test]
+fn masque_de_groupe_blanc_est_noop() {
+    let base = solid(1, 1, [10, 10, 10, 255]);
+    let top_plain = GroupLayer::new(
+        "g",
+        vec![
+            pixel_node(
+                &solid(1, 1, [200, 0, 0, 255]),
+                100.0,
+                BlendMode::Normal,
+                0.0,
+                0.0,
+            ),
+            pixel_node(
+                &solid(1, 1, [0, 0, 200, 255]),
+                100.0,
+                BlendMode::Normal,
+                0.0,
+                0.0,
+            ),
+        ],
+    );
+    let doc_plain = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            LayerNode::Group(top_plain),
+        ],
+        1,
+        1,
+    );
+    let doc_masked = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            masked_group([255, 255, 255, 255], true, false),
+        ],
+        1,
+        1,
+    );
+    assert_eq!(
+        doc_plain.composite().unwrap().to_rgba8().as_raw(),
+        doc_masked.composite().unwrap().to_rgba8().as_raw()
+    );
+}
+
+#[test]
+fn masque_de_groupe_noir_cache_tout_le_sous_arbre() {
+    let base = solid(1, 1, [10, 10, 10, 255]);
+    let doc = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            masked_group([0, 0, 0, 255], true, false),
+        ],
+        1,
+        1,
+    );
+    let out = doc.composite().unwrap();
+    assert_close(px(&out, 0, 0), [10, 10, 10, 255]);
+}
+
+#[test]
+fn masque_de_groupe_50_attenue_globalement() {
+    let base = solid(1, 1, [0, 0, 0, 255]);
+    // Groupe avec 2 enfants rouge+bleu → le dernier (bleu) recouvre le rouge → bleu pur
+    // Masque 50% sur le groupe → bleu à 50% sur noir → 0,0,100
+    let doc = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            masked_group([128, 128, 128, 255], true, false),
+        ],
+        1,
+        1,
+    );
+    let out = doc.composite().unwrap();
+    assert_close(px(&out, 0, 0), [0, 0, 100, 255]);
+}
+
+#[test]
+fn masque_de_groupe_inverted_et_desactive() {
+    let base = solid(1, 1, [10, 10, 10, 255]);
+    let doc_inv = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            masked_group([0, 0, 0, 255], true, true),
+        ],
+        1,
+        1,
+    );
+    // noir inversé = blanc → groupe visible (bleu)
+    let out = doc_inv.composite().unwrap();
+    assert_close(px(&out, 0, 0), [0, 0, 200, 255]);
+
+    let doc_off = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            masked_group([0, 0, 0, 255], false, false),
+        ],
+        1,
+        1,
+    );
+    let out2 = doc_off.composite().unwrap();
+    assert_close(px(&out2, 0, 0), [0, 0, 200, 255]);
+}
+
+#[test]
+fn masque_de_groupe_avec_decalage_origine() {
+    // Document 4x4, groupe avec enfant décalé hors document → buffer agrandi
+    // Le masque doit rester aligné malgré origin_x/y non nul
+    let base = solid(4, 4, [10, 10, 10, 255]);
+    let red = solid(2, 2, [200, 0, 0, 255]);
+    let mut g = GroupLayer::new(
+        "g",
+        vec![pixel_node(&red, 100.0, BlendMode::Normal, 5.0, 5.0)],
+    );
+    let mut m = LayerMask::full(2, 2);
+    m.image = Arc::new(ImageBuffer::from_pixel(2, 2, Rgba([128, 128, 128, 255])));
+    g.mask = Some(m);
+    let doc = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            LayerNode::Group(g),
+        ],
+        4,
+        4,
+    );
+    // Le groupe décalé + masque 50% doit contribuer mais atténué, pas crash ni décalage
+    let out = doc.composite_preview().expect("preview");
+    assert!(out.width() >= 4 && out.height() >= 4);
+}

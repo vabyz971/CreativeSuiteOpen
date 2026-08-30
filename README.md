@@ -86,7 +86,7 @@ CreativeSuiteOpen/
 │   └── shell/                # Common shell: layout, menu bar, window
 ├── packages/                 # Reusable libraries (never depend on engines/apps)
 │   ├── ui-kit/               # Iced widgets: theme.rs (SOLE source of tokens), style.rs,
-│   │                         #   node_graph.rs, image_canvas.rs, layer_canvas.rs,
+│   │                         #   image_canvas.rs, layer_canvas.rs,
 │   │                         #   menu.rs / dropdown.rs, timeline.rs / piano_roll.rs
 │   ├── math-utils/           # Shared math: Vec3, Matrix4, Bézier (canonical Vec2 = datatypes)
 │   └── file-utils/           # I/O: drag & drop, file dialogs

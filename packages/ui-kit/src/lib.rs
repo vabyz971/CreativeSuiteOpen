@@ -28,8 +28,8 @@
 //! 4. **Structural layouts** — common interface compositions:
 //!    `shell`, `menu`, `base_panel`.
 //! 5. **Domain canvases** — specialized displays potentially shared
-//!    between apps: `image_canvas`, `layer_canvas`, `node_graph`,
-//!    `timeline`, `piano_roll`.
+//!    between apps: `image_canvas`, `layer_canvas`, `timeline`,
+//!    `piano_roll`.
 //!
 //! App-SPECIFIC elements do NOT live here: they stay in
 //! `apps/<app>/src/components/`. A component is promoted to `ui/`
@@ -41,7 +41,6 @@ pub mod icon_button;
 pub mod image_canvas;
 pub mod layer_canvas;
 pub mod menu;
-pub mod node_graph;
 pub mod piano_roll;
 pub mod settings;
 pub mod shell;

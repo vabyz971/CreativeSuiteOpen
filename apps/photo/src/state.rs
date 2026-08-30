@@ -161,6 +161,7 @@ impl PhotoApp {
 
     /// Ferme la fenêtre de préférences (état + surface OS) et retourne
     /// la tâche de fermeture à exécuter par le runtime.
+    #[allow(dead_code)]
     pub(crate) fn close_preferences_window(&mut self) -> Task<Message> {
         self.preferences_window = None;
         match self.preferences_window_id.take() {
@@ -222,6 +223,7 @@ impl PhotoApp {
     /// déplacé — HORS thread UI également. Pendant les quelques millisecondes
     /// de calcul, le drag s'affiche déjà en dessin calque-par-calque
     /// (approximation), puis le fond exact remplace l'approximation.
+    #[allow(dead_code)]
     pub(crate) fn drag_background_task(&mut self, exclude_id: Uuid) -> Option<Task<Message>> {
         debug_assert!(self.needs_fallback());
         if self.drag_bg_in_flight.is_some() {
