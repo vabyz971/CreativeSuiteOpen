@@ -88,8 +88,12 @@ pub struct PhotoApp {
     /// Opacité globale du trait [0.05..1]
     pub brush_opacity: f32,
     pub color_picker_open: bool,
-    /// Si Some, les traits peignent le MASQUE du nœud plutôt que ses pixels.
-    pub mask_paint_target: Option<Uuid>,
+    /// Masque actuellement sélectionné pour édition/peinture, s'il y en a un.
+    pub active_mask: Option<crate::message::MaskTarget>,
+    /// Couleur du pinceau en mode masque : true = noir (masque), false = blanc (révèle).
+    pub mask_brush_black: bool,
+    /// Calques dont la liste de masques est dépliée dans le panneau Calques.
+    pub expanded_masks: std::collections::HashSet<Uuid>,
     /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
     pub stroke_layer: Option<Uuid>,
     /// Commit lourd EN COURS hors thread UI — l'aperçu reste figé à l'écran
@@ -161,7 +165,6 @@ impl PhotoApp {
 
     /// Ferme la fenêtre de préférences (état + surface OS) et retourne
     /// la tâche de fermeture à exécuter par le runtime.
-    #[allow(dead_code)]
     pub(crate) fn close_preferences_window(&mut self) -> Task<Message> {
         self.preferences_window = None;
         match self.preferences_window_id.take() {
@@ -223,7 +226,6 @@ impl PhotoApp {
     /// déplacé — HORS thread UI également. Pendant les quelques millisecondes
     /// de calcul, le drag s'affiche déjà en dessin calque-par-calque
     /// (approximation), puis le fond exact remplace l'approximation.
-    #[allow(dead_code)]
     pub(crate) fn drag_background_task(&mut self, exclude_id: Uuid) -> Option<Task<Message>> {
         debug_assert!(self.needs_fallback());
         if self.drag_bg_in_flight.is_some() {
@@ -307,7 +309,9 @@ impl Default for PhotoApp {
             brush_size: 12.0,
             brush_opacity: 1.0,
             color_picker_open: false,
-            mask_paint_target: None,
+            active_mask: None,
+            mask_brush_black: true,
+            expanded_masks: Default::default(),
             stroke_layer: None,
             pending_paint: None,
             new_doc_w: "1920".to_string(),

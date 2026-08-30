@@ -43,13 +43,14 @@ const ICON_GROUP: &str = "\u{e2cc}"; // create_new_folder
 const ICON_ADJUST: &str = "\u{e39e}"; // filter_b_and_w → ajustement
 const ICON_PALETTE: &str = "\u{e40a}"; // palette → couleur uni
 const ICON_MASK: &str = "\u{e3b0}"; // mask
-const ICON_MASK_OFF: &str = "\u{e14c}"; // block
 
 pub fn render<'a>(
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
     dragged: Option<Uuid>,
+    active_mask: Option<crate::message::MaskTarget>,
+    expanded_masks: &'a std::collections::HashSet<Uuid>,
 ) -> Element<'a, Message> {
     let sel_node = selected.and_then(|id| doc.find(id));
 
@@ -112,7 +113,16 @@ pub fn render<'a>(
     });
 
     // --- Arbre des calques (haut de la pile affiché en premier) ---
-    let list = tree_column(&doc.root, preview_cache, selected, dragged, 0).padding(6);
+    let list = tree_column(
+        &doc.root,
+        preview_cache,
+        selected,
+        dragged,
+        active_mask,
+        expanded_masks,
+        0,
+    )
+    .padding(6);
     let list_view: Element<'_, Message> = if doc.root.is_empty() {
         container(
             text("Aucun calque — ouvrez une image ou ajoutez un calque")
@@ -147,11 +157,6 @@ pub fn render<'a>(
 
     // Le nœud sélectionné est-il déjà un groupe ? (grouper/dégrouper)
     let sel_is_group = matches!(sel_node, Some(LayerNode::Group(_)));
-    let sel_has_mask = sel_node.and_then(|n| n.mask()).is_some();
-    let sel_mask_enabled = sel_node
-        .and_then(|n| n.mask())
-        .map(|m| m.enabled)
-        .unwrap_or(true);
     let can_have_mask = matches!(sel_node, Some(LayerNode::Pixel(_) | LayerNode::Group(_)));
     let nil = Uuid::nil();
     let actions = container(
@@ -205,21 +210,9 @@ pub fn render<'a>(
                 has_sel
             ),
             action_btn(
-                if sel_has_mask && !sel_mask_enabled {
-                    ICON_MASK_OFF
-                } else {
-                    ICON_MASK
-                },
-                if sel_has_mask {
-                    "Retirer le masque"
-                } else {
-                    "Ajouter un masque"
-                },
-                if sel_has_mask {
-                    Message::RemoveLayerMask(selected.unwrap_or(nil))
-                } else {
-                    Message::AddLayerMask(selected.unwrap_or(nil))
-                },
+                ICON_MASK,
+                "Ajouter un masque",
+                Message::AddLayerMask(selected.unwrap_or(nil)),
                 can_have_mask
             ),
             Space::new().width(Length::Fill),
@@ -252,11 +245,21 @@ fn tree_column<'a>(
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
     dragged: Option<Uuid>,
+    active_mask: Option<crate::message::MaskTarget>,
+    expanded_masks: &'a std::collections::HashSet<Uuid>,
     depth: usize,
 ) -> iced::widget::Column<'a, Message> {
     let mut list = iced::widget::Column::new().spacing(2);
     for node in nodes.iter().rev() {
-        list = list.push(node_row(node, preview_cache, selected, dragged, depth));
+        list = list.push(node_row(
+            node,
+            preview_cache,
+            selected,
+            dragged,
+            active_mask,
+            expanded_masks,
+            depth,
+        ));
         if let LayerNode::Group(g) = node
             && !g.collapsed
         {
@@ -265,6 +268,8 @@ fn tree_column<'a>(
                 preview_cache,
                 selected,
                 dragged,
+                active_mask,
+                expanded_masks,
                 depth + 1,
             ));
         }
@@ -277,6 +282,8 @@ fn node_row<'a>(
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
     dragged: Option<Uuid>,
+    active_mask: Option<crate::message::MaskTarget>,
+    expanded_masks: &'a std::collections::HashSet<Uuid>,
     depth: usize,
 ) -> Element<'a, Message> {
     let _ = dragged;
@@ -414,27 +421,11 @@ fn node_row<'a>(
         None
     };
 
-    let has_mask = node.mask().is_some();
-    let mask_indicator: Element<'_, Message> = if has_mask {
-        button(
-            text(ICON_MASK)
-                .font(material)
-                .size(14)
-                .color(colors::TEXT_SECONDARY),
-        )
-        .padding(2)
-        .style(|_t, s| ui_kit::style::ghost(s))
-        .on_press(Message::SetMaskPaintTarget(Some(id)))
-        .into()
-    } else {
-        Space::new().width(Length::Fixed(0.0)).into()
-    };
     let mut row_btn = button(
         row![
             drag_handle,
             eye,
             leading,
-            mask_indicator,
             column![
                 name_field,
                 text(subtitle).size(10).color(colors::TEXT_MUTED)
@@ -461,8 +452,125 @@ fn node_row<'a>(
 
     // Indentation hiérarchique — scope drag & drop au panel calque
     let indent = 4.0 + (depth as f32) * 14.0;
-    container(row_btn)
-        .width(Length::Fill)
-        .padding(Padding::new(0.0).left(indent))
-        .into()
+    let mut stack = iced::widget::Column::new().spacing(2).push(
+        container(row_btn)
+            .width(Length::Fill)
+            .padding(Padding::new(0.0).left(indent)),
+    );
+
+    // Badge masque dépliable : un calque masquable affiche un badge avec le
+    // nombre de masques ; cliquer déplie la liste (miniature + actions).
+    let can_mask = matches!(node, LayerNode::Pixel(_) | LayerNode::Group(_));
+    if can_mask {
+        let masks = node.masks();
+        let count = masks.len();
+        let is_expanded = expanded_masks.contains(&id);
+        let badge = row![
+            button(
+                row![
+                    text(ICON_MASK)
+                        .font(material)
+                        .size(13)
+                        .color(colors::TEXT_MUTED),
+                    text(if is_expanded { ICON_UP } else { ICON_DOWN })
+                        .font(material)
+                        .size(11)
+                        .color(colors::TEXT_MUTED),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(2),
+            )
+            .padding(2)
+            .style(move |_t, s| {
+                if count > 0 {
+                    ui_kit::style::ghost_selected(true, s)
+                } else {
+                    ui_kit::style::ghost(s)
+                }
+            })
+            .on_press(Message::ToggleMaskList(id)),
+            text(format!("{count} masque(s)"))
+                .size(10)
+                .color(colors::TEXT_MUTED),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        stack = stack.push(
+            container(badge)
+                .width(Length::Fill)
+                .padding(Padding::new(2.0).left(indent + 4.0)),
+        );
+
+        if is_expanded {
+            for (idx, m) in masks.iter().enumerate() {
+                let target = crate::message::MaskTarget {
+                    layer_id: id,
+                    mask_id: m.id,
+                };
+                let is_active = active_mask.map(|t| (t.layer_id, t.mask_id)) == Some((id, m.id));
+                let thumb = preview_cache.mask_thumb(m.id).cloned().unwrap_or_else(|| {
+                    iced::widget::image::Handle::from_rgba(36, 24, vec![60, 60, 60, 255])
+                });
+                let mask_row = row![
+                    image(thumb)
+                        .width(Length::Fixed(36.0))
+                        .height(Length::Fixed(24.0)),
+                    button(
+                        text(format!("Masque {}", idx + 1))
+                            .size(11)
+                            .color(colors::TEXT_SECONDARY),
+                    )
+                    .padding(2)
+                    .style(move |_t, s| {
+                        if is_active {
+                            ui_kit::style::ghost_selected(true, s)
+                        } else {
+                            ui_kit::style::ghost(s)
+                        }
+                    })
+                    .on_press(Message::SetActiveMask(Some(target))),
+                    button(
+                        text(if m.enabled { ICON_VISIBLE } else { ICON_HIDDEN })
+                            .font(material)
+                            .size(13)
+                            .color(colors::TEXT_SECONDARY),
+                    )
+                    .padding(2)
+                    .style(|_t, s| ui_kit::style::ghost(s))
+                    .on_press(Message::ToggleLayerMaskEnabled(id, m.id)),
+                    button(
+                        text(ICON_DELETE)
+                            .font(material)
+                            .size(13)
+                            .color(colors::ERROR),
+                    )
+                    .padding(2)
+                    .style(|_t, s| ui_kit::style::ghost(s))
+                    .on_press(Message::RemoveLayerMask(id, m.id)),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center);
+                stack = stack.push(
+                    container(mask_row)
+                        .width(Length::Fill)
+                        .padding(Padding::new(2.0).left(indent + 14.0)),
+                );
+            }
+            let add_btn = button(
+                text("+ Ajouter un masque")
+                    .size(10)
+                    .color(colors::TEXT_SECONDARY),
+            )
+            .padding(2)
+            .style(|_t, s| ui_kit::style::ghost(s))
+            .on_press(Message::AddLayerMask(id));
+            stack = stack.push(
+                container(add_btn)
+                    .width(Length::Fill)
+                    .padding(Padding::new(2.0).left(indent + 14.0)),
+            );
+        }
+    }
+
+    stack.into()
 }

@@ -116,6 +116,8 @@ pub fn handle_select_layer(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         return Task::none();
     }
     app.selected_layer = Some(id);
+    // Contexte actif unique : sélectionner un calque quitte l'édition de masque.
+    app.active_mask = None;
     app.move_anchor = None;
     Task::none()
 }

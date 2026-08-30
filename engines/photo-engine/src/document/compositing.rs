@@ -14,14 +14,14 @@ pub fn needs_fallback_in(nodes: &[LayerNode]) -> bool {
                 if l.blend_mode != BlendMode::Normal {
                     return true;
                 }
-                if l.mask.as_ref().is_some_and(|m| m.enabled) {
+                if l.masks.iter().any(|m| m.enabled) {
                     return true;
                 }
             }
             LayerNode::Group(g) => {
                 if g.opacity < 99.9
                     || g.blend_mode != BlendMode::Normal
-                    || g.mask.as_ref().is_some_and(|m| m.enabled)
+                    || g.masks.iter().any(|m| m.enabled)
                     || needs_fallback_in(&g.children)
                 {
                     return true;
@@ -311,6 +311,80 @@ pub fn prepare_mask(mask: &LayerMask, transform: Transform2D) -> ImageBuffer<Rgb
     buf
 }
 
+/// Fusionne multiplicativement les couvertures de tous les masques ACTIFS d'un
+/// calque, après les avoir transformés avec la même géométrie que l'image.
+/// Retourne `None` si aucun masque actif (aucune opacité supplémentaire).
+fn combine_masks(
+    masks: &[LayerMask],
+    transform: Transform2D,
+) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let mut it = masks
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| prepare_mask(m, transform));
+    let first = it.next()?;
+    Some(it.fold(first, |acc, m| multiply_coverage(&acc, &m)))
+}
+
+/// Fusionne multiplicativement les masques de groupe (espace canvas, dims de
+/// `sub`, inversion incluse) — même rôle que `combine_masks` pour un groupe.
+fn combine_group_masks(
+    masks: &[LayerMask],
+    sub: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let mut it = masks
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| prepare_group_mask(m, sub));
+    let first = it.next()?;
+    Some(it.fold(first, |acc, m| multiply_coverage(&acc, &m)))
+}
+
+/// Couverture d'un masque de groupe : sample de l'image centrée sur `sub`,
+/// sans transform (identité), en respectant `inverted` — TODO vraie transform.
+fn prepare_group_mask(
+    m: &LayerMask,
+    sub: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let mut buf = ImageBuffer::from_pixel(sub.width(), sub.height(), Rgba([255, 255, 255, 255]));
+    let (mw, mh) = (m.image.width(), m.image.height());
+    let copy_w = mw.min(sub.width());
+    let copy_h = mh.min(sub.height());
+    for y in 0..copy_h {
+        for x in 0..copy_w {
+            let p = m.image.get_pixel(x, y);
+            let v = if m.inverted { 255 - p[0] } else { p[0] };
+            buf.put_pixel(x, y, Rgba([v, v, v, 255]));
+        }
+    }
+    buf
+}
+
+/// Multiplie deux buffers de couverture (canal R) élément par élément.
+fn multiply_coverage(
+    a: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+    b: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let w = a.width().max(b.width());
+    let h = a.height().max(b.height());
+    let mut out = ImageBuffer::from_pixel(w, h, Rgba([0, 0, 0, 255]));
+    for y in 0..h {
+        for x in 0..w {
+            let c = |img: &ImageBuffer<Rgba<u8>, Vec<u8>>| -> u8 {
+                if x < img.width() && y < img.height() {
+                    img.get_pixel(x, y)[0]
+                } else {
+                    0
+                }
+            };
+            let av = c(a) as u32;
+            let bv = c(b) as u32;
+            out.put_pixel(x, y, Rgba([(av * bv / 255) as u8, 0, 0, 255]));
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Compositing récursif (groupes + ajustements)
 // ---------------------------------------------------------------------------
@@ -396,11 +470,9 @@ pub fn fold_scope(
                     transform: l.transform,
                 };
                 let (top, ox, oy) = prepare_top(&item);
-                let mask_buf = l
-                    .mask
-                    .as_ref()
-                    .filter(|m| m.enabled)
-                    .map(|m| prepare_mask(m, l.transform));
+                // Multi-masques : chaque masque actif est transformé, puis leurs
+                // couvertures fusionnées multiplicativement en un seul buffer.
+                let mask_buf = combine_masks(&l.masks, l.transform);
                 blend_into(
                     acc,
                     &top,
@@ -422,31 +494,7 @@ pub fn fold_scope(
                     Rgba([0, 0, 0, 0]),
                 );
                 if fold_scope(&g.children, &mut sub, origin_x, origin_y, resolve) {
-                    let mask_buf = g.mask.as_ref().filter(|m| m.enabled).map(|m| {
-                        // Masque de groupe : s'applique à la composite du sous-arbre.
-                        // On le transforme avec identité (déjà en espace canvas via sub),
-                        // mais on respecte inverted. Pour v1 le masque suit les dims du doc.
-                        // Simplification : masque plein doc transformé identité.
-                        // On prépare un buffer aux dims de sub.
-                        let mut buf = ImageBuffer::from_pixel(
-                            sub.width(),
-                            sub.height(),
-                            Rgba([255, 255, 255, 255]),
-                        );
-                        // Échantillonne le masque original centré sur sub
-                        let (mw, mh) = (m.image.width(), m.image.height());
-                        // Copie simple sans transform pour v1 — TODO v2: vraie transform
-                        let copy_w = mw.min(sub.width());
-                        let copy_h = mh.min(sub.height());
-                        for y in 0..copy_h {
-                            for x in 0..copy_w {
-                                let p = m.image.get_pixel(x, y);
-                                let v = if m.inverted { 255 - p[0] } else { p[0] };
-                                buf.put_pixel(x, y, Rgba([v, v, v, 255]));
-                            }
-                        }
-                        buf
-                    });
+                    let mask_buf = combine_group_masks(&g.masks, &sub);
                     blend_into(
                         acc,
                         &sub,

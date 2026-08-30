@@ -24,10 +24,21 @@ use crate::layers::{BlendMode, LayerNode};
 use datatypes::ParamValue;
 use iced::widget::{Space, column, container, row, scrollable, slider, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
-use photo_engine::{Document, FilterNode};
+use photo_engine::{Document, FilterNode, LayerMask};
 use ui_kit::theme::colors;
 
-pub fn render<'a>(doc: &'a Document, selected: Option<uuid::Uuid>) -> Element<'a, Message> {
+pub fn render<'a>(
+    doc: &'a Document,
+    selected: Option<uuid::Uuid>,
+    active_mask: Option<crate::message::MaskTarget>,
+) -> Element<'a, Message> {
+    // Un masque actif prime : on affiche ses options, pas celles du calque.
+    if let Some(t) = active_mask
+        && let Some(m) = doc.find(t.layer_id).and_then(|n| n.mask(t.mask_id))
+    {
+        return mask_panel(doc, t, m);
+    }
+
     let node = selected.and_then(|id| doc.find(id));
     let Some(node) = node else {
         return container(
@@ -130,34 +141,6 @@ pub fn render<'a>(doc: &'a Document, selected: Option<uuid::Uuid>) -> Element<'a
         }
     }
 
-    if let Some(mask) = node.mask() {
-        let mid = id;
-        let section = column![
-            text("Masque").size(12).color(colors::ON_SURFACE),
-            iced::widget::button(
-                text(if mask.enabled {
-                    "Désactiver"
-                } else {
-                    "Activer"
-                })
-                .size(11)
-            )
-            .on_press(Message::ToggleLayerMaskEnabled(mid)),
-            iced::widget::button(
-                text(if mask.inverted {
-                    "Inversé"
-                } else {
-                    "Inverser"
-                })
-                .size(11)
-            )
-            .on_press(Message::InvertLayerMask(mid)),
-            iced::widget::button(text("Supprimer le masque").size(11).color(colors::ERROR))
-                .on_press(Message::RemoveLayerMask(mid))
-        ]
-        .spacing(6);
-        common = common.push(container(section).padding(8));
-    }
     let mut content = column![header, container(column![common].padding(12))];
 
     // --- Chaîne de filtres (pixels et ajustements) ---
@@ -183,6 +166,96 @@ pub fn render<'a>(doc: &'a Document, selected: Option<uuid::Uuid>) -> Element<'a
     scrollable(content)
         .width(Length::Fill)
         .height(Length::Fill)
+        .into()
+}
+
+/// Panneau des options du masque actif (contexte masque). Affiche les
+/// actions par masque : inverser, activer/désactiver, supprimer, revenir.
+fn mask_panel<'a>(
+    doc: &'a Document,
+    t: crate::message::MaskTarget,
+    m: &'a LayerMask,
+) -> Element<'a, Message> {
+    let layer_name = doc
+        .find(t.layer_id)
+        .map(|n| n.name().to_string())
+        .unwrap_or_default();
+    let status = if m.enabled {
+        "Masque actif"
+    } else {
+        "Masque désactivé"
+    };
+
+    let header = container(
+        column![
+            text(format!("Masque — {layer_name}"))
+                .size(13)
+                .color(colors::TEXT_PRIMARY),
+            text(status).size(11).color(if m.enabled {
+                colors::ACCENT
+            } else {
+                colors::TEXT_MUTED
+            }),
+            Space::new().height(Length::Fixed(4.0)),
+            text(
+                "Pinceau : noir = masque, blanc = révèle. Utilisez le ".to_string()
+                    + "toggle noir/blanc de la barre d'outils pour basculer."
+            )
+            .size(11)
+            .color(colors::TEXT_MUTED),
+        ]
+        .spacing(3),
+    )
+    .padding(12);
+
+    let actions = column![
+        _action_btn(
+            if m.inverted {
+                "Ne plus inverser"
+            } else {
+                "Inverser"
+            },
+            crate::Message::InvertLayerMask(t.layer_id, t.mask_id),
+            colors::TEXT_PRIMARY,
+        ),
+        _action_btn(
+            if m.enabled {
+                "Désactiver le masque"
+            } else {
+                "Rétablir le masque"
+            },
+            crate::Message::ToggleLayerMaskEnabled(t.layer_id, t.mask_id),
+            colors::TEXT_PRIMARY,
+        ),
+        _action_btn(
+            "Supprimer le masque",
+            crate::Message::RemoveLayerMask(t.layer_id, t.mask_id),
+            colors::ERROR,
+        ),
+        _action_btn(
+            "Revenir au calque",
+            crate::Message::SetActiveMask(None),
+            colors::TEXT_SECONDARY,
+        ),
+    ]
+    .spacing(6)
+    .padding(12);
+
+    let body =
+        container(column![text("Actions").size(11).color(colors::TEXT_MUTED), actions,].spacing(6));
+
+    scrollable(column![header, body])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn _action_btn(label: &'static str, msg: Message, color: iced::Color) -> Element<'static, Message> {
+    iced::widget::button(text(label).size(12).color(color))
+        .padding(6)
+        .width(Length::Fill)
+        .style(|_t, s| ui_kit::style::ghost(s))
+        .on_press(msg)
         .into()
 }
 

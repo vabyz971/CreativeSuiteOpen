@@ -17,10 +17,9 @@
 //! Format projet natif `.csophoto` — indépendant de l'UI, réutilisable
 //! par les autres apps de la suite (compositing vidéo de calques…).
 //!
-//! FORMAT_VERSION 2 : arbre hiérarchique (LayerTree). Chaque nœud est un
-//! calque pixels (source PNG + chaîne de live filters), un groupe (enfants
-//! récursifs) ou un calque d'ajustement. Conteneur JSON versionné, images
-//! encodées PNG puis base64.
+//! FORMAT_VERSION 3 : multi-masque par calque. Un nœud porte désormais
+//! `masks: Vec<MaskDto>` au lieu d'un `mask: Option<MaskDto>` (v2). Conteneur
+//! JSON versionné, images encodées PNG puis base64.
 //!
 //! Politique de compatibilité : STRICTE — seuls les projets v2 sont lus ;
 //! toute autre version est refusée avec un message clair.
@@ -41,7 +40,8 @@ use crate::document::{
 };
 
 /// Version du format — incrémenter à toute évolution incompatible.
-pub const FORMAT_VERSION: u32 = 2;
+/// v3 : un calque peut porter plusieurs masques (`masks: Vec<...>`).
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Extension canonique des projets photo : `cso` (CreativeSuiteOpen) + `photo`.
 pub const PROJECT_EXTENSION: &str = "csophoto";
@@ -80,6 +80,7 @@ enum LayerNodeDto {
 
 #[derive(Serialize, Deserialize)]
 struct MaskDto {
+    id: Uuid,
     png_base64: String,
     enabled: bool,
     inverted: bool,
@@ -98,7 +99,7 @@ struct PixelDto {
     blend_mode: BlendMode,
     visible: bool,
     #[serde(default)]
-    mask: Option<MaskDto>,
+    masks: Vec<MaskDto>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,7 +113,7 @@ struct GroupDto {
     blend_mode: BlendMode,
     visible: bool,
     #[serde(default)]
-    mask: Option<MaskDto>,
+    masks: Vec<MaskDto>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -166,18 +167,31 @@ fn png_decode(png_base64: &str, name: &str) -> Result<DynamicImage, String> {
     image::load_from_memory(&png).map_err(|e| format!("Calque « {name} » illisible : {e}"))
 }
 
+fn masks_to_dto(masks: &[crate::document::LayerMask], name: &str) -> Result<Vec<MaskDto>, String> {
+    masks.iter().map(|m| mask_to_dto(m, name)).collect()
+}
+
 fn mask_to_dto(mask: &crate::document::LayerMask, name: &str) -> Result<MaskDto, String> {
     let dyn_img = image::DynamicImage::ImageRgba8((*mask.image).clone());
     Ok(MaskDto {
+        id: mask.id,
         png_base64: base64::engine::general_purpose::STANDARD.encode(png_encode(&dyn_img, name)?),
         enabled: mask.enabled,
         inverted: mask.inverted,
     })
 }
 
+fn masks_from_dto(
+    dtos: Vec<MaskDto>,
+    name: &str,
+) -> Result<Vec<crate::document::LayerMask>, String> {
+    dtos.into_iter().map(|m| mask_from_dto(m, name)).collect()
+}
+
 fn mask_from_dto(dto: MaskDto, name: &str) -> Result<crate::document::LayerMask, String> {
     let img = png_decode(&dto.png_base64, name)?;
     Ok(crate::document::LayerMask {
+        id: dto.id,
         image: std::sync::Arc::new(img.to_rgba8()),
         enabled: dto.enabled,
         inverted: dto.inverted,
@@ -199,11 +213,7 @@ fn node_to_dto(node: &LayerNode) -> Result<LayerNodeDto, String> {
                 opacity: l.opacity,
                 blend_mode: l.blend_mode,
                 visible: l.visible,
-                mask: l
-                    .mask
-                    .as_ref()
-                    .map(|m| mask_to_dto(m, &l.name))
-                    .transpose()?,
+                masks: masks_to_dto(&l.masks, &l.name)?,
             })
         }
         LayerNode::Group(g) => {
@@ -217,11 +227,7 @@ fn node_to_dto(node: &LayerNode) -> Result<LayerNodeDto, String> {
                 opacity: g.opacity,
                 blend_mode: g.blend_mode,
                 visible: g.visible,
-                mask: g
-                    .mask
-                    .as_ref()
-                    .map(|m| mask_to_dto(m, &g.name))
-                    .transpose()?,
+                masks: masks_to_dto(&g.masks, &g.name)?,
             })
         }
         LayerNode::Adjustment(a) => LayerNodeDto::Adjustment(AdjustmentDto {
@@ -258,7 +264,7 @@ fn node_from_dto(dto: LayerNodeDto) -> Result<LayerNode, String> {
             layer.opacity = p.opacity.clamp(0.0, 100.0);
             layer.blend_mode = p.blend_mode;
             layer.visible = p.visible;
-            layer.mask = p.mask.map(|m| mask_from_dto(m, &p.name)).transpose()?;
+            layer.masks = masks_from_dto(p.masks, &p.name)?;
             LayerNode::Pixel(layer)
         }
         LayerNodeDto::Group(g) => {
@@ -270,7 +276,7 @@ fn node_from_dto(dto: LayerNodeDto) -> Result<LayerNode, String> {
             group.opacity = g.opacity.clamp(0.0, 100.0);
             group.blend_mode = g.blend_mode;
             group.visible = g.visible;
-            group.mask = g.mask.map(|m| mask_from_dto(m, &g.name)).transpose()?;
+            group.masks = masks_from_dto(g.masks, &g.name)?;
             LayerNode::Group(group)
         }
         LayerNodeDto::Adjustment(a) => {
@@ -542,7 +548,7 @@ mod tests {
         mask.inverted = true;
         // pixel distinct pour vérifier PNG
         mask.image = std::sync::Arc::new(RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255])));
-        layer.mask = Some(mask);
+        layer.masks.push(mask);
         doc.push_layer(LayerNode::Pixel(layer));
         let path = temp_path("mask");
         save(&path, &doc).expect("save masque");
@@ -551,7 +557,7 @@ mod tests {
         let Some(LayerNode::Pixel(l)) = loaded.document.root.first() else {
             panic!("pixel attendu");
         };
-        let m = l.mask.as_ref().expect("masque préservé");
+        let m = l.masks.first().expect("masque préservé");
         assert!(!m.enabled);
         assert!(m.inverted);
         assert_eq!(m.image.get_pixel(0, 0)[0], 0);

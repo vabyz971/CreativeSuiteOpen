@@ -74,6 +74,15 @@ impl Document {
         self.iter_pixels().len()
     }
 
+    /// Liste plate de tous les masques de l'arbre, chacun avec l'id du calque
+    /// porteur (calques pixels ET groupes). Ordre : DFS, bas → haut.
+    #[must_use]
+    pub fn iter_masks(&self) -> Vec<(Uuid, &crate::document::LayerMask)> {
+        let mut out = Vec::new();
+        collect_masks(&self.root, &mut out);
+        out
+    }
+
     /// Le rendu rapide « 1 texture par calque » est-il possible, ou faut-il
     /// passer par la composite CPU ? Vrai dès qu'un groupe a un mode de
     /// fusion non-Normal ou qu'un calque d'ajustement agit sur la pile.
@@ -236,7 +245,7 @@ impl Document {
         } else {
             layer.source_image.flipv()
         };
-        if let Some(mask) = layer.mask.as_mut() {
+        for mask in &mut layer.masks {
             let dyn_mask = DynamicImage::ImageRgba8((*mask.image).clone());
             let flipped_mask = if horizontal {
                 dyn_mask.fliph()
@@ -270,8 +279,8 @@ impl Document {
         // Compense l'origine : le pixel (x,y) d'origine reste à sa place monde
         layer.transform.offset_x += x as f32;
         layer.transform.offset_y += y as f32;
-        // Rogne le masque lié aux mêmes coordonnées
-        if let Some(mask) = layer.mask.as_mut() {
+        // Rogne les masques liés aux mêmes coordonnées
+        for mask in &mut layer.masks {
             let dyn_mask = DynamicImage::ImageRgba8((*mask.image).clone());
             let cropped_mask = dyn_mask.crop_imm(x as u32, y as u32, w, h).to_rgba8();
             mask.image = Arc::new(cropped_mask);
@@ -439,32 +448,36 @@ impl Document {
                     new: old,
                 }
             }
-            Command::SetMaskEnabled { node_id, old, new } => {
-                if let Some(mask) = self
-                    .find_mut(node_id)
-                    .and_then(|n| n.mask_mut())
-                    .and_then(|m| m.as_mut())
-                {
+            Command::SetMaskEnabled {
+                node_id,
+                mask_id,
+                old,
+                new,
+            } => {
+                if let Some(mask) = self.find_mut(node_id).and_then(|n| n.mask_mut(mask_id)) {
                     mask.enabled = new;
                     mask.touch();
                 }
                 Command::SetMaskEnabled {
                     node_id,
+                    mask_id,
                     old: new,
                     new: old,
                 }
             }
-            Command::SetMaskInverted { node_id, old, new } => {
-                if let Some(mask) = self
-                    .find_mut(node_id)
-                    .and_then(|n| n.mask_mut())
-                    .and_then(|m| m.as_mut())
-                {
+            Command::SetMaskInverted {
+                node_id,
+                mask_id,
+                old,
+                new,
+            } => {
+                if let Some(mask) = self.find_mut(node_id).and_then(|n| n.mask_mut(mask_id)) {
                     mask.inverted = new;
                     mask.touch();
                 }
                 Command::SetMaskInverted {
                     node_id,
+                    mask_id,
                     old: new,
                     new: old,
                 }
@@ -636,6 +649,28 @@ fn collect_pixels<'a>(nodes: &'a [LayerNode], out: &mut Vec<&'a PixelLayer>) {
                     continue;
                 }
                 collect_pixels(&g.children, out)
+            }
+            LayerNode::Adjustment(_) => {}
+        }
+    }
+}
+
+fn collect_masks<'a>(
+    nodes: &'a [LayerNode],
+    out: &mut Vec<(Uuid, &'a crate::document::LayerMask)>,
+) {
+    for n in nodes {
+        match n {
+            LayerNode::Pixel(l) => {
+                for m in &l.masks {
+                    out.push((l.id, m));
+                }
+            }
+            LayerNode::Group(g) => {
+                for m in &g.masks {
+                    out.push((g.id, m));
+                }
+                collect_masks(&g.children, out)
             }
             LayerNode::Adjustment(_) => {}
         }

@@ -522,7 +522,7 @@ fn masked_node(
     m.image = Arc::new(buf);
     m.enabled = enabled;
     m.inverted = inverted;
-    l.mask = Some(m);
+    l.masks.push(m);
     LayerNode::Pixel(l)
 }
 
@@ -626,7 +626,7 @@ fn needs_fallback_avec_masque_actif() {
     assert!(doc.needs_fallback());
     // désactivé → pas de fallback
     if let Some(LayerNode::Pixel(l)) = doc.find_mut(doc.root[0].id()) {
-        l.mask.as_mut().unwrap().enabled = false;
+        l.masks.iter_mut().next().unwrap().enabled = false;
     }
     assert!(!doc.needs_fallback());
 }
@@ -645,7 +645,7 @@ fn masked_group(mask_color: [u8; 4], enabled: bool, inverted: bool) -> LayerNode
     m.image = Arc::new(ImageBuffer::from_pixel(1, 1, Rgba(mask_color)));
     m.enabled = enabled;
     m.inverted = inverted;
-    g.mask = Some(m);
+    g.masks.push(m);
     LayerNode::Group(g)
 }
 
@@ -764,7 +764,7 @@ fn masque_de_groupe_avec_decalage_origine() {
     );
     let mut m = LayerMask::full(2, 2);
     m.image = Arc::new(ImageBuffer::from_pixel(2, 2, Rgba([128, 128, 128, 255])));
-    g.mask = Some(m);
+    g.masks.push(m);
     let doc = doc_of(
         vec![
             pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
@@ -776,4 +776,46 @@ fn masque_de_groupe_avec_decalage_origine() {
     // Le groupe décalé + masque 50% doit contribuer mais atténué, pas crash ni décalage
     let out = doc.composite_preview().expect("preview");
     assert!(out.width() >= 4 && out.height() >= 4);
+}
+
+#[test]
+fn multi_masques_fusionnent_multiplicativement() {
+    // Deux masques à 50 % chacun → couverture effective ~25 % : le calque
+    // ressort plus transparent (plus proche du fond) qu'avec un seul masque.
+    let base = solid(1, 1, [10, 20, 30, 255]);
+    let top = solid(1, 1, [200, 100, 50, 255]);
+
+    let single = masked_node(&top, [128, 128, 128, 255], true, false);
+    let mut double = PixelLayer::new("double", arc(&top));
+    for _ in 0..2 {
+        let mut m = LayerMask::full(1, 1);
+        m.image = Arc::new(ImageBuffer::from_pixel(1, 1, Rgba([128, 128, 128, 255])));
+        double.masks.push(m);
+    }
+
+    let doc_single = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            single,
+        ],
+        1,
+        1,
+    );
+    let doc_double = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            LayerNode::Pixel(double),
+        ],
+        1,
+        1,
+    );
+
+    let r_single = px(&doc_single.composite().unwrap(), 0, 0)[0];
+    let r_double = px(&doc_double.composite().unwrap(), 0, 0)[0];
+    assert!(r_single < 200, "mono-masque doit atténuer le calque");
+    assert!(
+        r_double < r_single,
+        "2 masques atténuent plus qu'1 (multiplicatif)"
+    );
+    assert!(r_double > 10, "reste partiellement visible");
 }

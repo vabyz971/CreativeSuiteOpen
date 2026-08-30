@@ -225,6 +225,9 @@ pub fn next_appearance_version() -> u64 {
 /// TODO v2: Luma8 pur (÷4 mémoire), feather/flou dédié, unlink transform.
 #[derive(Clone, Debug)]
 pub struct LayerMask {
+    /// Identifiant stable, utilisé par l'app pour sélectionner / éditer /
+    /// supprimer CE masque parmi les N masques d'un calque.
+    pub id: Uuid,
     /// Buffer de couverture RGBA8 (R = couverture, A = 255 constant).
     pub image: Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>,
     pub enabled: bool,
@@ -238,6 +241,7 @@ impl LayerMask {
     pub fn full(width: u32, height: u32) -> Self {
         let buf = ImageBuffer::from_pixel(width, height, Rgba([255, 255, 255, 255]));
         Self {
+            id: Uuid::new_v4(),
             image: Arc::new(buf),
             enabled: true,
             inverted: false,
@@ -276,7 +280,8 @@ pub struct PixelLayer {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub visible: bool,
-    pub mask: Option<LayerMask>,
+    /// Masques de couverture — fusionnés multiplicativement dans le compositing.
+    pub masks: Vec<LayerMask>,
     /// Incrémenté à TOUTE mutation affectant l'apparence (source ou filtres).
     /// Clé d'invalidation du cache d'apparence du document.
     pub appearance_version: u64,
@@ -294,7 +299,7 @@ impl PixelLayer {
             opacity: 100.0,
             blend_mode: BlendMode::Normal,
             visible: true,
-            mask: None,
+            masks: Vec::new(),
             appearance_version: next_appearance_version(),
         }
     }
@@ -331,7 +336,8 @@ pub struct GroupLayer {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub visible: bool,
-    pub mask: Option<LayerMask>,
+    /// Masques de couverture du groupe — fusionnés multiplicativement.
+    pub masks: Vec<LayerMask>,
 }
 
 impl GroupLayer {
@@ -344,7 +350,7 @@ impl GroupLayer {
             opacity: 100.0,
             blend_mode: BlendMode::Normal,
             visible: true,
-            mask: None,
+            masks: Vec::new(),
         }
     }
 }
@@ -473,20 +479,30 @@ impl LayerNode {
         }
     }
 
-    pub fn mask(&self) -> Option<&LayerMask> {
+    /// Tous les masques de couverture d'un calque pixels ou groupe.
+    pub fn masks(&self) -> &[LayerMask] {
         match self {
-            LayerNode::Pixel(l) => l.mask.as_ref(),
-            LayerNode::Group(g) => g.mask.as_ref(),
+            LayerNode::Pixel(l) => &l.masks,
+            LayerNode::Group(g) => &g.masks,
+            LayerNode::Adjustment(_) => &[],
+        }
+    }
+
+    pub fn masks_mut(&mut self) -> Option<&mut Vec<LayerMask>> {
+        match self {
+            LayerNode::Pixel(l) => Some(&mut l.masks),
+            LayerNode::Group(g) => Some(&mut g.masks),
             LayerNode::Adjustment(_) => None,
         }
     }
 
-    pub fn mask_mut(&mut self) -> Option<&mut Option<LayerMask>> {
-        match self {
-            LayerNode::Pixel(l) => Some(&mut l.mask),
-            LayerNode::Group(g) => Some(&mut g.mask),
-            LayerNode::Adjustment(_) => None,
-        }
+    /// Masque identifié par son id, s'il existe.
+    pub fn mask(&self, id: Uuid) -> Option<&LayerMask> {
+        self.masks().iter().find(|m| m.id == id)
+    }
+
+    pub fn mask_mut(&mut self, id: Uuid) -> Option<&mut LayerMask> {
+        self.masks_mut()?.iter_mut().find(|m| m.id == id)
     }
 
     /// Réassigne des identifiants frais (duplication) et invalide l'apparence.

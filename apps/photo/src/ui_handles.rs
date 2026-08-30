@@ -41,6 +41,7 @@ pub fn rgba_handle(buf: &photo_engine::RgbaBuf) -> iced::widget::image::Handle {
 #[derive(Default)]
 pub struct PreviewCache {
     entries: HashMap<Uuid, Entry>,
+    mask_thumbs: HashMap<Uuid, MaskThumb>,
 }
 
 struct Entry {
@@ -55,8 +56,30 @@ struct Entry {
     thumb: iced::widget::image::Handle,
 }
 
+/// Miniature d'un masque, clé = adresse de l'Arc du buffer d'image.
+struct MaskThumb {
+    key: usize,
+    _keep_alive: Arc<image::RgbaImage>,
+    thumb: iced::widget::image::Handle,
+}
+
 fn arc_addr(data: &Arc<[u8]>) -> usize {
     Arc::as_ptr(data).cast::<u8>() as usize
+}
+
+fn img_arc_addr(data: &Arc<image::RgbaImage>) -> usize {
+    Arc::as_ptr(data).cast::<u8>() as usize
+}
+
+/// Miniature 36×24 (aspect conservé) d'un buffer de masque.
+fn mask_thumb_handle(img: &image::RgbaImage) -> iced::widget::image::Handle {
+    let out = image::imageops::thumbnail(img, 36, 24);
+    let (w, h) = out.dimensions();
+    iced::widget::image::Handle::from_rgba(
+        w,
+        h,
+        iced_core::Bytes::from_owner(Arc::from(out.into_raw())),
+    )
 }
 
 impl PreviewCache {
@@ -93,6 +116,27 @@ impl PreviewCache {
                 }
             }
         }
+
+        // Masques : mêmes règles d'identité par Arc.
+        let mask_ids: Vec<Uuid> = doc.iter_masks().iter().map(|(_, m)| m.id).collect();
+        self.mask_thumbs.retain(|id, _| mask_ids.contains(id));
+        for (_, mask) in doc.iter_masks() {
+            let key = img_arc_addr(&mask.image);
+            match self.mask_thumbs.get(&mask.id) {
+                Some(e) if e.key == key => {}
+                _ => {
+                    let thumb = mask_thumb_handle(&mask.image);
+                    self.mask_thumbs.insert(
+                        mask.id,
+                        MaskThumb {
+                            key,
+                            _keep_alive: Arc::clone(&mask.image),
+                            thumb,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// Handle d'aperçu interactif du calque (texture canvas).
@@ -103,5 +147,10 @@ impl PreviewCache {
     /// Handle miniature du calque (panneau Calques).
     pub fn thumb(&self, id: Uuid) -> Option<&iced::widget::image::Handle> {
         self.entries.get(&id).map(|e| &e.thumb)
+    }
+
+    /// Handle miniature d'un masque (panneau Calques).
+    pub fn mask_thumb(&self, id: Uuid) -> Option<&iced::widget::image::Handle> {
+        self.mask_thumbs.get(&id).map(|e| &e.thumb)
     }
 }

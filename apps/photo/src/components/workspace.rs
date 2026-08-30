@@ -32,6 +32,9 @@ pub fn render<'a>(
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected_layer: Option<Uuid>,
     dragged_layer: Option<Uuid>,
+    active_mask: Option<crate::message::MaskTarget>,
+    expanded_masks: &'a std::collections::HashSet<Uuid>,
+    mask_brush_black: bool,
     doc_size: Option<Size>,
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
@@ -94,6 +97,7 @@ pub fn render<'a>(
                     brush,
                     brush_color,
                     color_picker_open,
+                    mask_brush_black,
                     pending_preview.clone(),
                     new_doc_w,
                     new_doc_h,
@@ -112,11 +116,18 @@ pub fn render<'a>(
             }
             PanelType::Properties => (
                 "Propriétés".to_string(),
-                properties::render(doc, selected_layer),
+                properties::render(doc, selected_layer, active_mask),
             ),
             PanelType::Layers => (
                 "Calques".to_string(),
-                layers_panel::render(doc, preview_cache, selected_layer, dragged_layer),
+                layers_panel::render(
+                    doc,
+                    preview_cache,
+                    selected_layer,
+                    dragged_layer,
+                    active_mask,
+                    expanded_masks,
+                ),
             ),
         };
 
@@ -169,6 +180,7 @@ fn render_canvas_preview<'a>(
     brush: ui_kit::image_canvas::BrushStyle,
     brush_color: iced::Color,
     color_picker_open: bool,
+    mask_brush_black: bool,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
     new_doc_w: &'a str,
     new_doc_h: &'a str,
@@ -343,6 +355,7 @@ fn render_canvas_preview<'a>(
             selected_tool,
             brush_color,
             color_picker_open,
+            mask_brush_black,
         ))
         .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
         .style(|_| {

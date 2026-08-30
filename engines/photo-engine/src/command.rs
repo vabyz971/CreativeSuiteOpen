@@ -74,11 +74,13 @@ pub enum Command {
     },
     SetMaskEnabled {
         node_id: Uuid,
+        mask_id: Uuid,
         old: bool,
         new: bool,
     },
     SetMaskInverted {
         node_id: Uuid,
+        mask_id: Uuid,
         old: bool,
         new: bool,
     },
@@ -143,13 +145,25 @@ impl Command {
                 old: new.clone(),
                 new: old.clone(),
             },
-            Command::SetMaskEnabled { node_id, old, new } => Command::SetMaskEnabled {
+            Command::SetMaskEnabled {
+                node_id,
+                mask_id,
+                old,
+                new,
+            } => Command::SetMaskEnabled {
                 node_id: *node_id,
+                mask_id: *mask_id,
                 old: *new,
                 new: *old,
             },
-            Command::SetMaskInverted { node_id, old, new } => Command::SetMaskInverted {
+            Command::SetMaskInverted {
+                node_id,
+                mask_id,
+                old,
+                new,
+            } => Command::SetMaskInverted {
                 node_id: *node_id,
+                mask_id: *mask_id,
                 old: *new,
                 new: *old,
             },

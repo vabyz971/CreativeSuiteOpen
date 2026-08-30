@@ -67,6 +67,8 @@ impl std::fmt::Debug for DecodedLayer {
 #[derive(Clone)]
 pub struct PendingPaint {
     pub layer_id: Uuid,
+    /// Masque ciblé si le trait peignait un masque (None = pixels du calque).
+    pub mask_id: Option<Uuid>,
     pub tex: ui_kit::image_canvas::StrokeTex,
 }
 
@@ -262,11 +264,13 @@ pub enum Message {
     /// Résultat du calcul lourd — applique pixels + buffers au calque
     PaintApplied {
         layer_id: Uuid,
+        mask_id: Option<Uuid>,
         buf: photo_engine::paint::StrokeCommit,
     },
     /// Le worker de peinture a échoué : retire l'aperçu figé sans panic
     PaintFailed {
         layer_id: Uuid,
+        mask_id: Option<Uuid>,
     },
     SetBrushColor(Color),
     SetBrushSize(f32),
@@ -305,10 +309,22 @@ pub enum Message {
     DetectGpu,
     GpuDetected(String),
 
-    // Masques de calque
-    SetMaskPaintTarget(Option<Uuid>),
+    // Masques de calque : un calque peut en porter plusieurs ; les messages
+    // ciblent un masque précis par (layer_id, mask_id).
+    SetActiveMask(Option<MaskTarget>),
     AddLayerMask(Uuid),
-    RemoveLayerMask(Uuid),
-    ToggleLayerMaskEnabled(Uuid),
-    InvertLayerMask(Uuid),
+    RemoveLayerMask(Uuid, Uuid),
+    ToggleLayerMaskEnabled(Uuid, Uuid),
+    InvertLayerMask(Uuid, Uuid),
+    /// Déplie/replie la liste des masques d'un calque dans le panneau Calques.
+    ToggleMaskList(Uuid),
+    /// Bascule la couleur du pinceau masque entre noir et blanc.
+    ToggleMaskColor,
+}
+
+/// Identifie un masque précis parmi les N masques d'un calque.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaskTarget {
+    pub layer_id: Uuid,
+    pub mask_id: Uuid,
 }

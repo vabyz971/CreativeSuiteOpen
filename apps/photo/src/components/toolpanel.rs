@@ -34,7 +34,12 @@ const ICON_BRUSH: &str = "\u{F00E3}"; // brush - Pinceau
 const ICON_ERASER: &str = "\u{F01FE}";
 const ICON_COLORIZE: &str = "\u{F020A}"; // colorize - Pipette
 
-pub fn render<'a>(selected: Tool, brush_color: Color, picker_open: bool) -> Element<'a, Message> {
+pub fn render<'a>(
+    selected: Tool,
+    brush_color: Color,
+    picker_open: bool,
+    mask_brush_black: bool,
+) -> Element<'a, Message> {
     let swatch = iced::widget::button(
         iced::widget::container(
             iced::widget::Space::new()
@@ -61,6 +66,37 @@ pub fn render<'a>(selected: Tool, brush_color: Color, picker_open: bool) -> Elem
         Message::ToggleColorPicker,
         Message::SetBrushColor,
     );
+    // Toggle noir/blanc pour la peinture de masque (façon Affinity).
+    let mask_swatch = iced::widget::button(
+        iced::widget::container(
+            iced::widget::Space::new()
+                .width(iced::Length::Fixed(18.0))
+                .height(iced::Length::Fixed(18.0)),
+        )
+        .style(move |_| iced::widget::container::Style {
+            background: Some(
+                (if mask_brush_black {
+                    iced::Color::BLACK
+                } else {
+                    iced::Color::WHITE
+                })
+                .into(),
+            ),
+            border: iced::Border {
+                width: 2.0,
+                color: if mask_brush_black {
+                    iced::Color::WHITE
+                } else {
+                    iced::Color::BLACK
+                },
+                radius: ui_kit::theme::metrics::RADIUS_SM.into(),
+            },
+            ..Default::default()
+        }),
+    )
+    .padding(4)
+    .style(|_t, s| ui_kit::style::ghost(s))
+    .on_press(Message::ToggleMaskColor);
 
     column![
         icon_button::render(
@@ -115,6 +151,7 @@ pub fn render<'a>(selected: Tool, brush_color: Color, picker_open: bool) -> Elem
             ..Default::default()
         }),
         global_color,
+        mask_swatch,
     ]
     .spacing(4)
     .align_x(Alignment::Center)
