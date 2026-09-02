@@ -27,9 +27,10 @@
 )]
 
 use iced::mouse;
-use iced::widget::canvas::{self, Frame, Geometry, Path};
+use iced::widget::canvas::{self, Fill, Frame, Geometry, Path, Stroke};
 use iced::widget::image;
 use iced::{Point, Rectangle, Size, Theme, Vector};
+use uuid::Uuid;
 
 use crate::theme::colors;
 
@@ -44,6 +45,44 @@ pub enum CanvasTool {
     Brush,
     /// Eraser: erases (reduces alpha) on selected layer
     Eraser,
+}
+
+/// Poignée du visualiseur de transformation (Affinity-style).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformHandle {
+    /// Déplacer la sélection (intérieur de la boîte)
+    Move,
+    /// Redimensionner via une poignée d'angle
+    Corner(Corner),
+    /// Rotation autour du centre (poignée au-dessus du bord haut)
+    Rotate,
+    /// Côté droit → cisaille X selon Y (inclinaison horizontale)
+    SkewX,
+    /// Côté bas → cisaille Y selon X (inclinaison verticale)
+    SkewY,
+}
+
+/// Coin du rectangle sélectionné.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomRight,
+    BottomLeft,
+}
+
+impl TransformHandle {
+    /// Identifiant stable pour l'ancre de geste côté app.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Corner(_) => "resize",
+            Self::Rotate => "rotate",
+            Self::SkewX => "skew_x",
+            Self::SkewY => "skew_y",
+        }
+    }
 }
 
 /// Events emitted by the image canvas.
@@ -61,15 +100,24 @@ pub enum ImageCanvasEvent {
     SelectRect(Option<Rectangle>),
     /// Canvas viewport size (to compute "fit to image")
     Viewport(Size),
-    /// Start moving selected layer
-    MoveLayerStart,
-    /// Move selected layer (dx/dy in image pixels since drag start)
-    MoveLayer {
-        dx: f32,
-        dy: f32,
+    /// Clic sur zone vide (outil Déplacer) → désélectionner
+    ClearSelection,
+    /// Début d'un geste de transformation (poignée + curseur en doc).
+    /// `id` = Some(layer) quand le clic sélectionne un autre calque
+    /// (Pick) → le geste Déplacement commence en même temps.
+    TransformStart {
+        id: Option<Uuid>,
+        kind: TransformHandle,
+        doc: (f32, f32),
     },
-    /// End of move — commit offset
-    MoveLayerEnd,
+    /// Curseur pendant un geste (coordonnées document). `uniform` = Ctrl
+    /// enfoncé → redimensionnement PROPORTIONNEL (aspect conservé).
+    TransformCursor {
+        doc: (f32, f32),
+        uniform: bool,
+    },
+    /// Fin de geste — l'app commit la transformation
+    TransformEnd,
     /// Stroke start (document coordinates) — brush or eraser
     BrushStart {
         x: f32,
@@ -209,7 +257,10 @@ impl StrokeTex {
 /// Moving = change offset → simple redraw, zero recomposite.
 /// Opacity/rotation/scale are applied AT DRAW (GPU) — zero
 /// pixel regeneration.
+#[derive(Clone)]
 pub struct CanvasLayer {
+    /// Identifiant du calque applicatif (None = composite fallback)
+    pub id: Option<Uuid>,
     pub handle: image::Handle,
     pub width: f32,
     pub height: f32,
@@ -220,13 +271,75 @@ pub struct CanvasLayer {
     pub opacity: f32,
     /// Rotation in degrees (around layer center)
     pub rotation_deg: f32,
-    /// Uniform scale (1.0 = 100%)
-    pub scale: f32,
+    /// Non-uniform scale (1.0 = 100%)
+    pub scale_x: f32,
+    pub scale_y: f32,
+    /// Inclinaison horizontale en degrés (cisaille X selon Y)
+    pub skew_x: f32,
+    /// Inclinaison verticale en degrés (cisaille Y selon X)
+    pub skew_y: f32,
+}
+
+impl CanvasLayer {
+    /// Les 4 coins de la carte locale → doc (même convention que
+    /// `Transform2D::local_to_doc` du moteur : offset = coin supérieur-gauche
+    /// du rectangle scalé, cisaillement/rotation autour du centre scalé).
+    ///
+    /// ui-kit ne peut pas dépendre de `photo-engine` (couches : packages
+    /// jamais dépendantes des engines) : CETTE implémentation est donc une
+    /// copie de la convention affine canonique. Toute évolution du modèle
+    /// transform doit rester en sync ici et dans `prepare_top_affine`
+    /// (compositing moteur).
+    #[must_use]
+    pub fn corners(&self) -> [(f32, f32); 4] {
+        let sx = self.scale_x;
+        let sy = self.scale_y;
+        let kx = self.skew_x.to_radians().tan();
+        let ky = self.skew_y.to_radians().tan();
+        let r = self.rotation_deg.to_radians();
+        let (cos, sin) = (r.cos(), r.sin());
+        let cx = self.width / 2.0;
+        let cy = self.height / 2.0;
+        let transform = |x: f32, y: f32| -> (f32, f32) {
+            let ux = (x - cx) * sx;
+            let uy = (y - cy) * sy;
+            let tx = ux + kx * uy;
+            let ty = ky * ux + uy;
+            (
+                tx * cos - ty * sin + cx * sx + self.offset_x,
+                tx * sin + ty * cos + cy * sy + self.offset_y,
+            )
+        };
+        [
+            transform(0.0, 0.0),
+            transform(self.width, 0.0),
+            transform(self.width, self.height),
+            transform(0.0, self.height),
+        ]
+    }
+
+    /// Centre du parallélogramme affiché, en coordonnées doc (moyenne des 4
+    /// coins → exact même avec rotation/cisaillement).
+    #[must_use]
+    pub fn center(&self) -> Point {
+        let c = self.corners();
+        Point::new(
+            (c[0].0 + c[1].0 + c[2].0 + c[3].0) / 4.0,
+            (c[0].1 + c[1].1 + c[2].1 + c[3].1) / 4.0,
+        )
+    }
 }
 
 /// Interactive image canvas program.
 pub struct ImageCanvas {
     pub layers: Vec<CanvasLayer>,
+    /// Calques pour le pick (clic → sélection) — en mode fallback la liste
+    /// affichée n'est qu'un seul composite sans identité ; celle-ci garde la
+    /// hiérarchie réelle pour le hit-testing.
+    pub hit_layers: Vec<CanvasLayer>,
+    /// Calque sélectionné : dessine le visualiseur de transformation et
+    /// reçoit les gestes (move/resize/rotate/skew). Optionnel = aucun overlay.
+    pub transform_target: Option<CanvasLayer>,
     /// Document dimensions (ground reference, drawn in world space)
     pub doc_size: Option<Size>,
     pub pan: Vector,
@@ -246,6 +359,8 @@ impl ImageCanvas {
     pub fn new(doc_size: Option<Size>, pan: Vector, zoom: f32) -> Self {
         Self {
             layers: Vec::new(),
+            hit_layers: Vec::new(),
+            transform_target: None,
             doc_size,
             pan,
             zoom: zoom.clamp(0.08, 6.0),
@@ -298,6 +413,16 @@ impl ImageCanvas {
         self
     }
     #[must_use]
+    pub fn with_hit_layers(mut self, hit_layers: Vec<CanvasLayer>) -> Self {
+        self.hit_layers = hit_layers;
+        self
+    }
+    #[must_use]
+    pub fn with_transform_target(mut self, target: Option<CanvasLayer>) -> Self {
+        self.transform_target = target;
+        self
+    }
+    #[must_use]
     pub fn with_tool(mut self, tool: CanvasTool) -> Self {
         self.tool = tool;
         self
@@ -307,11 +432,322 @@ impl ImageCanvas {
         self.selection = sel;
         self
     }
+
+    /// Point écran → coordonnées document (centre doc = (w/2, h/2)).
+    fn doc_to_screen(
+        &self,
+        doc: (f32, f32),
+        center: Point,
+        doc_half_w: f32,
+        doc_half_h: f32,
+    ) -> Point {
+        Point::new(
+            center.x + (doc.0 - doc_half_w) * self.zoom,
+            center.y + (doc.1 - doc_half_h) * self.zoom,
+        )
+    }
+
+    /// Centre/pan/zoom → centre écran du document.
+    fn center_of(&self, bounds: Rectangle) -> Point {
+        Point::new(
+            bounds.width / 2.0 + self.pan.x,
+            bounds.height / 2.0 + self.pan.y,
+        )
+    }
+
+    /// Les 4 coins (écran) du parallélogramme d'un calque donné.
+    fn screen_corners(&self, l: &CanvasLayer, bounds: Rectangle) -> [Point; 4] {
+        let center = self.center_of(bounds);
+        let (dhw, dhh) = self
+            .doc_size
+            .map_or((0.0, 0.0), |s| (s.width / 2.0, s.height / 2.0));
+        l.corners()
+            .map(|(dx, dy)| self.doc_to_screen((dx, dy), center, dhw, dhh))
+    }
+
+    /// Calque le plus au-dessus contenant le point écran (dans l'ordre de
+    /// dessin : dernier = dessus).
+    fn pick_layer(&self, p: Point, bounds: Rectangle) -> Option<Uuid> {
+        self.hit_layers
+            .iter()
+            .rev()
+            .find(|l| {
+                let quad = self.screen_corners(l, bounds);
+                point_in_quad(p, quad)
+            })
+            .and_then(|l| l.id)
+    }
+
+    /// Poignée transformée sous le curseur (ou `Move` si l'intérieur de la
+    /// boîte est touché). `None` = hors visualiseur.
+    fn hit_transform_handle(
+        &self,
+        p: Point,
+        bounds: Rectangle,
+    ) -> Option<(TransformHandle, BoxUi)> {
+        let target = self.transform_target.as_ref()?;
+        let corners = self.screen_corners(target, bounds);
+        let ui = BoxUi::new(corners);
+        // Rotation d'abord (grande zone), puis coins, puis inclinaisons,
+        // puis intérieur
+        if ui.rot_pos.distance(p) <= HANDLE_HIT {
+            return Some((TransformHandle::Rotate, ui));
+        }
+        let corner_kinds = [
+            (Corner::TopLeft, ui.corners[0]),
+            (Corner::TopRight, ui.corners[1]),
+            (Corner::BottomRight, ui.corners[2]),
+            (Corner::BottomLeft, ui.corners[3]),
+        ];
+        for (kind, c) in corner_kinds {
+            if c.distance(p) <= HANDLE_HIT {
+                return Some((TransformHandle::Corner(kind), ui));
+            }
+        }
+        if ui.right_mid.distance(p) <= HANDLE_HIT {
+            return Some((TransformHandle::SkewX, ui));
+        }
+        if ui.bottom_mid.distance(p) <= HANDLE_HIT {
+            return Some((TransformHandle::SkewY, ui));
+        }
+        if point_in_quad(p, corners) {
+            return Some((TransformHandle::Move, ui));
+        }
+        None
+    }
+
+    /// Curseur dans l'INTERIEUR de la boîte du calque sélectionné (zone de
+    /// déplacement — jamais prioritaire sur la sélection d'un autre calque).
+    fn in_transform_box(&self, p: Point, bounds: Rectangle) -> bool {
+        let Some(target) = self.transform_target.as_ref() else {
+            return false;
+        };
+        point_in_quad(p, self.screen_corners(target, bounds))
+    }
+
+    /// Overlay « poignées de transformation » du calque sélectionné.
+    /// Marquee de sélection + visualiseur de transformation (Affinity).
+    /// Dans une 2e géométrie → rendue APRÈS les images de la 1re géométrie :
+    /// visible au premier plan, même par-dessus le composite fallback.
+    fn draw_overlay(
+        &self,
+        renderer: &iced::Renderer,
+        bounds: Rectangle,
+        state: &State,
+    ) -> Option<Geometry> {
+        let active = state.transform_handle;
+        let show_box = self.transform_target.is_some()
+            && matches!(self.tool, CanvasTool::Select | CanvasTool::Move);
+        if active.is_none() && !show_box && !(state.selecting.is_some() || self.selection.is_some())
+        {
+            return None;
+        }
+        let mut frame = Frame::new(renderer, bounds.size());
+
+        // Marquee de sélection (outils Sélection/Zoom) et rectangle sélectionné
+        if let Some((start, current)) = state.selecting {
+            let sel = Rectangle::new(start, Size::new(current.x - start.x, current.y - start.y));
+            let norm = Rectangle::new(
+                Point::new(sel.x.min(sel.x + sel.width), sel.y.min(sel.y + sel.height)),
+                Size::new(sel.width.abs(), sel.height.abs()),
+            );
+            frame.fill_rectangle(norm.position(), norm.size(), colors::SELECTION_FILL);
+            let path = Path::rectangle(norm.position(), norm.size());
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_width(1.0)
+                    .with_color(colors::SELECTION_STROKE),
+            );
+        } else if let Some(sel) = self.selection {
+            frame.fill_rectangle(sel.position(), sel.size(), colors::SELECTION_FILL);
+            let path = Path::rectangle(sel.position(), sel.size());
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_width(1.0)
+                    .with_color(colors::SELECTION_STROKE),
+            );
+        }
+
+        if show_box {
+            let target = self.transform_target.as_ref()?;
+            let corners = self.screen_corners(target, bounds);
+            let ui = BoxUi::new(corners);
+
+            let quad = Path::new(|p| {
+                for (i, c) in corners.iter().enumerate() {
+                    if i == 0 {
+                        p.move_to(*c);
+                    } else {
+                        p.line_to(*c);
+                    }
+                }
+                p.close();
+            });
+            frame.stroke(
+                &quad,
+                Stroke::default()
+                    .with_width(1.0)
+                    .with_color(colors::SELECTION_STROKE),
+            );
+
+            // Poignée de rotation : tige + cercle au-dessus du bord haut
+            let top_mid = Point::new(
+                (corners[0].x + corners[1].x) / 2.0,
+                (corners[0].y + corners[1].y) / 2.0,
+            );
+            let stem = Path::new(|p| {
+                p.move_to(top_mid);
+                p.line_to(ui.rot_pos);
+            });
+            frame.stroke(
+                &stem,
+                Stroke::default()
+                    .with_width(1.0)
+                    .with_color(colors::SELECTION_STROKE),
+            );
+            let rot_fill = if active == Some(TransformHandle::Rotate) {
+                Fill::from(colors::ACCENT)
+            } else {
+                Fill::from(colors::TEXT_ON_ACCENT)
+            };
+            let rot_circle = Path::circle(ui.rot_pos, 5.0);
+            frame.fill(&rot_circle, rot_fill);
+            frame.stroke(
+                &rot_circle,
+                Stroke::default()
+                    .with_width(1.2)
+                    .with_color(colors::SELECTION_STROKE),
+            );
+            frame.fill(
+                &Path::circle(top_mid, 1.8),
+                Fill::from(colors::SELECTION_STROKE),
+            );
+
+            // Poignées d'angle (redimensionner) : CERCLES
+            let corner_kinds = [
+                (Corner::TopLeft, ui.corners[0]),
+                (Corner::TopRight, ui.corners[1]),
+                (Corner::BottomRight, ui.corners[2]),
+                (Corner::BottomLeft, ui.corners[3]),
+            ];
+            for (kind, c) in corner_kinds {
+                let fill = if active == Some(TransformHandle::Corner(kind)) {
+                    Fill::from(colors::ACCENT)
+                } else {
+                    Fill::from(colors::TEXT_ON_ACCENT)
+                };
+                let circle = Path::circle(c, HANDLE_HALF);
+                frame.fill(&circle, fill);
+                frame.stroke(
+                    &circle,
+                    Stroke::default()
+                        .with_width(1.0)
+                        .with_color(colors::SELECTION_STROKE),
+                );
+            }
+
+            // Poignées d'inclinaison (losanges, milieux des côtés droit et bas)
+            for (kind, m) in [
+                (TransformHandle::SkewX, ui.right_mid),
+                (TransformHandle::SkewY, ui.bottom_mid),
+            ] {
+                let di = HANDLE_HALF;
+                let diamond = Path::new(|p| {
+                    p.move_to(Point::new(m.x, m.y - di));
+                    p.line_to(Point::new(m.x + di, m.y));
+                    p.line_to(Point::new(m.x, m.y + di));
+                    p.line_to(Point::new(m.x - di, m.y));
+                    p.close();
+                });
+                let fill = if active == Some(kind) {
+                    colors::ACCENT
+                } else {
+                    colors::TEXT_ON_ACCENT
+                };
+                frame.fill(&diamond, Fill::from(fill));
+                frame.stroke(
+                    &diamond,
+                    Stroke::default()
+                        .with_width(1.0)
+                        .with_color(colors::SELECTION_STROKE),
+                );
+            }
+        }
+
+        Some(frame.into_geometry())
+    }
+}
+
+/// Géométrie écran du visualiseur de transformation.
+#[derive(Clone, Copy)]
+pub struct BoxUi {
+    /// tl, tr, br, bl (écran)
+    pub corners: [Point; 4],
+    pub center: Point,
+    /// Poignée de rotation (au-dessus du bord haut)
+    pub rot_pos: Point,
+    /// Milieu côté droit (inclinaison X) et côté bas (inclinaison Y)
+    pub right_mid: Point,
+    pub bottom_mid: Point,
+}
+
+impl BoxUi {
+    #[must_use]
+    fn new(corners: [Point; 4]) -> Self {
+        let center = Point::new(
+            corners.iter().map(|c| c.x).sum::<f32>() / 4.0,
+            corners.iter().map(|c| c.y).sum::<f32>() / 4.0,
+        );
+        let mid = |a: Point, b: Point| Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+        let top_mid = mid(corners[0], corners[1]);
+        let mut dir = Vector::new(top_mid.x - center.x, top_mid.y - center.y);
+        let len = (dir.x * dir.x + dir.y * dir.y).sqrt();
+        if len > 1e-6 {
+            dir /= len;
+        } else {
+            dir = Vector::new(0.0, -1.0);
+        }
+        let rot_pos = Point::new(top_mid.x + dir.x * ROT_STEM, top_mid.y + dir.y * ROT_STEM);
+        Self {
+            corners,
+            center,
+            rot_pos,
+            right_mid: mid(corners[1], corners[2]),
+            bottom_mid: mid(corners[3], corners[2]),
+        }
+    }
+}
+
+/// Rayon de hit des poignées (écran)
+const HANDLE_HIT: f32 = 8.0;
+/// Longueur de la tige de rotation
+const ROT_STEM: f32 = 24.0;
+/// Demi-côté des poignées dessinées (écran)
+const HANDLE_HALF: f32 = 5.0;
+
+/// Point dans un quadrilatère convexe (test de signe des produits
+/// vectoriels, tolérant aux deux orientations).
+fn point_in_quad(p: Point, q: [Point; 4]) -> bool {
+    let cross = |a: Point, b: Point, c: Point| -> f32 {
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+    };
+    let mut all_ccw = true;
+    let mut all_cw = true;
+    for i in 0..4 {
+        let s = cross(q[i], q[(i + 1) % 4], p);
+        all_ccw &= s >= 0.0;
+        all_cw &= s <= 0.0;
+    }
+    all_ccw || all_cw
 }
 
 #[derive(Default)]
 pub struct State {
     pub dragging: Option<(Point, Vector)>,
+    /// Geste de transformation actif (poignée saisie)
+    pub transform_handle: Option<TransformHandle>,
     /// Current stroke points (document coords) — stored in canvas
     /// for preview without round-trip to app (zero latency,
     /// explicit redraw on each move).
@@ -329,6 +765,21 @@ pub struct State {
     pub space_held: bool,
     /// Last published viewport size (avoids event spam)
     pub prev_bounds: Option<Size>,
+}
+
+/// Curseur correspondant à une poignée de transformation.
+fn transform_cursor(kind: TransformHandle) -> mouse::Interaction {
+    match kind {
+        TransformHandle::Move | TransformHandle::Rotate => mouse::Interaction::Move,
+        TransformHandle::Corner(Corner::TopLeft) | TransformHandle::Corner(Corner::BottomRight) => {
+            mouse::Interaction::ResizingDiagonallyUp
+        }
+        TransformHandle::Corner(Corner::TopRight) | TransformHandle::Corner(Corner::BottomLeft) => {
+            mouse::Interaction::ResizingDiagonallyDown
+        }
+        TransformHandle::SkewX => mouse::Interaction::ResizingHorizontally,
+        TransformHandle::SkewY => mouse::Interaction::ResizingVertically,
+    }
 }
 
 impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
@@ -379,6 +830,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         // (mouse is captured during drag) — otherwise drag state
         // stays armed and move events keep arriving.
         if let canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) = event {
+            if state.transform_handle.take().is_some() {
+                return Some(canvas::Action::publish(ImageCanvasEvent::TransformEnd).and_capture());
+            }
             if let Some((anchor, start_zoom, start_pan)) = state.zoom_dragging.take() {
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
                     return Some(canvas::Action::capture());
@@ -430,11 +884,6 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 return Some(canvas::Action::publish(ImageCanvasEvent::SelectRect(None)));
             }
             if let Some((_start, _orig_pan)) = state.dragging.take() {
-                if self.tool == CanvasTool::Move {
-                    return Some(
-                        canvas::Action::publish(ImageCanvasEvent::MoveLayerEnd).and_capture(),
-                    );
-                }
                 if self.tool == CanvasTool::Brush || self.tool == CanvasTool::Eraser {
                     let points = std::mem::take(&mut state.stroke);
                     let tex = state.stroke_tex.take();
@@ -458,6 +907,66 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                     state.dragging = Some((cursor_pos, self.pan));
                     return Some(canvas::Action::capture());
                 }
+                // Visualiseur de transformation. Ordre de priorité :
+                // 1) POIGNÉES (rotation/coins/inclinaisons) du calque
+                //    sélectionné — geste dédié.
+                // 2) Clic sur UN CALQUE (autre ou même) → sélection + geste
+                //    Déplacement (jamais bloqué par une grosse sélection).
+                // 3) Intérieur vide de la boîte → déplacer la sélection.
+                // 4) Zone vide → marquee (Sélection) / désélection (Déplacer).
+                if matches!(self.tool, CanvasTool::Select | CanvasTool::Move)
+                    && let Some((kind, _ui)) = self.hit_transform_handle(cursor_pos, bounds)
+                    && !matches!(kind, TransformHandle::Move)
+                {
+                    state.transform_handle = Some(kind);
+                    let doc = self.screen_to_doc(cursor_pos, bounds);
+                    return Some(
+                        canvas::Action::publish(ImageCanvasEvent::TransformStart {
+                            id: None,
+                            kind,
+                            doc: (doc.x, doc.y),
+                        })
+                        .and_capture(),
+                    );
+                }
+                // Clic sur un calque : on le sélectionne puis on le déplace.
+                if matches!(self.tool, CanvasTool::Select | CanvasTool::Move)
+                    && let Some(id) = self.pick_layer(cursor_pos, bounds)
+                {
+                    state.transform_handle = Some(TransformHandle::Move);
+                    let doc = self.screen_to_doc(cursor_pos, bounds);
+                    // Même calque que la sélection courante → id: None (pas
+                    // de re-sélection), le geste reste un Déplacement.
+                    let same = self
+                        .transform_target
+                        .as_ref()
+                        .is_some_and(|t| t.id == Some(id));
+                    let id = if same { None } else { Some(id) };
+                    return Some(
+                        canvas::Action::publish(ImageCanvasEvent::TransformStart {
+                            id,
+                            kind: TransformHandle::Move,
+                            doc: (doc.x, doc.y),
+                        })
+                        .and_capture(),
+                    );
+                }
+                // Intérieur de la boîte de l'élément sélectionné (aucun calque
+                // sous le curseur) → déplacement de la sélection.
+                if matches!(self.tool, CanvasTool::Select | CanvasTool::Move)
+                    && self.in_transform_box(cursor_pos, bounds)
+                {
+                    state.transform_handle = Some(TransformHandle::Move);
+                    let doc = self.screen_to_doc(cursor_pos, bounds);
+                    return Some(
+                        canvas::Action::publish(ImageCanvasEvent::TransformStart {
+                            id: None,
+                            kind: TransformHandle::Move,
+                            doc: (doc.x, doc.y),
+                        })
+                        .and_capture(),
+                    );
+                }
                 // Tools
                 match self.tool {
                     CanvasTool::Hand => {
@@ -465,10 +974,15 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         Some(canvas::Action::capture())
                     }
                     CanvasTool::Move => {
-                        state.dragging = Some((cursor_pos, self.pan));
+                        // Zone vide → désélection
                         Some(
-                            canvas::Action::publish(ImageCanvasEvent::MoveLayerStart).and_capture(),
+                            canvas::Action::publish(ImageCanvasEvent::ClearSelection).and_capture(),
                         )
+                    }
+                    CanvasTool::Select => {
+                        // Zone vide → marquee
+                        state.selecting = Some((cursor_pos, cursor_pos));
+                        Some(canvas::Action::capture())
                     }
                     CanvasTool::Brush | CanvasTool::Eraser => {
                         if !self.can_paint {
@@ -493,15 +1007,22 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         state.zoom_dragging = Some((cursor_pos, self.zoom, self.pan));
                         Some(canvas::Action::capture())
                     }
-                    CanvasTool::Select => {
-                        state.selecting = Some((cursor_pos, cursor_pos));
-                        Some(canvas::Action::capture())
-                    }
                 }
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 // Update tool size preview and scrubby zoom
                 state.cursor_pos = Some(cursor_pos);
+                if state.transform_handle.is_some() {
+                    let doc = self.screen_to_doc(cursor_pos, bounds);
+                    return Some(
+                        canvas::Action::publish(ImageCanvasEvent::TransformCursor {
+                            doc: (doc.x, doc.y),
+                            // Ctrl maintenu pendant le geste → échelle uniforme
+                            uniform: state.modifiers.control(),
+                        })
+                        .and_capture(),
+                    );
+                }
                 if let Some((anchor, start_zoom, start_pan)) = state.zoom_dragging {
                     // Scrubby zoom: vertical = forward/back, anchored on click point
                     let dy = anchor.y - cursor_pos.y; // monter = zoom +
@@ -535,15 +1056,6 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         let delta = Vector::new(cursor_pos.x - start.x, cursor_pos.y - start.y);
                         let new_pan = Vector::new(orig_pan.x + delta.x, orig_pan.y + delta.y);
                         return Some(canvas::Action::publish(ImageCanvasEvent::Pan(new_pan)));
-                    } else if self.tool == CanvasTool::Move {
-                        // Raw screen delta: preview follows cursor 1:1,
-                        // la conversion en pixels image se fait une seule fois au commit.
-                        let dx = cursor_pos.x - start.x;
-                        let dy = cursor_pos.y - start.y;
-                        return Some(canvas::Action::publish(ImageCanvasEvent::MoveLayer {
-                            dx,
-                            dy,
-                        }));
                     } else if self.tool == CanvasTool::Brush || self.tool == CanvasTool::Eraser {
                         let doc = self.screen_to_doc(cursor_pos, bounds);
                         let last = *state.stroke.last().unwrap_or(&(doc.x, doc.y));
@@ -627,9 +1139,11 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         for l in &self.layers {
             // Rotation applied around rect center by iced —
             // rect keeps original size (w_s×h_s), corners
-            // naturally overflow without clipping.
-            let w = l.width * l.scale * self.zoom;
-            let h = l.height * l.scale * self.zoom;
+            // naturally overflow without clipping. Convention
+            // affine : offset = coin supérieur-gauche du rectangle
+            // scalé, rotation autour de son centre.
+            let w = l.width * l.scale_x * self.zoom;
+            let h = l.height * l.scale_y * self.zoom;
             let top_left = Point::new(
                 center.x + (l.offset_x - doc_half_w) * self.zoom,
                 center.y + (l.offset_y - doc_half_h) * self.zoom,
@@ -702,32 +1216,6 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         }
 
         // Grid removed — solid background only
-
-        // Rect selection (Select/Zoom tool) — as in Bezier Pending example
-        if let Some((start, current)) = state.selecting {
-            let sel = Rectangle::new(start, Size::new(current.x - start.x, current.y - start.y));
-            let norm = Rectangle::new(
-                Point::new(sel.x.min(sel.x + sel.width), sel.y.min(sel.y + sel.height)),
-                Size::new(sel.width.abs(), sel.height.abs()),
-            );
-            frame.fill_rectangle(norm.position(), norm.size(), colors::SELECTION_FILL);
-            let path = Path::rectangle(norm.position(), norm.size());
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_width(1.0)
-                    .with_color(colors::SELECTION_STROKE),
-            );
-        } else if let Some(sel) = self.selection {
-            frame.fill_rectangle(sel.position(), sel.size(), colors::SELECTION_FILL);
-            let path = Path::rectangle(sel.position(), sel.size());
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_width(1.0)
-                    .with_color(colors::SELECTION_STROKE),
-            );
-        }
 
         // Tool size preview — IMAGE above layers (hidden if layer masked)
         if self.can_paint
@@ -828,7 +1316,16 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             });
         }
 
-        vec![frame.into_geometry()]
+        // Marquee et visualiseur de transformation du calque sélectionné.
+        // Dessinés dans une 2e géométrie → forcément AU-DESSUS des couches
+        // (même du composite fallback plein cadre) : une géométrie ultérieure
+        // est rendue APRÈS les images de la 1re.
+        let overlay = self.draw_overlay(renderer, bounds, state);
+
+        vec![Some(frame.into_geometry()), overlay]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     fn mouse_interaction(
@@ -837,6 +1334,9 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if let Some(kind) = state.transform_handle {
+            return transform_cursor(kind);
+        }
         if state.dragging.is_some() {
             return mouse::Interaction::Grabbing;
         }
@@ -844,6 +1344,23 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
             return mouse::Interaction::Crosshair;
         }
         if cursor.is_over(bounds) {
+            // Sur le visualiseur de transformation : curseurs dédiés
+            // (POIGNÉES uniquement — l'intérieur est couvert plus bas).
+            if matches!(self.tool, CanvasTool::Select | CanvasTool::Move)
+                && let Some(pos) = cursor.position_in(bounds)
+                && let Some((kind, _)) = self.hit_transform_handle(pos, bounds)
+                && !matches!(kind, TransformHandle::Move)
+            {
+                return transform_cursor(kind);
+            }
+            // Sur un calque (sélectionnable) ou dans la boîte de la sélection :
+            // curseur Déplacement identique pour Sélection et Déplacer.
+            if matches!(self.tool, CanvasTool::Select | CanvasTool::Move)
+                && let Some(pos) = cursor.position_in(bounds)
+                && (self.pick_layer(pos, bounds).is_some() || self.in_transform_box(pos, bounds))
+            {
+                return mouse::Interaction::Move;
+            }
             if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) && !self.can_paint {
                 return mouse::Interaction::NotAllowed;
             }
@@ -871,12 +1388,16 @@ pub fn view_with_tool<'a>(
     tool: CanvasTool,
     selection: Option<Rectangle>,
     layers: Vec<CanvasLayer>,
+    hit_layers: Vec<CanvasLayer>,
+    transform_target: Option<CanvasLayer>,
     brush: BrushStyle,
     can_paint: bool,
     pending_preview: Option<StrokeTex>,
 ) -> iced::Element<'a, ImageCanvasEvent> {
     let program = ImageCanvas::new(doc_size, pan, zoom)
         .with_layers(layers)
+        .with_hit_layers(hit_layers)
+        .with_transform_target(transform_target)
         .with_tool(tool)
         .with_selection(selection)
         .with_brush(brush)

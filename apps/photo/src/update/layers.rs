@@ -109,6 +109,7 @@ pub fn handle_select_layer(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     // Contexte actif unique : sélectionner un calque quitte l'édition de masque.
     app.active_mask = None;
     app.move_anchor = None;
+    app.transform_anchor = None;
     Task::none()
 }
 
@@ -126,6 +127,7 @@ pub fn handle_toggle_visible(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         if !new_visible && app.selected_layer == Some(id) {
             app.selected_layer = None;
             app.move_anchor = None;
+            app.transform_anchor = None;
             app.stroke_layer = None;
         }
     }
@@ -345,15 +347,58 @@ pub fn handle_rotate(app: &mut PhotoApp, id: Uuid, delta: f32) -> Task<Message> 
     Task::none()
 }
 
-pub fn handle_set_scale(app: &mut PhotoApp, id: Uuid, scale: f32) -> Task<Message> {
+pub fn handle_set_scale_axis(
+    app: &mut PhotoApp,
+    id: Uuid,
+    axis: crate::OffsetAxis,
+    scale: f32,
+) -> Task<Message> {
     if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+        let scale = scale.clamp(0.05, 8.0);
+        let new = match axis {
+            crate::OffsetAxis::X => Transform2D {
+                scale_x: scale,
+                ..l.transform
+            },
+            crate::OffsetAxis::Y => Transform2D {
+                scale_y: scale,
+                ..l.transform
+            },
+        };
         let cmd = Command::SetTransform {
             layer_id: id,
             old: l.transform,
-            new: Transform2D {
-                scale: scale.clamp(0.05, 8.0),
+            new,
+        };
+        app.history.push_command(coalesce_key(id, 4), cmd.clone());
+        let _ = app.doc.apply_command(cmd);
+        app.invalidate_fallback();
+    }
+    Task::none()
+}
+
+pub fn handle_set_skew(
+    app: &mut PhotoApp,
+    id: Uuid,
+    axis: crate::OffsetAxis,
+    deg: f32,
+) -> Task<Message> {
+    if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+        let deg = deg.clamp(-80.0, 80.0);
+        let new = match axis {
+            crate::OffsetAxis::X => Transform2D {
+                skew_x: deg,
                 ..l.transform
             },
+            crate::OffsetAxis::Y => Transform2D {
+                skew_y: deg,
+                ..l.transform
+            },
+        };
+        let cmd = Command::SetTransform {
+            layer_id: id,
+            old: l.transform,
+            new,
         };
         app.history.push_command(coalesce_key(id, 4), cmd.clone());
         let _ = app.doc.apply_command(cmd);
@@ -372,7 +417,10 @@ pub fn handle_reset_transform(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
             old: l.transform,
             new: Transform2D {
                 rotation_deg: 0.0,
-                scale: 1.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                skew_x: 0.0,
+                skew_y: 0.0,
                 ..l.transform
             },
         };
@@ -722,7 +770,12 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::RotateLayer90 { id, clockwise } => Some(handle_rotate90(app, id, clockwise)),
         Message::FlipLayer { id, horizontal } => Some(handle_flip(app, id, horizontal)),
         Message::RotateLayer { id, delta } => Some(handle_rotate(app, id, delta)),
-        Message::SetLayerScale { id, scale } => Some(handle_set_scale(app, id, scale)),
+        Message::SetLayerScaleAxis { id, axis, scale } => {
+            Some(handle_set_scale_axis(app, id, axis, scale))
+        }
+        Message::SetLayerSkew { id, axis, degrees } => {
+            Some(handle_set_skew(app, id, axis, degrees))
+        }
         Message::ResetLayerTransform(id) => Some(handle_reset_transform(app, id)),
         Message::CropLayerToSelection => Some(handle_crop(app)),
         Message::AddEmptyLayer => Some(handle_add_empty(app)),

@@ -14,6 +14,11 @@ pub fn needs_fallback_in(nodes: &[LayerNode]) -> bool {
                 if l.blend_mode != BlendMode::Normal {
                     return true;
                 }
+                if l.transform.has_skew() {
+                    // Inclinaison : le chemin rapide (1 texture par calque)
+                    // ne sait pas déformer — repli CPU requis.
+                    return true;
+                }
                 if l.masks.iter().any(|m| m.enabled) {
                     return true;
                 }
@@ -190,16 +195,30 @@ pub struct DrawItem<'a> {
     transform: Transform2D,
 }
 
-/// Applique scale + rotation (autour du centre, comme le canvas) à l'image.
-/// Retourne (buffer transformé, offset_x ajusté, offset_y ajusté).
+impl<'a> DrawItem<'a> {
+    /// Construit un item de dessin (utilisé par les tests).
+    #[cfg(test)]
+    pub(crate) fn new(image: &'a DynamicImage, transform: Transform2D) -> Self {
+        Self { image, transform }
+    }
+}
+
+/// Applique scale + skew + rotation (autour du centre, comme le canvas) à
+/// l'image. Retourne (buffer transformé, offset_x ajusté, offset_y ajusté).
 pub fn prepare_top(item: &DrawItem<'_>) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, f32) {
     let (w0, h0) = item.image.dimensions();
-    let scale = item.transform.scale.clamp(0.05, 8.0);
+    let sx = item.transform.scale_x.clamp(0.05, 8.0);
+    let sy = item.transform.scale_y.clamp(0.05, 8.0);
+    if item.transform.has_skew() {
+        // Inclinaison : impossible dans le chemin rapide — raytrace affine
+        // unique (scale non uniforme + cisaillement + rotation).
+        return prepare_top_affine(item, sx, sy);
+    }
     let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = match item.image {
         DynamicImage::ImageRgba8(b) => {
-            if (scale - 1.0).abs() > 0.001 {
-                let nw = ((w0 as f32 * scale).round() as u32).max(1);
-                let nh = ((h0 as f32 * scale).round() as u32).max(1);
+            if (sx - 1.0).abs() > 0.001 || (sy - 1.0).abs() > 0.001 {
+                let nw = ((w0 as f32 * sx).round() as u32).max(1);
+                let nh = ((h0 as f32 * sy).round() as u32).max(1);
                 image::imageops::resize(b, nw, nh, image::imageops::FilterType::Triangle)
             } else {
                 b.clone()
@@ -207,9 +226,9 @@ pub fn prepare_top(item: &DrawItem<'_>) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32,
         }
         other => {
             let rgba = other.to_rgba8();
-            if (scale - 1.0).abs() > 0.001 {
-                let nw = ((w0 as f32 * scale).round() as u32).max(1);
-                let nh = ((h0 as f32 * scale).round() as u32).max(1);
+            if (sx - 1.0).abs() > 0.001 || (sy - 1.0).abs() > 0.001 {
+                let nw = ((w0 as f32 * sx).round() as u32).max(1);
+                let nh = ((h0 as f32 * sy).round() as u32).max(1);
                 image::imageops::resize(&rgba, nw, nh, image::imageops::FilterType::Triangle)
             } else {
                 rgba
@@ -290,6 +309,104 @@ pub fn prepare_top(item: &DrawItem<'_>) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32,
         buf = out;
     }
     (buf, ox, oy)
+}
+
+/// Rasterisation affine (scale non uniforme + skew + rotation) en un seul
+/// échantillonnage bilinéaire via inverse mapping. Convention identique à
+/// [`Transform2D::local_to_doc`] : scale → skew → rotation autour du centre,
+/// puis décalage. L'offset renvoyé est le coin min de la bbox englobante
+/// (fractionnaire, arrondi ensuite par `blend_into`).
+fn prepare_top_affine(
+    item: &DrawItem<'_>,
+    sx: f32,
+    sy: f32,
+) -> (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, f32) {
+    let (w0, h0) = item.image.dimensions();
+    let t = item.transform;
+    let ox = t.offset_x;
+    let oy = t.offset_y;
+    let kx = t.skew_x.to_radians().tan();
+    let ky = t.skew_y.to_radians().tan();
+    let rad = t.rotation_deg.to_radians();
+    let (cos, sin) = (rad.cos(), rad.sin());
+    let cx = w0 as f32 / 2.0;
+    let cy = h0 as f32 / 2.0;
+
+    // A = R * K * S (scale, puis cisaillement, puis rotation) :
+    // m00 m01 / m10 m11 = K*S = [[sx, kx*sy],[ky*sx, sy]]
+    let m00 = sx;
+    let m01 = kx * sy;
+    let m10 = ky * sx;
+    let m11 = sy;
+    let det = m00 * m11 - m01 * m10;
+    if det.abs() < 1e-4 {
+        // Cisaillement dégénéré (tan → ∞) : repli sur scale seul.
+        let img = item.image.to_rgba8();
+        let nw = ((w0 as f32 * sx).round() as u32).max(1);
+        let nh = ((h0 as f32 * sy).round() as u32).max(1);
+        let buf = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle);
+        return (buf, ox, oy);
+    }
+
+    let fwd = |x: f32, y: f32| -> (f32, f32) {
+        let ux = (x - cx) * sx;
+        let uy = (y - cy) * sy;
+        let tx = ux + kx * uy;
+        let ty = ky * ux + uy;
+        (
+            tx * cos - ty * sin + cx * sx + ox,
+            tx * sin + ty * cos + cy * sy + oy,
+        )
+    };
+    let corners = [
+        fwd(0.0, 0.0),
+        fwd(w0 as f32, 0.0),
+        fwd(w0 as f32, h0 as f32),
+        fwd(0.0, h0 as f32),
+    ];
+    let min_x = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min);
+    let min_y = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min);
+    let max_x = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max);
+    let max_y = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
+    let bbox_w = (max_x - min_x).ceil().max(1.0) as u32;
+    let bbox_h = (max_y - min_y).ceil().max(1.0) as u32;
+
+    let mut out = ImageBuffer::from_pixel(bbox_w, bbox_h, Rgba([0, 0, 0, 0]));
+    out.enumerate_pixels_mut()
+        .par_bridge()
+        .for_each(|(x, y, px)| {
+            // Destination -> source (inverse affine complet), bilinéaire.
+            // Le buffer couvre [min_x, min_x+bbox_w) × [min_y, …].
+            let dx = x as f32 + min_x - cx * sx - ox;
+            let dy = y as f32 + min_y - cy * sy - oy;
+            let rx = dx * cos + dy * sin;
+            let ry = -dx * sin + dy * cos;
+            let vx = (m11 * rx - m01 * ry) / det;
+            let vy = (-m10 * rx + m00 * ry) / det;
+            let sx_src = cx + vx;
+            let sy_src = cy + vy;
+            if sx_src >= 0.0 && sy_src >= 0.0 && sx_src < w0 as f32 && sy_src < h0 as f32 {
+                let x0 = sx_src.floor() as u32;
+                let y0 = sy_src.floor() as u32;
+                let fx = sx_src - x0 as f32;
+                let fy = sy_src - y0 as f32;
+                let p00 = item.image.get_pixel(x0, y0);
+                let p10 = item.image.get_pixel((x0 + 1).min(w0 - 1), y0);
+                let p01 = item.image.get_pixel(x0, (y0 + 1).min(h0 - 1));
+                let p11 = item
+                    .image
+                    .get_pixel((x0 + 1).min(w0 - 1), (y0 + 1).min(h0 - 1));
+                for c in 0..4 {
+                    let v = (p00[c] as f32 * (1.0 - fx) * (1.0 - fy)
+                        + p10[c] as f32 * fx * (1.0 - fy)
+                        + p01[c] as f32 * (1.0 - fx) * fy
+                        + p11[c] as f32 * fx * fy)
+                        .round() as u8;
+                    px[c] = v;
+                }
+            }
+        });
+    (out, min_x, min_y)
 }
 
 /// Transforme le masque avec la même géométrie que l'image couleur.
@@ -430,12 +547,16 @@ pub fn extents_visit(
                     continue;
                 };
                 let (w0, h0) = (img.width() as f32, img.height() as f32);
-                let s = l.transform.scale.clamp(0.05, 8.0);
-                let (tw, th) = l.transform.transformed_extents(w0, h0);
-                let cx = l.transform.offset_x + w0 * s / 2.0;
-                let cy = l.transform.offset_y + h0 * s / 2.0;
-                half.0 = half.0.max((cx - doc_cx).abs() + tw / 2.0);
-                half.1 = half.1.max((cy - doc_cy).abs() + th / 2.0);
+                // Corners du calque transformé (scale clampé comme prepare_top)
+                let clamped = Transform2D {
+                    scale_x: l.transform.scale_x.clamp(0.05, 8.0),
+                    scale_y: l.transform.scale_y.clamp(0.05, 8.0),
+                    ..l.transform
+                };
+                for (qx, qy) in clamped.doc_corners(w0, h0) {
+                    half.0 = half.0.max((qx - doc_cx).abs());
+                    half.1 = half.1.max((qy - doc_cy).abs());
+                }
             }
         }
     }

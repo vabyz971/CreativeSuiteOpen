@@ -195,7 +195,6 @@ fn render_canvas_preview<'a>(
     new_doc_h: &'a str,
     welcome_error: Option<&'a str>,
 ) -> Element<'a, Message> {
-    let _ = selected_layer; // conservé pour futurs réglages contextuels
     let zoom = zoom_level as f32 / 100.0;
     let canvas_tool = match selected_tool {
         Tool::Hand => ui_kit::image_canvas::CanvasTool::Hand,
@@ -209,18 +208,16 @@ fn render_canvas_preview<'a>(
     // Calques canvas : texture d'APPARENCE + transform + opacité appliqués
     // AU DRAW (GPU) → slider d'opacité = zéro régénération de pixels
     let dragging = drag_layer.is_some();
-    let mut canvas_layers: Vec<ui_kit::image_canvas::CanvasLayer> = doc
+    let all_layers: Vec<ui_kit::image_canvas::CanvasLayer> = doc
         .iter_pixels()
         .into_iter()
         .filter(|l| l.visible && l.opacity > 0.01)
-        // En drag fallback : le calque déplacé est exclu du fond (il est
-        // dessiné par-dessus le fond pré-calculé, voir plus bas)
-        .filter(|l| !(dragging && drag_background.is_some() && Some(l.id) == drag_layer))
         // Handle issu du cache (identité stable → cache de textures GPU)
         .filter_map(|l| {
             let handle = preview_cache.preview(l.id)?.clone();
             let (w, h) = l.dimensions();
             Some(ui_kit::image_canvas::CanvasLayer {
+                id: Some(l.id),
                 handle,
                 width: w as f32,
                 height: h as f32,
@@ -228,10 +225,48 @@ fn render_canvas_preview<'a>(
                 offset_y: l.transform.offset_y,
                 opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
                 rotation_deg: l.transform.rotation_deg,
-                scale: l.transform.scale,
+                scale_x: l.transform.scale_x,
+                scale_y: l.transform.scale_y,
+                skew_x: l.transform.skew_x,
+                skew_y: l.transform.skew_y,
             })
         })
         .collect();
+    // Chemin de draw : en drag fallback, le calque déplacé est exclu du fond
+    // (il est dessiné par-dessus le fond pré-calculé, voir plus bas).
+    let mut canvas_layers = all_layers.clone();
+    if dragging
+        && drag_background.is_some()
+        && let Some(dl) = drag_layer
+    {
+        canvas_layers.retain(|c| c.id != Some(dl));
+    }
+    // Chemin de pick : TOUJOURS tous les calques (même le déplacé), pour que
+    // la sélection fonctionne aussi en fallback où `layers` = composite seul.
+    let hit_layers = all_layers.clone();
+    // Visualiseur de transformation : le calque sélectionné (overlay dessiné
+    // par-dessus les couches, indépendant du chemin de rendu).
+    let transform_target = selected_layer
+        .and_then(|id| doc.pixel_layer(id))
+        .filter(|l| l.visible)
+        .and_then(|l| {
+            let handle = preview_cache.preview(l.id)?.clone();
+            let (w, h) = l.dimensions();
+            Some(ui_kit::image_canvas::CanvasLayer {
+                id: Some(l.id),
+                handle,
+                width: w as f32,
+                height: h as f32,
+                offset_x: l.transform.offset_x,
+                offset_y: l.transform.offset_y,
+                opacity: 1.0,
+                rotation_deg: l.transform.rotation_deg,
+                scale_x: l.transform.scale_x,
+                scale_y: l.transform.scale_y,
+                skew_x: l.transform.skew_x,
+                skew_y: l.transform.skew_y,
+            })
+        });
 
     // Drag en fallback : fond pré-calculé (sans le calque déplacé) inséré
     // en bas de pile, puis le calque déplacé dessiné par-dessus à sa
@@ -248,6 +283,7 @@ fn render_canvas_preview<'a>(
         canvas_layers.insert(
             0,
             ui_kit::image_canvas::CanvasLayer {
+                id: None, // fond de drag : jamais sélectionnable
                 handle: bg,
                 width: bgsz.width,
                 height: bgsz.height,
@@ -255,7 +291,10 @@ fn render_canvas_preview<'a>(
                 offset_y: bg_off_y,
                 opacity: 1.0,
                 rotation_deg: 0.0,
-                scale: 1.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                skew_x: 0.0,
+                skew_y: 0.0,
             },
         );
     }
@@ -282,6 +321,7 @@ fn render_canvas_preview<'a>(
             (image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]), 1.0, 1.0)
         };
         canvas_layers.push(ui_kit::image_canvas::CanvasLayer {
+            id: Some(l.id),
             handle,
             width: w,
             height: h,
@@ -289,7 +329,10 @@ fn render_canvas_preview<'a>(
             offset_y: l.transform.offset_y,
             opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
             rotation_deg: l.transform.rotation_deg,
-            scale: l.transform.scale,
+            scale_x: l.transform.scale_x,
+            scale_y: l.transform.scale_y,
+            skew_x: l.transform.skew_x,
+            skew_y: l.transform.skew_y,
         });
     }
 
@@ -306,6 +349,7 @@ fn render_canvas_preview<'a>(
             .map(|d| ((d.width - sz.width) / 2.0, (d.height - sz.height) / 2.0))
             .unwrap_or((0.0, 0.0));
         let ls = vec![ui_kit::image_canvas::CanvasLayer {
+            id: None, // composite : jamais sélectionnable individuellement
             handle,
             width: sz.width,
             height: sz.height,
@@ -313,7 +357,10 @@ fn render_canvas_preview<'a>(
             offset_y: fb_off_y,
             opacity: 1.0, // opacité déjà appliquée dans le composite
             rotation_deg: 0.0,
-            scale: 1.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            skew_x: 0.0,
+            skew_y: 0.0,
         }];
         let can_paint = selected_layer
             .and_then(|id| doc.find(id))
@@ -326,6 +373,8 @@ fn render_canvas_preview<'a>(
             canvas_tool,
             canvas_selection,
             ls,
+            hit_layers,
+            transform_target,
             brush,
             can_paint,
             None,
@@ -348,6 +397,8 @@ fn render_canvas_preview<'a>(
             canvas_tool,
             canvas_selection,
             canvas_layers,
+            hit_layers,
+            transform_target,
             brush,
             can_paint,
             pending_preview,

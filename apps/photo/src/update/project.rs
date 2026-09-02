@@ -202,6 +202,7 @@ fn handle_new_project(app: &mut PhotoApp) -> Task<Message> {
     app.image_path = None;
     app.image_error = None;
     app.move_anchor = None;
+    app.transform_anchor = None;
     app.new_doc_w = "1920".to_string();
     app.new_doc_h = "1080".to_string();
     app.welcome_error = None;

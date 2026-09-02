@@ -60,6 +60,9 @@ pub struct PhotoApp {
     /// transform COMPLET au début du geste — sert à construire la commande
     /// SetTransform ancre→finale poussée au relâchement.
     pub move_anchor: Option<(Uuid, crate::layers::Transform2D)>,
+    /// Ancre du geste de transformation en cours (poignées Affinity).
+    /// `Some(anchor)` ⇔ un geste Resize/Rotate/Skew/Move est actif.
+    pub(crate) transform_anchor: Option<TransformAnchor>,
     /// Fond composite PRÉ-CALCULÉ au début du drag (sans le calque déplacé).
     /// Pendant le drag : zéro recomposite — on dessine ce fond + le calque
     /// par-dessus. Le vrai blend est recalculé au relâchement.
@@ -341,6 +344,7 @@ impl Default for PhotoApp {
             canvas_viewport: Size::new(800.0, 600.0),
             tools_visible: true,
             move_anchor: None,
+            transform_anchor: None,
             drag_background: None,
             drag_background_size: None,
             drag_layer_composite: None,
@@ -379,4 +383,17 @@ impl Default for PhotoApp {
             preview_cache: crate::ui_handles::PreviewCache::default(),
         }
     }
+}
+
+/// Ancre d'un geste de transformation en cours (poignées du visualiseur).
+/// Le workflow est ancre→curseur→fin : `base` capture le transform complet au
+/// début, `cursor_doc` la position document du press.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TransformAnchor {
+    pub layer_id: Uuid,
+    pub kind: ui_kit::image_canvas::TransformHandle,
+    /// Transform COMPLET au début du geste (pour la commande ancre→fin).
+    pub base: crate::layers::Transform2D,
+    /// Position curseur document au début du geste.
+    pub cursor_doc: (f32, f32),
 }

@@ -202,24 +202,53 @@ pub fn commit_stroke(
     use ::image::GenericImageView;
     let (lw, lh) = base.dimensions();
 
-    // Espace DOCUMENT → espace CALQUE (offset + échelle + rotation inversées
-    // autour du centre du calque) — identique au transform de draw.
-    let offset = (transform.offset_x, transform.offset_y);
-    let scale = transform.scale.clamp(0.05, 8.0);
-    let theta = -transform.rotation_deg.to_radians();
-    let (cos, sin) = (theta.cos(), theta.sin());
-    let cx = offset.0 + lw as f32 * scale / 2.0;
-    let cy = offset.1 + lh as f32 * scale / 2.0;
-    let pts: Vec<(f32, f32)> = pts_doc
-        .iter()
-        .map(|&(dx, dy)| {
-            let (rx, ry) = (
-                (dx - cx) * cos - (dy - cy) * sin,
-                (dx - cx) * sin + (dy - cy) * cos,
-            );
-            (rx / scale + lw as f32 / 2.0, ry / scale + lh as f32 / 2.0)
-        })
-        .collect();
+    // Espace DOCUMENT → espace CALQUE : inverse affine complet
+    // (échelle non uniforme + skew + rotation inversées autour du centre du
+    // calque) — identique au transform de draw et de prepare_top.
+    let ox = transform.offset_x;
+    let oy = transform.offset_y;
+    let sx = transform.scale_x.clamp(0.05, 8.0);
+    let sy = transform.scale_y.clamp(0.05, 8.0);
+    let kx = transform.skew_x.to_radians().tan();
+    let ky = transform.skew_y.to_radians().tan();
+    let rad = transform.rotation_deg.to_radians();
+    let (cos, sin) = (rad.cos(), rad.sin());
+    let (lw2, lh2) = (lw as f32 / 2.0, lh as f32 / 2.0);
+    // M = K*S = [[sx, kx*sy],[ky*sx, sy]]
+    let m00 = sx;
+    let m01 = kx * sy;
+    let m10 = ky * sx;
+    let m11 = sy;
+    let det = m00 * m11 - m01 * m10;
+    let pts: Vec<(f32, f32)> = if det.abs() < 1e-4 {
+        // Cisaillement dégénéré : repli sur l'ancien chemin uniforme.
+        let cx = ox + lw2 * sx;
+        let cy = oy + lh2 * sy;
+        pts_doc
+            .iter()
+            .map(|&(dx, dy)| {
+                let (rx, ry) = (
+                    (dx - cx) * cos - (dy - cy) * sin,
+                    (dx - cx) * sin + (dy - cy) * cos,
+                );
+                (rx / sx + lw2, ry / sy + lh2)
+            })
+            .collect()
+    } else {
+        pts_doc
+            .iter()
+            .map(|&(dx, dy)| {
+                // q - T où T = centre du rectangle scalé (offset + demi-extents)
+                let ux = dx - ox - lw2 * sx;
+                let uy = dy - oy - lh2 * sy;
+                let rx = ux * cos + uy * sin;
+                let ry = -ux * sin + uy * cos;
+                let plx = (m11 * rx - m01 * ry) / det;
+                let ply = (-m10 * rx + m00 * ry) / det;
+                (plx + lw2, ply + lh2)
+            })
+            .collect()
+    };
 
     let mut rgba = base.to_rgba8().into_raw();
     paint_stroke_rgba(&mut rgba, lw, lh, &pts, brush);

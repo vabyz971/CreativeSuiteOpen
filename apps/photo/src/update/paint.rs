@@ -189,6 +189,7 @@ pub fn handle_select_tool(app: &mut PhotoApp, tool: crate::message::Tool) -> Tas
     app.selected_tool = tool;
     app.canvas_selection = None;
     app.move_anchor = None;
+    app.transform_anchor = None;
     Task::none()
 }
 pub fn handle_toggle_tools(app: &mut PhotoApp) -> Task<Message> {

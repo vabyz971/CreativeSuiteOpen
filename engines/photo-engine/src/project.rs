@@ -245,7 +245,10 @@ fn sanitize_transform(t: Transform2D) -> Transform2D {
         offset_x: t.offset_x,
         offset_y: t.offset_y,
         rotation_deg: t.rotation_deg,
-        scale: t.scale.clamp(0.05, 8.0),
+        scale_x: t.scale_x.clamp(0.05, 8.0),
+        scale_y: t.scale_y.clamp(0.05, 8.0),
+        skew_x: t.skew_x.clamp(-80.0, 80.0),
+        skew_y: t.skew_y.clamp(-80.0, 80.0),
     }
 }
 

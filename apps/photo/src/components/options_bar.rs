@@ -232,14 +232,16 @@ fn move_section<'a>(
         }
     };
 
-    // Slider d'échelle compact (réutilise SetLayerScale comme le panneau
-    // Propriétés — une seule source de vérité pour le réglage)
+    // Slider d'échelle compact (axe X, comme l'indique la valeur affichée).
+    // N'écrit QUE scale_x : une échelle non uniforme (coin du visualiseur,
+    // réglages X/Y du panneau Propriétés) n'est jamais écrasée silencieusement.
     let scale_slider: Element<'a, Message> = match selected_scale_percent {
         Some(pct) => row![
             field_label("Échelle"),
             iced::widget::slider(5.0..=800.0, pct.clamp(5.0, 800.0), move |v| {
-                Message::SetLayerScale {
+                Message::SetLayerScaleAxis {
                     id,
+                    axis: crate::OffsetAxis::X,
                     scale: v / 100.0,
                 }
             },)

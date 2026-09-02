@@ -20,3 +20,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 datatypes = { path = "../../core/datatypes" }
 suite-core = { path = "../../core/core", package = "suite-core" }
+uuid.workspace = true

@@ -121,13 +121,47 @@ pub fn render<'a>(
                     }
                 }))
                 .push(param_slider(
-                    "Échelle (%)",
-                    l.transform.scale * 100.0,
+                    "Échelle X (%)",
+                    l.transform.scale_x * 100.0,
                     5.0..=800.0,
                     1.0,
-                    move |v| Message::SetLayerScale {
+                    move |v| Message::SetLayerScaleAxis {
                         id,
+                        axis: crate::OffsetAxis::X,
                         scale: v / 100.0,
+                    },
+                ))
+                .push(param_slider(
+                    "Échelle Y (%)",
+                    l.transform.scale_y * 100.0,
+                    5.0..=800.0,
+                    1.0,
+                    move |v| Message::SetLayerScaleAxis {
+                        id,
+                        axis: crate::OffsetAxis::Y,
+                        scale: v / 100.0,
+                    },
+                ))
+                .push(param_slider(
+                    "Inclinaison X (°)",
+                    l.transform.skew_x,
+                    -80.0..=80.0,
+                    1.0,
+                    move |v| Message::SetLayerSkew {
+                        id,
+                        axis: crate::OffsetAxis::X,
+                        degrees: v,
+                    },
+                ))
+                .push(param_slider(
+                    "Inclinaison Y (°)",
+                    l.transform.skew_y,
+                    -80.0..=80.0,
+                    1.0,
+                    move |v| Message::SetLayerSkew {
+                        id,
+                        axis: crate::OffsetAxis::Y,
+                        degrees: v,
                     },
                 ))
                 .push(Space::new().height(Length::Fixed(10.0)))

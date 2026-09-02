@@ -146,10 +146,17 @@ pub enum Message {
         id: Uuid,
         delta: f32,
     },
-    /// Échelle uniforme du calque (1.0 = 100 %)
-    SetLayerScale {
+    /// Échelle non uniforme (un axe)
+    SetLayerScaleAxis {
         id: Uuid,
+        axis: OffsetAxis,
         scale: f32,
+    },
+    /// Inclinaison (degrés sur un axe)
+    SetLayerSkew {
+        id: Uuid,
+        axis: OffsetAxis,
+        degrees: f32,
     },
     /// Réinitialise rotation + échelle du calque
     ResetLayerTransform(Uuid),

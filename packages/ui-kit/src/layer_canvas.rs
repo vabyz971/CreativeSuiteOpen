@@ -45,7 +45,7 @@ use iced::widget::Shader;
 use iced::widget::shader;
 use iced::{Element, Length, Point, Rectangle, Size, Vector};
 
-use crate::image_canvas::{CanvasTool, ImageCanvasEvent};
+use crate::image_canvas::{CanvasTool, ImageCanvasEvent, TransformHandle};
 
 // ---------------------------------------------------------------------------
 // Displayed model
@@ -80,6 +80,20 @@ pub struct LayerCanvas<Message> {
 }
 
 impl<Message> LayerCanvas<Message> {
+    /// Écran (bounds) → coordonnées document (origine coin haut-gauche),
+    /// même convention que `ImageCanvas::screen_to_doc`.
+    fn screen_to_doc(&self, p: Point, bounds: Rectangle) -> (f32, f32) {
+        let center = Point::new(
+            bounds.width / 2.0 + self.pan.x,
+            bounds.height / 2.0 + self.pan.y,
+        );
+        let (hw, hh) = self.doc_size.unwrap_or((0.0, 0.0));
+        (
+            (p.x - center.x) / self.zoom + hw / 2.0,
+            (p.y - center.y) / self.zoom + hh / 2.0,
+        )
+    }
+
     pub fn new(
         doc_size: Option<(f32, f32)>,
         on_event: std::rc::Rc<dyn Fn(ImageCanvasEvent) -> Message>,
@@ -228,7 +242,7 @@ where
             }
             if state.dragging.take().is_some() && self.tool == CanvasTool::Move {
                 return Some(
-                    shader::Action::publish((self.on_event)(ImageCanvasEvent::MoveLayerEnd))
+                    shader::Action::publish((self.on_event)(ImageCanvasEvent::TransformEnd))
                         .and_capture(),
                 );
             }
@@ -246,8 +260,14 @@ where
                 CanvasTool::Move => {
                     state.dragging = Some((cursor_pos, self.pan));
                     Some(
-                        shader::Action::publish((self.on_event)(ImageCanvasEvent::MoveLayerStart))
-                            .and_capture(),
+                        shader::Action::publish((self.on_event)(
+                            ImageCanvasEvent::TransformStart {
+                                id: None,
+                                kind: TransformHandle::Move,
+                                doc: self.screen_to_doc(cursor_pos, bounds),
+                            },
+                        ))
+                        .and_capture(),
                     )
                 }
                 CanvasTool::Zoom | CanvasTool::Select => {
@@ -268,12 +288,11 @@ where
                             )),
                         )));
                     } else if self.tool == CanvasTool::Move {
-                        // Raw screen delta; image pixel conversion happens
-                        // on app side with current zoom.
+                        // Curseur en coordonnées doc (pan/zoom pris en compte)
                         return Some(shader::Action::publish((self.on_event)(
-                            ImageCanvasEvent::MoveLayer {
-                                dx: cursor_pos.x - start.x,
-                                dy: cursor_pos.y - start.y,
+                            ImageCanvasEvent::TransformCursor {
+                                doc: self.screen_to_doc(cursor_pos, bounds),
+                                uniform: state.modifiers.control(),
                             },
                         )));
                     }

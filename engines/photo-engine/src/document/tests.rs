@@ -3,6 +3,7 @@
 //! arrondis f32→u8). Toute régression de blend/transform est visible ici.
 //! Portés tels quels sur le modèle LayerTree, plus couverture arbre.
 
+use super::compositing::{DrawItem, needs_fallback_in, prepare_top};
 use super::*;
 use crate::history::Snapshot;
 use datatypes::ParamValue;
@@ -818,4 +819,123 @@ fn multi_masques_fusionnent_multiplicativement() {
         "2 masques atténuent plus qu'1 (multiplicatif)"
     );
     assert!(r_double > 10, "reste partiellement visible");
+}
+
+#[test]
+fn transform_legacy_scale_uniforme_deserialise_en_deux_axes() {
+    // Projet v2/v3 : champ `scale` uniforme — doit charger sur scale_x & scale_y
+    let json = r#"{"offset_x":5.0,"offset_y":3.0,"rotation_deg":0.0,"scale":2.0}"#;
+    let t: Transform2D = serde_json::from_str(json).expect("deserialisation legacy");
+    assert_eq!(t.offset_x, 5.0);
+    assert_eq!(t.offset_y, 3.0);
+    assert_eq!(t.scale_x, 2.0);
+    assert_eq!(t.scale_y, 2.0);
+    assert!(!t.has_skew());
+
+    // Round-trip courant : scale_x/scale_y distincts + skew préservés
+    let current = Transform2D {
+        scale_x: 1.5,
+        scale_y: 0.8,
+        skew_x: 10.0,
+        offset_x: -2.0,
+        ..Transform2D::default()
+    };
+    let round: Transform2D =
+        serde_json::from_str(&serde_json::to_string(&current).unwrap()).unwrap();
+    assert_eq!(round.scale_x, 1.5);
+    assert_eq!(round.scale_y, 0.8);
+    assert_eq!(round.skew_x, 10.0);
+    assert!(round.has_skew());
+}
+
+#[test]
+fn echelle_non_uniforme_agit_sur_les_axes_separement() {
+    // 2×2 rouge, scale_x 2 (→w=4), scale_y 0.5 (→h=1), sans rotation : le
+    // composite s'étire horizontalement, pas verticalement.
+    let base = solid(4, 4, [0, 0, 255, 255]);
+    let top = solid(2, 2, [255, 0, 0, 255]);
+    let mut doc = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            pixel_node(&top, 100.0, BlendMode::Normal, 0.0, 0.0),
+        ],
+        4,
+        4,
+    );
+    {
+        let l = doc.pixel_layer_mut(doc.root[1].id()).unwrap();
+        l.transform.scale_x = 2.0;
+        l.transform.scale_y = 0.5;
+    }
+    let out = doc.composite().unwrap();
+    assert_eq!((out.width(), out.height()), (4, 4));
+    assert_close(px(&out, 3, 0), [255, 0, 0, 255]); // haut-droite : rouge étiré
+    assert_close(px(&out, 3, 3), [0, 0, 255, 255]); // bas : bleu intact
+}
+
+#[test]
+fn skew_cisaille_la_bbox_et_ne_change_pas_l_aire() {
+    // 2×2 rouge, skew_x=45° (kx=1) : le carré devient un parallélogramme
+    // englobé dans une bbox 4×2 aux offsets (-1, 0). L'aire couverte reste 4.
+    let img = solid(2, 2, [255, 0, 0, 255]);
+    let item = DrawItem::new(
+        &img,
+        Transform2D {
+            skew_x: 45.0,
+            ..Transform2D::default()
+        },
+    );
+    let (buf, ox, oy) = prepare_top(&item);
+    assert_eq!((buf.width(), buf.height()), (4, 2));
+    assert!((ox - -1.0).abs() < 0.01, "offset x {}", ox);
+    assert!((oy - 0.0).abs() < 0.01, "offset y {}", oy);
+    let red = buf.pixels().filter(|p| p[0] == 255 && p[3] == 255).count();
+    assert!(
+        red >= 3,
+        "parallélogramme couvert (aire conservée), red={red}"
+    );
+    assert!(red <= 8, "pas de débordement, red={red}");
+    // Les coins de la bbox en dehors du parallélogramme restent transparents
+    assert!(buf.get_pixel(3, 0)[3] == 0, "coin haut-droite");
+    assert!(buf.get_pixel(0, 1)[3] == 0, "coin bas-gauche");
+}
+
+#[test]
+fn skew_force_le_chemin_cpu_de_fallback() {
+    let img = solid(1, 1, [1, 1, 1, 255]);
+    let mut l = PixelLayer::new("incline", arc(&img));
+    l.transform.skew_y = 15.0;
+    assert!(
+        needs_fallback_in(&[LayerNode::Pixel(l)]),
+        "skew ⇒ fallback CPU"
+    );
+    let normal = PixelLayer::new("droit", arc(&img));
+    assert!(
+        !needs_fallback_in(&[LayerNode::Pixel(normal)]),
+        "sans skew : chemin rapide conservé"
+    );
+}
+
+#[test]
+fn coins_transformes_cadrent_les_extents() {
+    // Calque 2×2 tourné de 45° : la bbox des 4 coins englobe le carré pivoté.
+    let img = solid(2, 2, [1, 1, 1, 255]);
+    let mut l = PixelLayer::new("tourne", arc(&img));
+    l.transform.rotation_deg = 45.0;
+    let (tw, th) = {
+        let clamped = Transform2D {
+            scale_x: l.transform.scale_x.clamp(0.05, 8.0),
+            scale_y: l.transform.scale_y.clamp(0.05, 8.0),
+            ..l.transform
+        };
+        let corners = clamped.doc_corners(2.0, 2.0);
+        let min_x = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min);
+        let min_y = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min);
+        let max_x = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max);
+        let max_y = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
+        (max_x - min_x, max_y - min_y)
+    };
+    // bbox d'un carré 2×2 pivoté 45° = 2√2 ≈ 2.83
+    assert!((tw - 2.0_f32.sqrt() * 2.0).abs() < 0.01, "tw={tw}");
+    assert!((th - 2.0_f32.sqrt() * 2.0).abs() < 0.01, "th={th}");
 }
