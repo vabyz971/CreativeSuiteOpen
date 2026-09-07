@@ -1,3 +1,6 @@
+---
+covers: []
+---
 # Contributing to CreativeSuiteOpen
 
 Thank you for your interest in improving CreativeSuiteOpen! This document covers everything you need to contribute productively: development setup, the architecture rules that keep the codebase healthy, code style, and the pull-request checklist.

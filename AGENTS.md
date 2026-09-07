@@ -1,3 +1,6 @@
+---
+covers: []
+---
 # AGENTS.md
 
 Suite créative Rust : workspace Cargo, apps **Iced 0.14 + wgpu**, licence GPL-3.0. Docs : `README.md` (architecture, roadmap), `ARCHITECTURE.md` (règles de dépendances), `DESIGN.md` (tokens thème).

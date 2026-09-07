@@ -1,3 +1,6 @@
+---
+covers: []
+---
 # Architecture de CreativeSuiteOpen
 
 ## Vue d'ensemble

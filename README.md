@@ -1,3 +1,6 @@
+---
+covers: []
+---
 # CreativeSuiteOpen
 
 **A professional, open-source creative suite — Linux-first, available everywhere.**
