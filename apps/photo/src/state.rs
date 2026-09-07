@@ -23,6 +23,43 @@ use uuid::Uuid;
 use crate::components;
 use crate::message::{Message, PanelType, PendingPaint, Tool};
 
+/// Registre des traitements en arrière-plan.
+///
+/// Le spinner de la barre haute (`shell::task_indicator`) tourne tant que
+/// ce registre n'est pas vide et le menu déroulant liste chaque libellé.
+/// Les identifiants stables évitent les fuites (« créer un calque vide… »
+/// resté affiché pour toujours) et les effacements par une tâche concurrente.
+#[derive(Default)]
+pub struct BackgroundTasks {
+    next_id: u64,
+    items: Vec<(u64, String)>,
+}
+
+impl BackgroundTasks {
+    /// Pousse le libellé d'une nouvelle tâche et retourne son identifiant —
+    /// à passer à [`Self::finish`] quand la tâche se termine, succès ou échec.
+    pub fn start(&mut self, label: impl Into<String>) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        self.items.push((id, label.into()));
+        id
+    }
+
+    /// Retire la tâche `id` (non-op si déjà retirée).
+    pub fn finish(&mut self, id: u64) {
+        self.items.retain(|(i, _)| *i != id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Libellés des tâches en cours, pour l'affichage du menu.
+    pub fn labels(&self) -> impl Iterator<Item = &str> {
+        self.items.iter().map(|(_, l)| l.as_str())
+    }
+}
+
 pub struct PhotoApp {
     pub zoom_level: u32,
     pub panes: pane_grid::State<PanelType>,
@@ -49,6 +86,8 @@ pub struct PhotoApp {
     pub image_error: Option<String>,
     // Canvas interaction (outil Main + pan/zoom)
     pub selected_tool: Tool,
+    /// Outil mémorisé avant la pipette : revenu automatique après l'échantillonnage.
+    pub previous_tool: Option<Tool>,
     pub canvas_pan: Vector,
     pub color_profile: String,
     pub canvas_selection: Option<Rectangle>,
@@ -76,8 +115,12 @@ pub struct PhotoApp {
     pub drag_layer_composite_size: Option<Size>,
     /// Verrou anti-doublon pour [`Self::drag_layer_composite_task`].
     pub(crate) drag_layer_composite_in_flight: bool,
-    /// Traitements en arrière-plan (libellés affichés dans le menu du spinner)
-    pub background_tasks: Vec<String>,
+    /// Traitements en arrière-plan (libellés affichés dans le menu du spinner).
+    /// Registre par identifiant stable : chaque tâche asynchrone pousse son
+    /// libellé à la création (`start`) et le retire à SON aboutissement ou à
+    /// SON échec (`finish`) — aucun libellé ne fuit, quelle que soit la
+    /// concurrence (un `.clear()` global effaçait les tâches concurrentes).
+    pub background_tasks: BackgroundTasks,
     /// Menu des tâches ouvert (clic sur le spinner)
     pub task_menu_open: bool,
     /// Angle du spinner d'activité (animé par TickFrame)
@@ -216,9 +259,14 @@ impl PhotoApp {
         let generation = self.fallback_generation;
         self.fallback_in_flight = true;
         self.fallback_dirty = false;
+        let task_id = self.background_tasks.start("Composite de l'arbre...");
 
         let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
         doc_copy.restore_snapshot(self.doc.snapshot());
+        // Réchauffe le cache d'apparences depuis le document vivant : la
+        // composite de fond HIT les calques inchangés au lieu de re-exécuter
+        // les chaînes de rendu (déjà calculées pour l'affichage).
+        doc_copy.warm_cache_from(&self.doc);
 
         Some(Task::perform(
             async move {
@@ -229,7 +277,11 @@ impl PhotoApp {
                 .await
                 .map_err(|e| format!("Tâche annulée : {e}"))?
             },
-            move |result| Message::FallbackComputed { generation, result },
+            move |result| Message::FallbackComputed {
+                task_id,
+                generation,
+                result,
+            },
         ))
     }
 
@@ -243,9 +295,11 @@ impl PhotoApp {
             return None;
         }
         self.drag_bg_in_flight = Some(exclude_id);
+        let task_id = self.background_tasks.start("Fond de glissement...");
 
         let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
         doc_copy.restore_snapshot(self.doc.snapshot());
+        doc_copy.warm_cache_from(&self.doc);
 
         Some(Task::perform(
             async move {
@@ -258,6 +312,7 @@ impl PhotoApp {
                 .unwrap_or(None)
             },
             move |result| Message::DragBackgroundComputed {
+                task_id,
                 layer_id: exclude_id,
                 result,
             },
@@ -275,9 +330,11 @@ impl PhotoApp {
             return None;
         }
         self.drag_layer_composite_in_flight = true;
+        let task_id = self.background_tasks.start("Rendu du calque déplacé...");
 
         let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
         doc_copy.restore_snapshot(self.doc.snapshot());
+        doc_copy.warm_cache_from(&self.doc);
 
         Some(Task::perform(
             async move {
@@ -288,6 +345,10 @@ impl PhotoApp {
                     // standard de compositing (prepare_top + combine_masks +
                     // blend_into sur fond transparent).
                     let mut tmp = photo_engine::Document::new(doc_copy.width, doc_copy.height);
+                    // Le cache de doc_copy est chaud (réchauffé depuis le doc
+                    // vivant) : on le partage avec tmp pour ne pas re-rendre
+                    // l'apparence du calque déplacé.
+                    tmp.warm_cache_from(&doc_copy);
                     if let Some(node) = doc_copy.find(layer_id).cloned() {
                         tmp.root.push(node);
                         tmp.composite_preview()
@@ -299,7 +360,11 @@ impl PhotoApp {
                 .await
                 .unwrap_or(None)
             },
-            move |result| Message::DragLayerCompositeComputed { layer_id, result },
+            move |result| Message::DragLayerCompositeComputed {
+                task_id,
+                layer_id,
+                result,
+            },
         ))
     }
 }
@@ -338,6 +403,7 @@ impl Default for PhotoApp {
             image_path: None,
             image_error: None,
             selected_tool: Tool::Hand,
+            previous_tool: None,
             canvas_pan: Vector::new(0.0, 0.0),
             color_profile: "sRGB IEC61966-2.1".into(),
             canvas_selection: None,
@@ -350,7 +416,7 @@ impl Default for PhotoApp {
             drag_layer_composite: None,
             drag_layer_composite_size: None,
             drag_layer_composite_in_flight: false,
-            background_tasks: Vec::new(),
+            background_tasks: BackgroundTasks::default(),
             task_menu_open: false,
             spinner_angle: 0.0,
             resolver: preferences::KeybindingResolver::from_bindings(

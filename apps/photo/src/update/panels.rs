@@ -159,3 +159,20 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         _ => None,
     }
 }
+
+/// Pré-dispatch sans clonage — voir `mod.rs`.
+pub fn handles(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::ToggleTaskMenu
+            | Message::TogglePanel(_)
+            | Message::OpenPreferences
+            | Message::PreferencesMsg(_)
+            | Message::WindowOpened(_)
+            | Message::WindowClosed(_)
+            | Message::PaneResized(_)
+            | Message::PaneDragged(_)
+            | Message::PaneClicked(_)
+            | Message::ClosePane(_)
+    )
+}

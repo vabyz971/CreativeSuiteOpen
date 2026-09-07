@@ -17,6 +17,7 @@
 //! Layer tree message handlers — extracted from update/mod.rs.
 
 use iced::Task;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::layers::{LayerNode, PixelLayer, Transform2D};
@@ -48,8 +49,7 @@ fn rename_duplicate_suffix(doc: &mut photo_engine::Document, new_id: Uuid) {
 
 fn handle_add_empty(app: &mut PhotoApp) -> Task<Message> {
     let (w, h) = app.doc_dims().unwrap_or((800, 600));
-    app.background_tasks
-        .push("Création d'un calque vide...".to_string());
+    let task_id = app.background_tasks.start("Création d'un calque vide...");
 
     Task::perform(
         async move {
@@ -59,15 +59,15 @@ fn handle_add_empty(app: &mut PhotoApp) -> Task<Message> {
                     h,
                     image::Rgba([0, 0, 0, 0]),
                 ));
-                let layer = PixelLayer::new("Calque vide", std::sync::Arc::new(img));
+                let layer = PixelLayer::new("Calque vide", Arc::new(img));
                 crate::message::DecodedLayer(layer)
             })
             .await
             .map_err(|e| format!("Tâche annulée : {e}"))
         },
-        |res| match res {
-            Ok(dl) => Message::ImageDecoded(Ok(dl)),
-            Err(e) => Message::ImageDecoded(Err(e)),
+        move |res| Message::ImageDecoded {
+            task_id,
+            result: res,
         },
     )
 }
@@ -80,23 +80,24 @@ fn handle_add_solid(app: &mut PhotoApp, color: iced::Color) -> Task<Message> {
         (color.b * 255.0) as u8,
         (color.a * 255.0) as u8,
     ]);
-    app.background_tasks
-        .push("Création d'un calque de couleur...".to_string());
+    let task_id = app
+        .background_tasks
+        .start("Création d'un calque de couleur...");
 
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
                 let img =
                     image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(w, h, rgba));
-                let layer = PixelLayer::new("Couleur uni", std::sync::Arc::new(img));
+                let layer = PixelLayer::new("Couleur uni", Arc::new(img));
                 crate::message::DecodedLayer(layer)
             })
             .await
             .map_err(|e| format!("Tâche annulée : {e}"))
         },
-        |res| match res {
-            Ok(dl) => Message::ImageDecoded(Ok(dl)),
-            Err(e) => Message::ImageDecoded(Err(e)),
+        move |res| Message::ImageDecoded {
+            task_id,
+            result: res,
         },
     )
 }
@@ -252,72 +253,52 @@ pub fn handle_flip(app: &mut PhotoApp, id: Uuid, horizontal: bool) -> Task<Messa
         } else {
             crate::message::DestructiveOp::FlipVertical
         };
-        // Clone des buffers nécessaires : le Document n'est pas Sync, on
-        // ne peut pas l'expédier au worker. Les calques sources et masques
-        // sont déjà des Arc<DynamicImage>, le clone est peu coûteux.
-        let (source_rgba, w, h, masks_rgba, mask_dims) = match app.doc.pixel_layer(tid) {
+        // On ne clone QUE les Arc (bon marché, zéro copie pixels) : le
+        // déréférencement + fliph/flipv du buffer complet se font dans le
+        // worker. Le Document n'est pas Sync, on ne peut pas l'expédier.
+        let (source, masks) = match app.doc.pixel_layer(tid) {
             Some(l) => {
-                let s = (*l.source_image).clone();
-                let (w, h) = (s.width(), s.height());
-                let rgba = s.to_rgba8().into_raw();
-                let mut masks_rgba = Vec::with_capacity(l.masks.len());
-                let mut mask_dims = Vec::with_capacity(l.masks.len());
-                for m in &l.masks {
-                    let img = (*m.image).clone();
-                    let (mw, mh) = (img.width(), img.height());
-                    masks_rgba.push(img.into_raw());
-                    mask_dims.push((mw, mh));
-                }
-                (rgba, w, h, masks_rgba, mask_dims)
+                let source = Arc::clone(&l.source_image);
+                let masks: Vec<Arc<image::RgbaImage>> =
+                    l.masks.iter().map(|m| Arc::clone(&m.image)).collect();
+                (source, masks)
             }
             None => return Task::none(),
         };
-        app.background_tasks.push("Miroir du calque...".to_string());
+        let task_id = app.background_tasks.start("Miroir du calque...");
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    let source = image::DynamicImage::ImageRgba8(
-                        image::RgbaImage::from_raw(w, h, source_rgba)
-                            .expect("dimensions source conservées"),
-                    );
-                    let source = if horizontal {
-                        source.fliph().to_owned()
+                    let mut flipped = source.to_rgba8();
+                    if horizontal {
+                        image::imageops::flip_horizontal_in_place(&mut flipped);
                     } else {
-                        source.flipv().to_owned()
-                    };
-                    let mut masks = Vec::with_capacity(masks_rgba.len());
-                    for (rgba, (mw, mh)) in masks_rgba.into_iter().zip(mask_dims) {
-                        let m = image::DynamicImage::ImageRgba8(
-                            image::RgbaImage::from_raw(mw, mh, rgba)
-                                .expect("dimensions masque conservées"),
-                        );
-                        let m = if horizontal {
-                            m.fliph().to_owned()
+                        image::imageops::flip_vertical_in_place(&mut flipped);
+                    }
+                    let mut masks_rgba = Vec::with_capacity(masks.len());
+                    for m in &masks {
+                        let mut copy = (**m).clone();
+                        if horizontal {
+                            image::imageops::flip_horizontal_in_place(&mut copy);
                         } else {
-                            m.flipv().to_owned()
-                        };
-                        masks.push(std::sync::Arc::new(m));
+                            image::imageops::flip_vertical_in_place(&mut copy);
+                        }
+                        masks_rgba.push(copy);
                     }
                     Ok(crate::message::DestructiveResult {
-                        source: std::sync::Arc::new(source),
-                        masks,
+                        source: flipped,
+                        masks: masks_rgba,
                         offset_delta: (0.0, 0.0),
                     })
                 })
                 .await
                 .map_err(|e| format!("Tâche annulée : {e}"))?
             },
-            move |res| match res {
-                Ok(r) => Message::DestructiveOpComputed {
-                    layer_id: tid,
-                    op,
-                    result: Ok(r),
-                },
-                Err(e) => Message::DestructiveOpComputed {
-                    layer_id: tid,
-                    op,
-                    result: Err(e),
-                },
+            move |res| Message::DestructiveOpComputed {
+                task_id,
+                layer_id: tid,
+                op,
+                result: res,
             },
         )
     } else {
@@ -477,52 +458,39 @@ pub fn handle_crop(app: &mut PhotoApp) -> Task<Message> {
         let dx = cx as f32;
         let dy = cy as f32;
 
-        let source_rgba = layer.source_image.to_rgba8().into_raw();
-        let (w, h) = (iw as u32, ih as u32);
-        let mut masks_rgba = Vec::with_capacity(layer.masks.len());
-        let mut mask_dims = Vec::with_capacity(layer.masks.len());
-        for m in &layer.masks {
-            let img = (*m.image).clone();
-            let (mw, mh) = (img.width(), img.height());
-            masks_rgba.push(img.into_raw());
-            mask_dims.push((mw, mh));
-        }
-        app.background_tasks
-            .push("Rognage du calque...".to_string());
+        // Ne capturer que les Arc (rendus) : to_rgba8 et crop se font dans
+        // le worker pour ne pas geler le thread UI.
+        let source = Arc::clone(&layer.source_image);
+        let masks: Vec<Arc<image::RgbaImage>> =
+            layer.masks.iter().map(|m| Arc::clone(&m.image)).collect();
+        let task_id = app.background_tasks.start("Rognage du calque...");
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    let buf = image::RgbaImage::from_raw(w, h, source_rgba)
-                        .expect("dimensions source conservées");
+                    let buf = source.to_rgba8();
                     let cropped =
                         image::imageops::crop_imm(&buf, cx_u, cy_u, cw_u, ch_u).to_image();
-                    let mut masks = Vec::with_capacity(masks_rgba.len());
-                    for (rgba, (mw, mh)) in masks_rgba.into_iter().zip(mask_dims) {
-                        let m = image::RgbaImage::from_raw(mw, mh, rgba)
-                            .expect("dimensions masque conservées");
-                        let cm = image::imageops::crop_imm(&m, cx_u, cy_u, cw_u, ch_u).to_image();
-                        masks.push(std::sync::Arc::new(image::DynamicImage::ImageRgba8(cm)));
+                    let mut masks_rgba = Vec::with_capacity(masks.len());
+                    for m in &masks {
+                        let copy = (**m).clone();
+                        let cm =
+                            image::imageops::crop_imm(&copy, cx_u, cy_u, cw_u, ch_u).to_image();
+                        masks_rgba.push(cm);
                     }
                     Ok(crate::message::DestructiveResult {
-                        source: std::sync::Arc::new(image::DynamicImage::ImageRgba8(cropped)),
-                        masks,
+                        source: cropped,
+                        masks: masks_rgba,
                         offset_delta: (dx, dy),
                     })
                 })
                 .await
                 .map_err(|e| format!("Tâche annulée : {e}"))?
             },
-            move |res| match res {
-                Ok(r) => Message::DestructiveOpComputed {
-                    layer_id: tid,
-                    op: crate::message::DestructiveOp::Crop,
-                    result: Ok(r),
-                },
-                Err(e) => Message::DestructiveOpComputed {
-                    layer_id: tid,
-                    op: crate::message::DestructiveOp::Crop,
-                    result: Err(e),
-                },
+            move |res| Message::DestructiveOpComputed {
+                task_id,
+                layer_id: tid,
+                op: crate::message::DestructiveOp::Crop,
+                result: res,
             },
         )
     } else {
@@ -537,24 +505,27 @@ pub fn handle_set_dragged(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
 
 pub fn handle_destructive_op_computed(
     app: &mut PhotoApp,
+    task_id: u64,
     layer_id: Uuid,
     _op: crate::message::DestructiveOp,
     result: Result<crate::message::DestructiveResult, String>,
 ) -> Task<Message> {
-    app.background_tasks
-        .retain(|t| !t.starts_with("Miroir") && !t.starts_with("Rognage"));
+    app.background_tasks.finish(task_id);
     match result {
         Ok(r) => {
             let pre = app.snapshot();
-            // Source : remplace via l'API moteur (cache-friendly).
-            if app.doc.set_source_image(layer_id, (*r.source).clone()) {
+            // Source : remplace via l'API moteur (cache-friendly). Le buffer
+            // est déjà un RgbaImage PROPRE — wrap en DynamicImage (zéro copie).
+            if app
+                .doc
+                .set_source_image(layer_id, image::DynamicImage::ImageRgba8(r.source))
+            {
                 // Masques : remplace un par un (le moteur n'a pas d'API
                 // batch, mais l'opération est O(N_masks) avec N petit).
                 if let Some(LayerNode::Pixel(layer)) = app.doc.find_mut(layer_id) {
-                    for (i, new_mask) in r.masks.iter().enumerate() {
+                    for (i, new_mask) in r.masks.into_iter().enumerate() {
                         if let Some(m) = layer.masks.get_mut(i) {
-                            let rgba_buf = new_mask.to_rgba8();
-                            m.image = std::sync::Arc::new(rgba_buf);
+                            m.image = Arc::new(new_mask);
                             m.touch();
                         }
                     }
@@ -784,10 +755,13 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
             Some(handle_add_solid(app, c))
         }
         Message::DestructiveOpComputed {
+            task_id,
             layer_id,
             op,
             result,
-        } => Some(handle_destructive_op_computed(app, layer_id, op, result)),
+        } => Some(handle_destructive_op_computed(
+            app, task_id, layer_id, op, result,
+        )),
         Message::SetDraggedLayer(id) => Some(handle_set_dragged(app, id)),
         Message::DropLayerOn(id) => Some(handle_drop_on(app, id)),
         Message::ReorderLayer {
@@ -821,4 +795,43 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         } => Some(handle_toggle_filter_enabled(app, layer_id, filter_id)),
         _ => None,
     }
+}
+
+/// Pré-dispatch sans clonage : ne regarde QUE le discriminant du message
+/// (utilisé dans `mod.rs` pour router le message par déplacement).
+pub fn handles(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::SelectLayer(_)
+            | Message::ToggleLayerVisible(_)
+            | Message::SetLayerOpacity { .. }
+            | Message::SetLayerBlend { .. }
+            | Message::RenameLayer { .. }
+            | Message::SetLayerOffset { .. }
+            | Message::SetLayerRotation { .. }
+            | Message::RotateLayer90 { .. }
+            | Message::FlipLayer { .. }
+            | Message::RotateLayer { .. }
+            | Message::SetLayerScaleAxis { .. }
+            | Message::SetLayerSkew { .. }
+            | Message::ResetLayerTransform(_)
+            | Message::CropLayerToSelection
+            | Message::AddEmptyLayer
+            | Message::AddSolidColorLayer
+            | Message::DestructiveOpComputed { .. }
+            | Message::SetDraggedLayer(_)
+            | Message::DropLayerOn(_)
+            | Message::ReorderLayer { .. }
+            | Message::DuplicateLayer(_)
+            | Message::DeleteLayer(_)
+            | Message::MoveLayerUp(_)
+            | Message::MoveLayerDown(_)
+            | Message::GroupLayers(_)
+            | Message::UngroupLayers(_)
+            | Message::ToggleGroupCollapsed(_)
+            | Message::AddLiveFilter { .. }
+            | Message::RemoveLiveFilter { .. }
+            | Message::SetFilterParam { .. }
+            | Message::ToggleFilterEnabled { .. }
+    )
 }

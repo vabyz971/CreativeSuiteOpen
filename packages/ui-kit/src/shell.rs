@@ -36,7 +36,7 @@ use iced_aw::DropDown;
 pub fn task_indicator<'a, Message>(
     spinning: bool,
     angle: f32,
-    tasks: &'a [String],
+    tasks: impl IntoIterator<Item = &'a str>,
     open: bool,
     on_toggle: Message,
     on_dismiss: Message,
@@ -44,6 +44,8 @@ pub fn task_indicator<'a, Message>(
 where
     Message: 'a + Clone + 'static,
 {
+    let labels: Vec<&str> = tasks.into_iter().collect();
+
     let spinner_btn = button(center(crate::spinner::circle(
         if spinning { angle } else { 0.0 },
         20.0,
@@ -55,7 +57,7 @@ where
     .on_press(on_toggle);
 
     let task_menu = {
-        let items: Vec<Element<'_, Message>> = if tasks.is_empty() {
+        let items: Vec<Element<'_, Message>> = if labels.is_empty() {
             vec![
                 container(
                     text("Aucun traitement en cours")
@@ -66,8 +68,8 @@ where
                 .into(),
             ]
         } else {
-            tasks
-                .iter()
+            labels
+                .into_iter()
                 .map(|label| {
                     row![
                         text(label).size(12).color(colors::TEXT_PRIMARY),

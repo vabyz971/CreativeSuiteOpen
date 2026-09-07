@@ -276,6 +276,8 @@ where
                 }
                 // Brush/eraser not supported by experimental GPU path
                 CanvasTool::Brush | CanvasTool::Eraser => Some(shader::Action::capture()),
+                // Eyedropper not supported by experimental GPU path
+                CanvasTool::Eyedropper => Some(shader::Action::capture()),
             },
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some((start, orig_pan)) = state.dragging {
@@ -372,6 +374,7 @@ where
                 CanvasTool::Zoom => Interaction::ZoomIn,
                 CanvasTool::Select => Interaction::Crosshair,
                 CanvasTool::Brush | CanvasTool::Eraser => Interaction::Crosshair,
+                CanvasTool::Eyedropper => Interaction::Crosshair,
             };
         }
         Interaction::default()

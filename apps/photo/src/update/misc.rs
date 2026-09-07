@@ -53,7 +53,7 @@ fn handle_execute_action(app: &mut PhotoApp, action: preferences::PhotoAction) -
     let msg = match action {
         preferences::PhotoAction::ToolBrush => Message::SelectTool(Tool::Brush),
         preferences::PhotoAction::ToolEraser => Message::SelectTool(Tool::Eraser),
-        preferences::PhotoAction::ToolEyedropper => Message::SelectTool(Tool::Select),
+        preferences::PhotoAction::ToolEyedropper => Message::SelectTool(Tool::Eyedropper),
         preferences::PhotoAction::ToolMove => Message::SelectTool(Tool::Move),
         preferences::PhotoAction::ToolHand => Message::SelectTool(Tool::Hand),
         preferences::PhotoAction::ToolZoom => Message::SelectTool(Tool::Zoom),
@@ -126,6 +126,7 @@ fn handle_image_canvas_event(
         ui_kit::image_canvas::ImageCanvasEvent::BrushEnd { points, tex, erase } => {
             super::dispatch(app, Message::BrushEnd { points, tex, erase })
         }
+        ui_kit::image_canvas::ImageCanvasEvent::ColorPick { x, y } => handle_pick_color(app, x, y),
         ui_kit::image_canvas::ImageCanvasEvent::Viewport(size) => {
             app.canvas_viewport = size;
             Task::none()
@@ -421,6 +422,44 @@ fn handle_quit(_app: &mut PhotoApp) -> Task<Message> {
     std::process::exit(0);
 }
 
+/// Lance l'échantillonnage pipette : composite la scène hors thread UI et
+/// échantillonne la couleur au point document donné. Respecte RENDERING.md
+/// invariant #1 (composite = spawn_blocking) + #5 (tâche async = background_tasks).
+fn handle_pick_color(app: &mut PhotoApp, x: f32, y: f32) -> Task<Message> {
+    let task_id = app.background_tasks.start("Pipette...");
+    let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
+    doc_copy.restore_snapshot(app.doc.snapshot());
+    doc_copy.warm_cache_from(&app.doc);
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || doc_copy.sample_color(x, y))
+                .await
+                .unwrap_or(None)
+        },
+        move |result| Message::ColorPicked {
+            task_id,
+            color: result.map(|[r, g, b, a]| iced::Color::from_rgba8(r, g, b, a as f32 / 255.0)),
+        },
+    )
+}
+
+fn handle_color_picked(
+    app: &mut PhotoApp,
+    task_id: u64,
+    color: Option<iced::Color>,
+) -> Task<Message> {
+    app.background_tasks.finish(task_id);
+    // Hors du plan composite (clic en dehors des calques) : la pipette ne
+    // change PAS la couleur courante (sémantique Photoshop).
+    if let Some(color) = color {
+        app.brush_color = color;
+    }
+    // Revient à l'outil précédent (comportement pipette standard).
+    app.selected_tool = app.previous_tool.unwrap_or(crate::message::Tool::Brush);
+    app.previous_tool = None;
+    Task::none()
+}
+
 fn handle_undo_redo(app: &mut PhotoApp, is_undo: bool) -> Task<Message> {
     // Hybrid history: the history applies the inverse itself (undo) or the
     // command (redo) to the document, then describes what to invalidate —
@@ -460,9 +499,11 @@ fn handle_undo_redo(app: &mut PhotoApp, is_undo: bool) -> Task<Message> {
 
 fn handle_fallback_computed(
     app: &mut PhotoApp,
+    task_id: u64,
     generation: u64,
     result: Result<Option<(Vec<u8>, u32, u32)>, String>,
 ) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.fallback_in_flight = false;
     if generation != app.fallback_generation {
         // Stale result: the document changed during computation.
@@ -488,9 +529,11 @@ fn handle_fallback_computed(
 
 fn handle_drag_background_computed(
     app: &mut PhotoApp,
+    task_id: u64,
     layer_id: uuid::Uuid,
     result: Option<(Vec<u8>, u32, u32)>,
 ) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.drag_bg_in_flight = None;
     // Only applies if we are STILL dragging the same subtree
     if app.move_anchor.map(|(id, _)| id) == Some(layer_id)
@@ -504,9 +547,11 @@ fn handle_drag_background_computed(
 
 fn handle_drag_layer_composite_computed(
     app: &mut PhotoApp,
+    task_id: u64,
     layer_id: uuid::Uuid,
     result: Option<(Vec<u8>, u32, u32)>,
 ) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.drag_layer_composite_in_flight = false;
     // Valide seulement si on DRAG toujours CE calque — sinon le buffer est
     // orphelin et écrasé au prochain MoveLayerStart.
@@ -529,14 +574,16 @@ fn handle_zoom_out(app: &mut PhotoApp) -> Task<Message> {
     Task::none()
 }
 
-fn handle_detect_gpu(_app: &mut PhotoApp) -> Task<Message> {
+fn handle_detect_gpu(app: &mut PhotoApp) -> Task<Message> {
+    let task_id = app.background_tasks.start("Détection du GPU...");
     Task::perform(
-        async { crate::components::gpu::detect_gpu_info().await },
-        Message::GpuDetected,
+        async move { crate::components::gpu::detect_gpu_info().await },
+        move |info| Message::GpuDetected { task_id, info },
     )
 }
 
-fn handle_gpu_detected(app: &mut PhotoApp, info: String) -> Task<Message> {
+fn handle_gpu_detected(app: &mut PhotoApp, task_id: u64, info: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.gpu_info = Some(info);
     app.gpu_available = true;
     Task::none()
@@ -553,20 +600,58 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::Quit => Some(handle_quit(app)),
         Message::Undo => Some(handle_undo_redo(app, true)),
         Message::Redo => Some(handle_undo_redo(app, false)),
-        Message::FallbackComputed { generation, result } => {
-            Some(handle_fallback_computed(app, generation, result))
-        }
-        Message::DragBackgroundComputed { layer_id, result } => {
-            Some(handle_drag_background_computed(app, layer_id, result))
-        }
-        Message::DragLayerCompositeComputed { layer_id, result } => {
-            Some(handle_drag_layer_composite_computed(app, layer_id, result))
-        }
+        Message::PickColor { x, y } => Some(handle_pick_color(app, x, y)),
+        Message::ColorPicked { task_id, color } => Some(handle_color_picked(app, task_id, color)),
+        Message::FallbackComputed {
+            task_id,
+            generation,
+            result,
+        } => Some(handle_fallback_computed(app, task_id, generation, result)),
+        Message::DragBackgroundComputed {
+            task_id,
+            layer_id,
+            result,
+        } => Some(handle_drag_background_computed(
+            app, task_id, layer_id, result,
+        )),
+        Message::DragLayerCompositeComputed {
+            task_id,
+            layer_id,
+            result,
+        } => Some(handle_drag_layer_composite_computed(
+            app, task_id, layer_id, result,
+        )),
         Message::ZoomInPressed => Some(handle_zoom_in(app)),
         Message::ZoomOutPressed => Some(handle_zoom_out(app)),
         Message::MockAction => Some(Task::none()),
         Message::DetectGpu => Some(handle_detect_gpu(app)),
-        Message::GpuDetected(info) => Some(handle_gpu_detected(app, info)),
+        Message::GpuDetected { task_id, info } => Some(handle_gpu_detected(app, task_id, info)),
         _ => None,
     }
+}
+
+/// Pré-dispatch sans clonage — voir `mod.rs`.
+pub fn handles(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::Event { .. }
+            | Message::ExecuteAction(_)
+            | Message::HardwareDetected(_)
+            | Message::TickFrame
+            | Message::CanvasFit
+            | Message::ImageCanvasEvent(_)
+            | Message::Quit
+            | Message::Undo
+            | Message::Redo
+            | Message::PickColor { .. }
+            | Message::ColorPicked { .. }
+            | Message::FallbackComputed { .. }
+            | Message::DragBackgroundComputed { .. }
+            | Message::DragLayerCompositeComputed { .. }
+            | Message::ZoomInPressed
+            | Message::ZoomOutPressed
+            | Message::MockAction
+            | Message::DetectGpu
+            | Message::GpuDetected { .. }
+    )
 }

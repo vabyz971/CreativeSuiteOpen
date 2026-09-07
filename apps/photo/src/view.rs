@@ -57,7 +57,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     let spinner = Some(ui_kit::shell::task_indicator(
         spinning,
         app.spinner_angle,
-        &app.background_tasks,
+        app.background_tasks.labels(),
         app.task_menu_open,
         Message::ToggleTaskMenu,
         Message::ToggleTaskMenu,

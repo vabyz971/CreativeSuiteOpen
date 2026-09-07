@@ -18,7 +18,6 @@
 
 use iced::Color;
 use iced::widget::pane_grid;
-use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::layers::PixelLayer;
@@ -203,22 +202,36 @@ pub enum Message {
     OpenImage,
     ImagePicked(Option<std::path::PathBuf>),
     /// Fichier lu (async) — le décodage démarre ensuite
-    ImageRead(Result<(Vec<u8>, String), String>),
+    ImageRead {
+        /// Identifiant du libellé `background_tasks` à retirer.
+        task_id: u64,
+        result: Result<(Vec<u8>, String), String>,
+    },
     /// Image décodée + texture construite (async) — ajout à l'arbre
-    ImageDecoded(Result<DecodedLayer, String>),
+    ImageDecoded {
+        task_id: u64,
+        result: Result<DecodedLayer, String>,
+    },
     // Projet .csophoto
     /// Chemin choisi pour l'ouverture (projet ou image)
     ProjectOpenPicked(Option<std::path::PathBuf>),
     /// Projet chargé hors thread UI — remplace le document courant
-    ProjectOpened(Result<photo_engine::project::LoadedProject, String>),
+    ProjectOpened {
+        task_id: u64,
+        result: Result<photo_engine::project::LoadedProject, String>,
+    },
     /// Enregistre au chemin courant (ou ouvre la boîte « Enregistrer sous »)
     SaveProjectPathPicked(Option<std::path::PathBuf>),
     /// Résultat d'un enregistrement (nom du fichier pour statut/erreur)
-    ProjectSaved(Result<String, String>),
+    ProjectSaved {
+        task_id: u64,
+        result: Result<String, String>,
+    },
     /// Opération destructrice terminée (Flip, Crop, etc.) — porte les
     /// nouveaux buffers (source + masques). Les échecs transportent un
     /// message d'erreur ; le calque reste inchangé.
     DestructiveOpComputed {
+        task_id: u64,
         layer_id: Uuid,
         op: DestructiveOp,
         result: Result<DestructiveResult, String>,
@@ -228,7 +241,10 @@ pub enum Message {
     /// Chemin d'export choisi — le décodage du format vient de l'extension
     ExportPathPicked(Option<std::path::PathBuf>),
     /// Résultat d'un export (nom du fichier ou erreur)
-    ImageExported(Result<String, String>),
+    ImageExported {
+        task_id: u64,
+        result: Result<String, String>,
+    },
     /// Tick d'animation (spinner / barre de progression)
     TickFrame,
     /// Événement plateforme « non consommé », taggé par sa fenêtre d'origine
@@ -248,17 +264,20 @@ pub enum Message {
     HardwareDetected(preferences::HardwareReport),
     /// Composite fallback calculée HORS thread UI (génération : anti-désync)
     FallbackComputed {
+        task_id: u64,
         generation: u64,
         result: Result<Option<(Vec<u8>, u32, u32)>, String>,
     },
     /// Fond de drag (composite sans le sous-arbre déplacé) prêt
     DragBackgroundComputed {
+        task_id: u64,
         layer_id: Uuid,
         result: Option<(Vec<u8>, u32, u32)>,
     },
     /// Composite du calque seul (avec masque) prêt — affiché en surimpression
     /// pendant le drag en mode fallback, pour préserver le rendu du masque.
     DragLayerCompositeComputed {
+        task_id: u64,
         layer_id: Uuid,
         result: Option<(Vec<u8>, u32, u32)>,
     },
@@ -285,12 +304,14 @@ pub enum Message {
     },
     /// Résultat du calcul lourd — applique pixels + buffers au calque
     PaintApplied {
+        task_id: u64,
         layer_id: Uuid,
         mask_id: Option<Uuid>,
         buf: photo_engine::paint::StrokeCommit,
     },
     /// Le worker de peinture a échoué : retire l'aperçu figé sans panic
     PaintFailed {
+        task_id: u64,
         layer_id: Uuid,
         mask_id: Option<Uuid>,
     },
@@ -298,6 +319,17 @@ pub enum Message {
     SetBrushSize(f32),
     SetBrushOpacity(f32),
     ToggleColorPicker,
+    /// Pipette : demande d'échantillonner la couleur au point document (x,y)
+    PickColor {
+        x: f32,
+        y: f32,
+    },
+    /// Résultat de l'échantillonnage pipette (hors thread UI). `None` = hors
+    /// du plan composite → aucun changement de couleur.
+    ColorPicked {
+        task_id: u64,
+        color: Option<Color>,
+    },
 
     // ---- Écran d'accueil ----
     NewDocWidth(String),
@@ -329,15 +361,24 @@ pub enum Message {
 
     // Hardware
     DetectGpu,
-    GpuDetected(String),
+    GpuDetected {
+        task_id: u64,
+        info: String,
+    },
 
     // Masques de calque : un calque peut en porter plusieurs ; les messages
     // ciblent un masque précis par (layer_id, mask_id).
     SetActiveMask(Option<MaskTarget>),
     AddLayerMask(Uuid),
     AddLayerMaskComputed {
+        task_id: u64,
         layer_id: Uuid,
         mask: photo_engine::LayerMask,
+    },
+    /// L'allocation du masque a échoué hors thread UI.
+    AddLayerMaskFailed {
+        task_id: u64,
+        error: String,
     },
     RemoveLayerMask(Uuid, Uuid),
     ToggleLayerMaskEnabled(Uuid, Uuid),
@@ -365,12 +406,13 @@ pub enum DestructiveOp {
 
 /// Résultat d'une opération destructrice calculée hors thread UI.
 /// Contient le nouveau buffer source et les nouveaux buffers de masques
-/// (un par masque existant, dans le même ordre). Pour Crop, contient
-/// aussi le décalage de transform à appliquer.
+/// (un par masque existant, dans le même ordre). Buffers RgbaImage PROPRES :
+/// l'application côté UI se fait par simple wrap (Arc), zéro copie pixels.
+/// Pour Crop, contient aussi le décalage de transform à appliquer.
 #[derive(Debug, Clone)]
 pub struct DestructiveResult {
-    pub source: Arc<image::DynamicImage>,
-    pub masks: Vec<Arc<image::DynamicImage>>,
+    pub source: image::RgbaImage,
+    pub masks: Vec<image::RgbaImage>,
     /// Décalage de transform à ajouter (Crop seulement ; `(0, 0)` pour Flip).
     pub offset_delta: (f32, f32),
 }

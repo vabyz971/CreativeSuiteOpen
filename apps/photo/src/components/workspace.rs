@@ -201,7 +201,7 @@ fn render_canvas_preview<'a>(
         Tool::Move => ui_kit::image_canvas::CanvasTool::Move,
         Tool::Zoom => ui_kit::image_canvas::CanvasTool::Zoom,
         Tool::Select => ui_kit::image_canvas::CanvasTool::Select,
-        Tool::Eyedropper => ui_kit::image_canvas::CanvasTool::Select,
+        Tool::Eyedropper => ui_kit::image_canvas::CanvasTool::Eyedropper,
         Tool::Brush => ui_kit::image_canvas::CanvasTool::Brush,
         Tool::Eraser => ui_kit::image_canvas::CanvasTool::Eraser,
     };

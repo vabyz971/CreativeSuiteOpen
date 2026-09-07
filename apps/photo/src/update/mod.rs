@@ -40,20 +40,26 @@ pub fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
 }
 
 fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
-    if let Some(t) = layers::handle(app, message.clone()) {
-        return t;
+    // Aiguillage SANS clonage. FallbackComputed, PaintApplied et les
+    // Drag*Computed transportent des buffers image COMPLETS : un clone par
+    // module (x4) était un coût O(buffer) à CHAQUE message, soit un gel du
+    // thread UI à la fin de chaque traitement. `handles()` ne fait que
+    // traiter le discriminant (aucune copie), puis le message est transmis
+    // PAR DÉPLACEMENT au module qui le possède.
+    if layers::handles(&message) {
+        return layers::handle(app, message).unwrap_or_else(Task::none);
     }
-    if let Some(t) = paint::handle(app, message.clone()) {
-        return t;
+    if paint::handles(&message) {
+        return paint::handle(app, message).unwrap_or_else(Task::none);
     }
-    if let Some(t) = project::handle(app, message.clone()) {
-        return t;
+    if project::handles(&message) {
+        return project::handle(app, message).unwrap_or_else(Task::none);
     }
-    if let Some(t) = panels::handle(app, message.clone()) {
-        return t;
+    if panels::handles(&message) {
+        return panels::handle(app, message).unwrap_or_else(Task::none);
     }
-    if let Some(t) = misc::handle(app, message.clone()) {
-        return t;
+    if misc::handles(&message) {
+        return misc::handle(app, message).unwrap_or_else(Task::none);
     }
     Task::none()
 }
@@ -71,12 +77,24 @@ mod tests {
         ))
     }
 
+    /// Ajoute un calque PIXEL directement via le moteur (équivalent
+    /// synchrone du message asynchrone `AddEmptyLayer` + `ImageDecoded`) —
+    /// les tests se concentrent sur les handlers de transformation, pas sur
+    /// le pipeline async.
+    fn seed_layer(app: &mut PhotoApp, w: u32, h: u32) -> uuid::Uuid {
+        let layer = photo_engine::PixelLayer::new("Test", solid_img(w, h));
+        let id = layer.id;
+        app.doc.push_layer(photo_engine::LayerNode::Pixel(layer));
+        app.selected_layer = Some(id);
+        app.history.push_snapshot(app.snapshot());
+        id
+    }
+
     #[test]
     fn cycle_calque_undo_redo() {
         let mut app = PhotoApp::default();
         app.doc = photo_engine::Document::new(4, 4);
-        let _ = update(&mut app, Message::AddEmptyLayer);
-        let id = app.selected_layer.expect("sélection");
+        let id = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: 42.0 });
         assert_eq!(app.doc.find(id).unwrap().opacity(), 42.0);
         let _ = update(&mut app, Message::Undo);
@@ -89,11 +107,8 @@ mod tests {
     fn duplication_produit_nouvel_id() {
         let mut app = PhotoApp::default();
         app.doc = photo_engine::Document::new(2, 2);
-        let _ = update(&mut app, Message::AddEmptyLayer);
-        let id = app.selected_layer.unwrap();
-        // ajoute second calque pour pouvoir dupliquer
-        let _ = update(&mut app, Message::AddEmptyLayer);
-        let id2 = app.selected_layer.unwrap();
+        let id = seed_layer(&mut app, 2, 2);
+        let id2 = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::DuplicateLayer(id2));
         let dup = app.selected_layer.unwrap();
         assert_ne!(dup, id2);
@@ -105,8 +120,7 @@ mod tests {
     fn suppression_dernier_calque_refusee() {
         let mut app = PhotoApp::default();
         app.doc = photo_engine::Document::new(2, 2);
-        let _ = update(&mut app, Message::AddEmptyLayer);
-        let id = app.selected_layer.unwrap();
+        let id = seed_layer(&mut app, 2, 2);
         assert_eq!(app.doc.pixel_count(), 1);
         let _ = update(&mut app, Message::DeleteLayer(id));
         assert_eq!(app.doc.pixel_count(), 1, "dernier calque non supprimable");
@@ -116,8 +130,7 @@ mod tests {
     fn coalescing_opacite_en_un_undo() {
         let mut app = PhotoApp::default();
         app.doc = photo_engine::Document::new(2, 2);
-        let _ = update(&mut app, Message::AddEmptyLayer);
-        let id = app.selected_layer.unwrap();
+        let id = seed_layer(&mut app, 2, 2);
         for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
             let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: v });
         }

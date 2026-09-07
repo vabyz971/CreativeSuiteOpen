@@ -14,13 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Engines extraits vers core/photo-engine (modulaire) — ces modules restent pour compatibilité
-// et délèguent désormais à photo_engine. Voir core/photo-engine/src/lib.rs
+// Engines extraits vers engines/photo-engine (modulaire) — ces modules restent pour compatibilité
+// et délèguent désormais à photo_engine. Voir engines/photo-engine/src/lib.rs
 pub mod gpu {
     pub use photo_engine::gpu::*;
-}
-pub mod node_registry {
-    pub use photo_engine::registry::*;
 }
 pub mod layers_panel;
 pub mod options_bar;

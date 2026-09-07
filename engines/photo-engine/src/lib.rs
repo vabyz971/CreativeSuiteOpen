@@ -29,6 +29,7 @@ pub mod paint;
 pub mod processor;
 pub mod project;
 pub mod registry;
+pub mod render_pool;
 pub mod renderer;
 
 pub use command::{Command, RenderEvent};

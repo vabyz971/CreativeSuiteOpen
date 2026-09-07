@@ -76,6 +76,15 @@ impl Renderer {
     /// Apparence dérivée du calque, depuis le cache si elle est encore
     /// valide — sinon recalculée (GPU compute si disponible) et insérée.
     pub fn appearance(&mut self, layer: &PixelLayer) -> Appearance {
+        // Le chemin MISS (render_chain + preview/thumb) est un calcul image
+        // lourd : exécuté sur le pool de rendu DÉDIÉ (jamais global) même
+        // quand il est déclenché par la synchronisation de l'UI. À chaud,
+        // le surcoût d'install est négligeable.
+        crate::render_pool::run_parallel(|| self.appearance_locked(layer))
+    }
+
+    /// Corps de [`Renderer::appearance`] — jamais appelé directement.
+    fn appearance_locked(&mut self, layer: &PixelLayer) -> Appearance {
         let signature = filters_signature(&layer.live_filters);
         // perf-entry-api: use Entry to avoid double hashing on miss path
         use std::collections::hash_map::Entry;
@@ -119,6 +128,27 @@ impl Renderer {
                 });
                 appearance
             }
+        }
+    }
+
+    /// Préremplit ce cache avec les entrées ACTUELLEMENT chaudes d'un autre
+    /// cache. Sert à réchauffer un `Document` clone (cache froid) à partir du
+    /// document VIVANT (cache chaud) avant une tâche de fond : la composite
+    /// du clone HIT alors au lieu de re-exécuter la chaîne de rendu complète.
+    ///
+    /// Aucun recalcul : les `Appearance` sont clonées par `Arc` (zéro copie
+    /// pixel). Les entrées qui ne sont plus valides (signature/source
+    /// changées) seront simplement revalidées à la demande et écrasées.
+    pub fn import_from(&mut self, src: &Renderer) {
+        for (id, e) in &src.entries {
+            self.entries.insert(
+                *id,
+                CacheEntry {
+                    signature: e.signature,
+                    source: Arc::clone(&e.source),
+                    appearance: e.appearance.clone(),
+                },
+            );
         }
     }
 

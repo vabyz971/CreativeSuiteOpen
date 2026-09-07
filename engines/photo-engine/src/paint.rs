@@ -199,6 +199,17 @@ pub fn commit_stroke(
     transform: &crate::document::Transform2D,
     brush: &BrushParams,
 ) -> StrokeCommit {
+    // Pipeline du trait confiné au pool de rendu dédié (invariant #4).
+    crate::render_pool::run_parallel(|| commit_stroke_locked(base, pts_doc, transform, brush))
+}
+
+/// Corps de [`commit_stroke`] — jamais appelé directement.
+fn commit_stroke_locked(
+    base: &image::DynamicImage,
+    pts_doc: &[(f32, f32)],
+    transform: &crate::document::Transform2D,
+    brush: &BrushParams,
+) -> StrokeCommit {
     use ::image::GenericImageView;
     let (lw, lh) = base.dimensions();
 

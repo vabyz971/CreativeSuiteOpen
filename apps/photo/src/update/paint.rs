@@ -17,6 +17,7 @@
 //! Paint / brush / mask message handlers — extracted from update/mod.rs.
 
 use crate::message::Message;
+use crate::message::Tool;
 use crate::state::PhotoApp;
 use iced::Task;
 use std::sync::Arc;
@@ -51,22 +52,22 @@ pub fn handle_brush_end(
             .filter(|t| app.doc.find(id).and_then(|n| n.mask(t.mask_id)).is_some())
             .map(|t| t.mask_id);
         let is_mask = stroke_mask_id.is_some();
-        let (source, transform) = if is_mask {
+        // Ne capturer QUE des Arc (zéro copie) : sur un masque, la copie du
+        // buffer se fait dans le worker (`commit_stroke`), pas sur le thread UI.
+        let source = if is_mask {
             let m = app
                 .doc
                 .find(id)
                 .and_then(|n| n.mask(stroke_mask_id.unwrap()))
                 .unwrap();
-            let dyn_img = image::DynamicImage::ImageRgba8((*m.image).clone());
-            (
-                Arc::new(dyn_img),
-                match app.doc.find(id).unwrap() {
-                    photo_engine::LayerNode::Pixel(l) => l.transform,
-                    _ => crate::layers::Transform2D::default(),
-                },
-            )
+            let mask = Arc::clone(&m.image);
+            let transform = match app.doc.find(id).unwrap() {
+                photo_engine::LayerNode::Pixel(l) => l.transform,
+                _ => crate::layers::Transform2D::default(),
+            };
+            PaintSource::Mask(mask, transform)
         } else if let Some(layer) = app.doc.pixel_layer(id) {
-            (Arc::clone(&layer.source_image), layer.transform)
+            PaintSource::Dyn(Arc::clone(&layer.source_image), layer.transform)
         } else {
             return Task::none();
         };
@@ -107,20 +108,30 @@ pub fn handle_brush_end(
             opacity: app.brush_opacity,
             mode: stroke_mode,
         };
+        let task_id = app.background_tasks.start("Trait de pinceau...");
         return Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    photo_engine::paint::commit_stroke(&source, &pts, &transform, &brush)
+                    let (dyn_img, transform) = match source {
+                        PaintSource::Dyn(img, t) => (img, t),
+                        PaintSource::Mask(mask, t) => (
+                            Arc::new(image::DynamicImage::ImageRgba8((*mask).clone())),
+                            t,
+                        ),
+                    };
+                    photo_engine::paint::commit_stroke(&dyn_img, &pts, &transform, &brush)
                 })
                 .await
             },
             move |result| match result {
                 Ok(buf) => Message::PaintApplied {
+                    task_id,
                     layer_id: id,
                     mask_id: stroke_mask_id,
                     buf,
                 },
                 Err(_) => Message::PaintFailed {
+                    task_id,
                     layer_id: id,
                     mask_id: stroke_mask_id,
                 },
@@ -130,11 +141,19 @@ pub fn handle_brush_end(
     Task::none()
 }
 
+/// Buffer source du trait : Arc partagé, dé-référencé dans le worker.
+enum PaintSource {
+    Dyn(Arc<image::DynamicImage>, crate::layers::Transform2D),
+    Mask(Arc<image::RgbaImage>, crate::layers::Transform2D),
+}
+
 pub fn handle_paint_failed(
     app: &mut PhotoApp,
+    task_id: u64,
     layer_id: Uuid,
     mask_id: Option<Uuid>,
 ) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     if app
         .pending_paint
         .as_ref()
@@ -148,10 +167,12 @@ pub fn handle_paint_failed(
 
 pub fn handle_paint_applied(
     app: &mut PhotoApp,
+    task_id: u64,
     layer_id: Uuid,
     mask_id: Option<Uuid>,
     buf: photo_engine::paint::StrokeCommit,
 ) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     if let Some(img) = image::RgbaImage::from_raw(buf.width, buf.height, buf.rgba) {
         if let Some(mask_id) = mask_id {
             if let Some(mask) = app.doc.find_mut(layer_id).and_then(|n| n.mask_mut(mask_id)) {
@@ -186,6 +207,16 @@ pub fn handle_toggle_picker(app: &mut PhotoApp) -> Task<Message> {
     Task::none()
 }
 pub fn handle_select_tool(app: &mut PhotoApp, tool: crate::message::Tool) -> Task<Message> {
+    // Réactiver la pipette : on mémorise l'outil courant pour y revenir
+    // automatiquement après l'échantillonnage. Choisir un autre outil
+    // explicitement efface la mémorisation.
+    if tool == crate::message::Tool::Eyedropper {
+        if app.selected_tool != Tool::Eyedropper {
+            app.previous_tool = Some(app.selected_tool);
+        }
+    } else {
+        app.previous_tool = None;
+    }
     app.selected_tool = tool;
     app.canvas_selection = None;
     app.move_anchor = None;
@@ -219,8 +250,7 @@ pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
             Some(photo_engine::LayerNode::Pixel(l)) => l.dimensions(),
             _ => (app.doc.width.max(1), app.doc.height.max(1)),
         };
-        app.background_tasks
-            .push("Ajout d'un masque...".to_string());
+        let task_id = app.background_tasks.start("Ajout d'un masque...");
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
@@ -230,9 +260,13 @@ pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
                 .await
                 .map_err(|e| format!("Tâche annulée : {e}"))
             },
-            |res| match res {
-                Ok((id, mask)) => Message::AddLayerMaskComputed { layer_id: id, mask },
-                Err(e) => Message::ImageDecoded(Err(e)),
+            move |res| match res {
+                Ok((id, mask)) => Message::AddLayerMaskComputed {
+                    task_id,
+                    layer_id: id,
+                    mask,
+                },
+                Err(e) => Message::AddLayerMaskFailed { task_id, error: e },
             },
         )
     } else {
@@ -241,11 +275,11 @@ pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
 }
 pub fn handle_add_mask_computed(
     app: &mut PhotoApp,
+    task_id: u64,
     id: Uuid,
     mask: photo_engine::LayerMask,
 ) -> Task<Message> {
-    app.background_tasks
-        .retain(|t| !t.starts_with("Ajout d'un masque"));
+    app.background_tasks.finish(task_id);
     let pre = app.snapshot();
     let mask_id = mask.id;
     if let Some(masks) = app.doc.find_mut(id).and_then(|n| n.masks_mut()) {
@@ -258,6 +292,12 @@ pub fn handle_add_mask_computed(
     });
     app.history.push_snapshot(pre);
     app.invalidate_fallback();
+    Task::none()
+}
+
+pub fn handle_add_mask_failed(app: &mut PhotoApp, task_id: u64, error: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
+    app.image_error = Some(error);
     Task::none()
 }
 
@@ -329,14 +369,17 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
     match msg {
         Message::BrushStart { x, y, erase } => Some(handle_brush_start(app, x, y, erase)),
         Message::BrushEnd { points, tex, erase } => Some(handle_brush_end(app, points, tex, erase)),
-        Message::PaintFailed { layer_id, mask_id } => {
-            Some(handle_paint_failed(app, layer_id, mask_id))
-        }
+        Message::PaintFailed {
+            task_id,
+            layer_id,
+            mask_id,
+        } => Some(handle_paint_failed(app, task_id, layer_id, mask_id)),
         Message::PaintApplied {
+            task_id,
             layer_id,
             mask_id,
             buf,
-        } => Some(handle_paint_applied(app, layer_id, mask_id, buf)),
+        } => Some(handle_paint_applied(app, task_id, layer_id, mask_id, buf)),
         Message::SetBrushColor(c) => Some(handle_set_brush_color(app, c)),
         Message::SetBrushSize(s) => Some(handle_set_brush_size(app, s)),
         Message::SetBrushOpacity(o) => Some(handle_set_brush_opacity(app, o)),
@@ -345,8 +388,13 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::ToggleToolsPanel => Some(handle_toggle_tools(app)),
         Message::SetActiveMask(target) => Some(handle_set_active_mask(app, target)),
         Message::AddLayerMask(id) => Some(handle_add_mask(app, id)),
-        Message::AddLayerMaskComputed { layer_id, mask } => {
-            Some(handle_add_mask_computed(app, layer_id, mask))
+        Message::AddLayerMaskComputed {
+            task_id,
+            layer_id,
+            mask,
+        } => Some(handle_add_mask_computed(app, task_id, layer_id, mask)),
+        Message::AddLayerMaskFailed { task_id, error } => {
+            Some(handle_add_mask_failed(app, task_id, error))
         }
         Message::RemoveLayerMask(layer_id, mask_id) => {
             Some(handle_remove_mask(app, layer_id, mask_id))
@@ -361,4 +409,30 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::ToggleMaskColor => Some(handle_toggle_mask_color(app)),
         _ => None,
     }
+}
+
+/// Pré-dispatch sans clonage — voir `mod.rs`.
+pub fn handles(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::BrushStart { .. }
+            | Message::BrushEnd { .. }
+            | Message::PaintFailed { .. }
+            | Message::PaintApplied { .. }
+            | Message::SetBrushColor(_)
+            | Message::SetBrushSize(_)
+            | Message::SetBrushOpacity(_)
+            | Message::ToggleColorPicker
+            | Message::SelectTool(_)
+            | Message::ToggleToolsPanel
+            | Message::SetActiveMask(_)
+            | Message::AddLayerMask(_)
+            | Message::AddLayerMaskComputed { .. }
+            | Message::AddLayerMaskFailed { .. }
+            | Message::RemoveLayerMask(..)
+            | Message::ToggleLayerMaskEnabled(..)
+            | Message::InvertLayerMask(..)
+            | Message::ToggleMaskList(_)
+            | Message::ToggleMaskColor
+    )
 }

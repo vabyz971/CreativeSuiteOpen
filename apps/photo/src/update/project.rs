@@ -80,26 +80,36 @@ fn save_as_dialog_task() -> Task<Message> {
     )
 }
 
-/// Result of a raw file read (bytes + name).
-type FileRead = Result<(Vec<u8>, String), String>;
-
-/// Generic file read off the UI thread.
-fn read_file_task(path: std::path::PathBuf, map: fn(FileRead) -> Message) -> Task<Message> {
+/// Generic file read off the UI thread — pousse son libellé dans
+/// `background_tasks` avant de partir (retiré par le handler de sabliers).
+fn read_file_task(
+    app: &mut PhotoApp,
+    path: std::path::PathBuf,
+    label: impl Into<String>,
+) -> Task<Message> {
+    let task_id = app.background_tasks.start(label);
     Task::perform(
         async move {
-            let bytes = std::fs::read(&path).map_err(|e| format!("Lecture échouée: {e}"))?;
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("image")
-                .to_string();
-            Ok::<(Vec<u8>, String), String>((bytes, name))
+            tokio::task::spawn_blocking(move || {
+                let bytes = std::fs::read(&path).map_err(|e| format!("Lecture échouée: {e}"))?;
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("image")
+                    .to_string();
+                Ok::<(Vec<u8>, String), String>((bytes, name))
+            })
+            .await
+            .map_err(|e| format!("Tâche annulée : {e}"))?
         },
-        map,
+        move |result| Message::ImageRead { task_id, result },
     )
 }
 
-fn load_project_task(path: std::path::PathBuf) -> Task<Message> {
+fn load_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Message> {
+    let task_id = app
+        .background_tasks
+        .start(format!("Ouverture de {}", file_label(&path)));
     Task::perform(
         async move {
             let res = tokio::task::spawn_blocking(move || photo_engine::project::load(&path))
@@ -107,7 +117,7 @@ fn load_project_task(path: std::path::PathBuf) -> Task<Message> {
                 .map_err(|e| format!("Tâche annulée : {e}"))??;
             Ok(res)
         },
-        Message::ProjectOpened,
+        move |result| Message::ProjectOpened { task_id, result },
     )
 }
 
@@ -115,10 +125,9 @@ fn save_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Messa
     let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
     doc_copy.restore_snapshot(app.doc.snapshot());
     let name = file_label(&path);
-    app.background_tasks
-        .retain(|t| !t.starts_with("Enregistrement"));
-    app.background_tasks
-        .push(format!("Enregistrement de {name}"));
+    let task_id = app
+        .background_tasks
+        .start(format!("Enregistrement de {name}"));
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || photo_engine::project::save(&path, &doc_copy))
@@ -126,7 +135,7 @@ fn save_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Messa
                 .map_err(|e| format!("Tâche annulée : {e}"))??;
             Ok(name)
         },
-        Message::ProjectSaved,
+        move |result| Message::ProjectSaved { task_id, result },
     )
 }
 
@@ -152,9 +161,9 @@ fn export_dialog_task() -> Task<Message> {
 fn export_image_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Message> {
     let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
     doc_copy.restore_snapshot(app.doc.snapshot());
+    doc_copy.warm_cache_from(&app.doc);
     let name = file_label(&path);
-    app.background_tasks.retain(|t| !t.starts_with("Export"));
-    app.background_tasks.push(format!("Export de {name}"));
+    let task_id = app.background_tasks.start(format!("Export de {name}"));
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
@@ -171,7 +180,7 @@ fn export_image_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Messa
             .map_err(|e| format!("Tâche annulée : {e}"))??;
             Ok(name)
         },
-        Message::ImageExported,
+        move |result| Message::ImageExported { task_id, result },
     )
 }
 
@@ -227,21 +236,21 @@ fn handle_project_open_picked(
         && app.background_tasks.is_empty()
     {
         if photo_engine::project::is_project_path(&path) {
-            let name = file_label(&path);
-            app.background_tasks.push(format!("Ouverture de {name}"));
-            return load_project_task(path);
+            return load_project_task(app, path);
         }
         // Plain image -> existing layer flow
-        return read_file_task(path, Message::ImageRead);
+        let label = format!("Ouverture de {}", file_label(&path));
+        return read_file_task(app, path, label);
     }
     Task::none()
 }
 
 fn handle_project_opened_ok(
     app: &mut PhotoApp,
+    task_id: u64,
     loaded: photo_engine::project::LoadedProject,
 ) -> Task<Message> {
-    app.background_tasks.clear();
+    app.background_tasks.finish(task_id);
     app.image_error = None;
     app.selected_layer = loaded.document.iter_pixels().last().map(|l| l.id);
     app.doc = loaded.document;
@@ -256,8 +265,8 @@ fn handle_project_opened_ok(
     Task::none()
 }
 
-fn handle_project_opened_err(app: &mut PhotoApp, e: String) -> Task<Message> {
-    app.background_tasks.clear();
+fn handle_project_opened_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_error = Some(e);
     Task::none()
 }
@@ -298,16 +307,16 @@ fn handle_save_project_path_picked(
     Task::none()
 }
 
-fn handle_project_saved_ok(app: &mut PhotoApp, name: String) -> Task<Message> {
-    app.background_tasks.clear();
+fn handle_project_saved_ok(app: &mut PhotoApp, task_id: u64, name: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_error = None;
     // The project name feeds the canvas title if it is empty
     app.image_path.get_or_insert(name);
     Task::none()
 }
 
-fn handle_project_saved_err(app: &mut PhotoApp, e: String) -> Task<Message> {
-    app.background_tasks.clear();
+fn handle_project_saved_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_error = Some(e);
     Task::none()
 }
@@ -333,15 +342,15 @@ fn handle_export_path_picked(
     Task::none()
 }
 
-fn handle_image_exported_ok(app: &mut PhotoApp, _name: String) -> Task<Message> {
-    app.background_tasks.clear();
+fn handle_image_exported_ok(app: &mut PhotoApp, task_id: u64, _name: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_error = None;
     // Discreet confirmation via the error zone (green in the future UI)
     Task::none()
 }
 
-fn handle_image_exported_err(app: &mut PhotoApp, e: String) -> Task<Message> {
-    app.background_tasks.clear();
+fn handle_image_exported_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_error = Some(e);
     Task::none()
 }
@@ -358,42 +367,54 @@ fn handle_image_picked(app: &mut PhotoApp, path_opt: Option<std::path::PathBuf>)
     if let Some(path) = path_opt
         && app.background_tasks.is_empty()
     {
-        app.background_tasks
-            .push(format!("Lecture de {}", file_label(&path)));
-        return read_file_task(path, Message::ImageRead);
+        let label = format!("Lecture de {}", file_label(&path));
+        return read_file_task(app, path, label);
     }
     Task::none()
 }
 
-fn handle_image_read_ok(app: &mut PhotoApp, bytes: Vec<u8>, name: String) -> Task<Message> {
+fn handle_image_read_ok(
+    app: &mut PhotoApp,
+    task_id: u64,
+    bytes: Vec<u8>,
+    name: String,
+) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_path = Some(name.clone());
     app.image_error = None;
-    app.background_tasks.clear();
-    app.background_tasks.push(format!("Décodage de {name}"));
-    // The decoding + buffer construction run off the UI thread (Task::perform)
-    // while the spinner keeps animating.
+    let decode_task_id = app.background_tasks.start(format!("Décodage de {name}"));
+    // La lecture du tas + le décodage + la construction du buffer tournent
+    // hors thread UI (spawn_blocking) pendant que le spinner anime.
     Task::perform(
         async move {
-            match ::image::load_from_memory(&bytes) {
-                Ok(dyn_img) => Ok(DecodedLayer(PixelLayer::new(name, Arc::new(dyn_img)))),
-                Err(e) => Err(format!("Décodage échoué: {e}")),
-            }
+            let decoded =
+                tokio::task::spawn_blocking(move || match ::image::load_from_memory(&bytes) {
+                    Ok(dyn_img) => Ok(DecodedLayer(PixelLayer::new(name, Arc::new(dyn_img)))),
+                    Err(e) => Err(format!("Décodage échoué: {e}")),
+                })
+                .await
+                .map_err(|e| format!("Tâche annulée : {e}"))??;
+            Ok(decoded)
         },
-        Message::ImageDecoded,
+        move |res| Message::ImageDecoded {
+            task_id: decode_task_id,
+            result: res,
+        },
     )
 }
 
-fn handle_image_read_err(app: &mut PhotoApp, e: String) -> Task<Message> {
-    app.background_tasks.clear();
+fn handle_image_read_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_error = Some(e);
     Task::none()
 }
 
-fn handle_image_decoded_ok(app: &mut PhotoApp, decoded: DecodedLayer) -> Task<Message> {
-    // Ne nettoie QUE les tâches de décodage/lecture : un Export ou une
-    // sauvegarde concurrente ne doivent pas être effacés.
-    app.background_tasks
-        .retain(|t| !t.starts_with("Décodage") && !t.starts_with("Lecture"));
+fn handle_image_decoded_ok(
+    app: &mut PhotoApp,
+    task_id: u64,
+    decoded: DecodedLayer,
+) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     let node = LayerNode::Pixel(decoded.0);
     // The document takes the dimensions of the first image
     if app.doc.width == 0 || app.doc.height == 0 {
@@ -412,9 +433,8 @@ fn handle_image_decoded_ok(app: &mut PhotoApp, decoded: DecodedLayer) -> Task<Me
     Task::none()
 }
 
-fn handle_image_decoded_err(app: &mut PhotoApp, e: String) -> Task<Message> {
-    app.background_tasks
-        .retain(|t| !t.starts_with("Décodage") && !t.starts_with("Lecture"));
+fn handle_image_decoded_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
+    app.background_tasks.finish(task_id);
     app.image_error = Some(e);
     Task::none()
 }
@@ -507,23 +527,33 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::NewProject => Some(handle_new_project(app)),
         Message::OpenProject => Some(handle_open_project(app)),
         Message::ProjectOpenPicked(p) => Some(handle_project_open_picked(app, p)),
-        Message::ProjectOpened(Ok(loaded)) => Some(handle_project_opened_ok(app, loaded)),
-        Message::ProjectOpened(Err(e)) => Some(handle_project_opened_err(app, e)),
+        Message::ProjectOpened { task_id, result } => match result {
+            Ok(loaded) => Some(handle_project_opened_ok(app, task_id, loaded)),
+            Err(e) => Some(handle_project_opened_err(app, task_id, e)),
+        },
         Message::SaveProject => Some(handle_save_project(app)),
         Message::SaveProjectAs => Some(handle_save_project_as(app)),
         Message::SaveProjectPathPicked(p) => Some(handle_save_project_path_picked(app, p)),
-        Message::ProjectSaved(Ok(name)) => Some(handle_project_saved_ok(app, name)),
-        Message::ProjectSaved(Err(e)) => Some(handle_project_saved_err(app, e)),
+        Message::ProjectSaved { task_id, result } => match result {
+            Ok(name) => Some(handle_project_saved_ok(app, task_id, name)),
+            Err(e) => Some(handle_project_saved_err(app, task_id, e)),
+        },
         Message::ExportImage => Some(handle_export_image(app)),
         Message::ExportPathPicked(p) => Some(handle_export_path_picked(app, p)),
-        Message::ImageExported(Ok(name)) => Some(handle_image_exported_ok(app, name)),
-        Message::ImageExported(Err(e)) => Some(handle_image_exported_err(app, e)),
+        Message::ImageExported { task_id, result } => match result {
+            Ok(name) => Some(handle_image_exported_ok(app, task_id, name)),
+            Err(e) => Some(handle_image_exported_err(app, task_id, e)),
+        },
         Message::OpenImage => Some(handle_open_image(app)),
         Message::ImagePicked(p) => Some(handle_image_picked(app, p)),
-        Message::ImageRead(Ok((bytes, name))) => Some(handle_image_read_ok(app, bytes, name)),
-        Message::ImageRead(Err(e)) => Some(handle_image_read_err(app, e)),
-        Message::ImageDecoded(Ok(decoded)) => Some(handle_image_decoded_ok(app, decoded)),
-        Message::ImageDecoded(Err(e)) => Some(handle_image_decoded_err(app, e)),
+        Message::ImageRead { task_id, result } => match result {
+            Ok((bytes, name)) => Some(handle_image_read_ok(app, task_id, bytes, name)),
+            Err(e) => Some(handle_image_read_err(app, task_id, e)),
+        },
+        Message::ImageDecoded { task_id, result } => match result {
+            Ok(decoded) => Some(handle_image_decoded_ok(app, task_id, decoded)),
+            Err(e) => Some(handle_image_decoded_err(app, task_id, e)),
+        },
         Message::NewDocWidth(v) => Some(handle_new_doc_width(app, v)),
         Message::NewDocHeight(v) => Some(handle_new_doc_height(app, v)),
         Message::SetDocPreset { w, h } => Some(handle_set_doc_preset(app, w, h)),
@@ -536,4 +566,34 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         }
         _ => None,
     }
+}
+
+/// Pré-dispatch sans clonage — voir `mod.rs`.
+pub fn handles(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::NewProject
+            | Message::OpenProject
+            | Message::ProjectOpenPicked(_)
+            | Message::ProjectOpened { .. }
+            | Message::SaveProject
+            | Message::SaveProjectAs
+            | Message::SaveProjectPathPicked(_)
+            | Message::ProjectSaved { .. }
+            | Message::ExportImage
+            | Message::ExportPathPicked(_)
+            | Message::ImageExported { .. }
+            | Message::OpenImage
+            | Message::ImagePicked(_)
+            | Message::ImageRead { .. }
+            | Message::ImageDecoded { .. }
+            | Message::NewDocWidth(_)
+            | Message::NewDocHeight(_)
+            | Message::SetDocPreset { .. }
+            | Message::CreateDocument
+            | Message::ShowResizeDialog
+            | Message::SetResizeWidth(_)
+            | Message::SetResizeHeight(_)
+            | Message::ResizeDocument { .. }
+    )
 }

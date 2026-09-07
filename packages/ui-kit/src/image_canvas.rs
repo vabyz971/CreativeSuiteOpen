@@ -45,6 +45,8 @@ pub enum CanvasTool {
     Brush,
     /// Eraser: erases (reduces alpha) on selected layer
     Eraser,
+    /// Eyedropper: pick a color from the composited canvas
+    Eyedropper,
 }
 
 /// Poignée du visualiseur de transformation (Affinity-style).
@@ -132,6 +134,12 @@ pub enum ImageCanvasEvent {
         tex: Option<StrokeTex>,
         /// true = eraser (destination-out), false = brush
         erase: bool,
+    },
+    /// Clic pipette : l'app doit échantillonner la couleur compositée au
+    /// point document donné et l'appliquer comme couleur globale.
+    ColorPick {
+        x: f32,
+        y: f32,
     },
 }
 
@@ -1007,6 +1015,16 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                         state.zoom_dragging = Some((cursor_pos, self.zoom, self.pan));
                         Some(canvas::Action::capture())
                     }
+                    CanvasTool::Eyedropper => {
+                        let doc = self.screen_to_doc(cursor_pos, bounds);
+                        Some(
+                            canvas::Action::publish(ImageCanvasEvent::ColorPick {
+                                x: doc.x,
+                                y: doc.y,
+                            })
+                            .and_capture(),
+                        )
+                    }
                 }
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -1373,6 +1391,7 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 CanvasTool::Brush | CanvasTool::Eraser => mouse::Interaction::Hidden,
                 CanvasTool::Zoom => mouse::Interaction::ZoomIn,
                 CanvasTool::Select => mouse::Interaction::Crosshair,
+                CanvasTool::Eyedropper => mouse::Interaction::Crosshair,
             };
         }
         mouse::Interaction::default()

@@ -506,6 +506,20 @@ impl Document {
         self.appearance(id).map(|a| a.thumb)
     }
 
+    /// Réchauffe le cache d'apparences de CE document à partir des entrées
+    /// actuellement chaudes d'un autre document (typiquement le document
+    /// VIVANT, pour un clone envoyé en tâche de fond). Évite de re-exécuter
+    /// les chaînes de rendu (filtres preview/thumb) à chaque composite de
+    /// fond : les calques inchangés HIT au lieu de MISS.
+    pub fn warm_cache_from(&mut self, other: &Document) {
+        if std::ptr::eq(self, other) {
+            return;
+        }
+        let mut dst = self.cache.borrow_mut();
+        let src = other.cache.borrow();
+        dst.import_from(&src);
+    }
+
     // -- Historique -------------------------------------------------------------
 
     /// Instantané complet (pixels partagés par Arc — quasi gratuit).
@@ -544,6 +558,34 @@ impl Document {
             return None;
         }
         self.composite_scope(&hidden)
+    }
+
+    /// Échantillonne la couleur compositée à un point donné en coordonnées
+    /// document locales (0,0 = coin haut-gauche du DOCUMENT). Retourne
+    /// `[R,G,B,A]` ou `None` si hors du plan composite ou document vide.
+    /// Conçu pour être appelé UNIQUEMENT dans `spawn_blocking` — effectue
+    /// un composite complet si nécessaire.
+    pub fn sample_color(&self, dx: f32, dy: f32) -> Option<[u8; 4]> {
+        // Mêmes géométrie et origine que `composite_scope` : si on les
+        // redérivait des dimensions ARRONDIES du buffer, la correspondance
+        // serait fausse dès que les extents sont fractionnaires.
+        let resolver = |id: Uuid| self.appearance_image(id);
+        let (half_w, half_h) = scope_half_extents(&self.root, self.width, self.height, &resolver);
+        let w = ((half_w * 2.0).clamp(1.0, 16384.0)) as u32;
+        let h = ((half_h * 2.0).clamp(1.0, 16384.0)) as u32;
+        let origin_x = half_w - self.width as f32 / 2.0;
+        let origin_y = half_h - self.height as f32 / 2.0;
+        // La composite place les pixels à l'index « plancher » du document
+        // (blend_into arrondit et pose à `offset` exactement) : le pixel qui
+        // occupe la case doc [p, p+1) vit à l'index p — floor(), pas round().
+        let px = (origin_x + dx).floor() as i64;
+        let py = (origin_y + dy).floor() as i64;
+        if px < 0 || py < 0 || px >= i64::from(w) || py >= i64::from(h) {
+            return None;
+        }
+        let img = self.composite_preview()?;
+        let p = img.get_pixel(px as u32, py as u32);
+        Some([p[0], p[1], p[2], p[3]])
     }
 
     fn composite_scope(&self, nodes: &[LayerNode]) -> Option<DynamicImage> {

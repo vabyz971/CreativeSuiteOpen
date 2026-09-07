@@ -939,3 +939,35 @@ fn coins_transformes_cadrent_les_extents() {
     assert!((tw - 2.0_f32.sqrt() * 2.0).abs() < 0.01, "tw={tw}");
     assert!((th - 2.0_f32.sqrt() * 2.0).abs() < 0.01, "th={th}");
 }
+
+#[test]
+fn sample_color_preleve_la_composite() {
+    let base = solid(4, 4, [255, 0, 0, 255]);
+    let top = solid(1, 1, [0, 255, 0, 255]);
+    // Calque vert POINT ne couvrant que la case doc [2,3) — le plus petit
+    // cas qui distingue floor() de round() dans la correspondance.
+    let doc = doc_of(
+        vec![
+            pixel_node(&base, 100.0, BlendMode::Normal, 0.0, 0.0),
+            pixel_node(&top, 100.0, BlendMode::Normal, 2.0, 2.0),
+        ],
+        4,
+        4,
+    );
+    let c_rouge = doc.sample_color(1.0, 1.0).expect("point rouge");
+    assert_eq!(c_rouge[0], 255);
+    let c_vert = doc.sample_color(2.0, 2.0).expect("point vert");
+    assert_eq!(c_vert[1], 255);
+    assert!(c_vert[0] == 0, "au-dessus du rouge, vert opaque");
+    // Un clic dans la case [2,3) doit rester dans le pixel vert, y compris
+    // à droite de son centre (round() dériverait vers le voisin [3,4)).
+    let c_frac_vert = doc.sample_color(2.9, 2.9).expect("vert à 2.9");
+    assert_eq!(c_frac_vert[1], 255, "2.9 dans [2,3) → vert");
+    let c_frac_rouge = doc.sample_color(3.1, 2.9).expect("rouge à droite");
+    assert_eq!(c_frac_rouge[0], 255, "3.1 hors [2,3) → rouge");
+    // Hors du plan composite (loin) → None
+    assert!(
+        doc.sample_color(1000.0, 1000.0).is_none(),
+        "hors plan : None attendu"
+    );
+}
