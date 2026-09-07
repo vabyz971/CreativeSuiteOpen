@@ -290,17 +290,17 @@ mod tests {
         let cmd = opacity_cmd(id, 50.0, 80.0);
         h.push_command_immediate(cmd);
         let _inverse = doc.apply_command(opacity_cmd(id, 50.0, 80.0));
-        assert!((doc.find(id).unwrap().opacity() - 80.0).abs() < f32::EPSILON);
+        assert!((doc.find(id).expect("layer should exist after command").opacity() - 80.0).abs() < f32::EPSILON);
 
         // Undo → 50, Redo → 80
         let action = h.undo(&mut doc).expect("undo");
         assert!(matches!(&action, UndoAction::Applied(c)
                 if c.render_event() == crate::command::RenderEvent::NodeInvalidated(id)));
-        assert!((doc.find(id).unwrap().opacity() - 50.0).abs() < f32::EPSILON);
+        assert!((doc.find(id).expect("layer should exist after undo").opacity() - 50.0).abs() < f32::EPSILON);
 
         let action = h.redo(&mut doc).expect("redo");
         assert!(matches!(action, UndoAction::Applied(_)));
-        assert!((doc.find(id).unwrap().opacity() - 80.0).abs() < f32::EPSILON);
+        assert!((doc.find(id).expect("layer should exist after redo").opacity() - 80.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -319,12 +319,12 @@ mod tests {
 
         // Undo → début du geste (50)
         h.undo(&mut doc).expect("undo");
-        assert!((doc.find(id).unwrap().opacity() - 50.0).abs() < f32::EPSILON);
+        assert!((doc.find(id).expect("layer should exist after undo coalesced").opacity() - 50.0).abs() < f32::EPSILON);
         assert!(!h.can_undo());
 
         // Redo → valeur FINALE du geste (80), pas la première (60)
         h.redo(&mut doc).expect("redo");
-        assert!((doc.find(id).unwrap().opacity() - 80.0).abs() < f32::EPSILON);
+        assert!((doc.find(id).expect("layer should exist after redo coalesced").opacity() - 80.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -356,7 +356,7 @@ mod tests {
 
         // Undo #1 : opacité revient à 100 (commande)
         h.undo(&mut doc).expect("undo cmd");
-        assert!((doc.find(id).unwrap().opacity() - 100.0).abs() < f32::EPSILON);
+        assert!((doc.find(id).expect("layer should exist after undo hybrid").opacity() - 100.0).abs() < f32::EPSILON);
 
         // Undo #2 : le calque ajouté disparaît (snapshot)
         h.undo(&mut doc).expect("undo snap");
@@ -367,7 +367,7 @@ mod tests {
         h.redo(&mut doc).expect("redo snap");
         assert_eq!(doc.root.len(), 2);
         h.redo(&mut doc).expect("redo cmd");
-        assert!((doc.find(id).unwrap().opacity() - 40.0).abs() < f32::EPSILON);
+        assert!((doc.find(id).expect("layer should exist after redo hybrid").opacity() - 40.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -419,9 +419,10 @@ mod tests {
         ));
         doc.push_layer(LayerNode::Pixel(layer));
         let layer_id = doc.root[0].id();
-        let filter_id = doc.pixel_layer(layer_id).unwrap().filter_layers[0].id;
+        let pixel_layer = doc.pixel_layer(layer_id).expect("layer should exist");
+        let filter_id = pixel_layer.filter_layers[0].id;
 
-        let version_avant = doc.pixel_layer(layer_id).unwrap().appearance_version;
+        let version_avant = pixel_layer.appearance_version;
         let cmd = Command::SetFilterParam {
             layer_id,
             filter_id,
@@ -432,7 +433,10 @@ mod tests {
         let inverse = doc.apply_command(cmd);
         // Version bumpée → le cache d'apparence se sait obsolète
         assert!(
-            doc.pixel_layer(layer_id).unwrap().appearance_version > version_avant,
+            doc.pixel_layer(layer_id)
+                .expect("layer should still exist")
+                .appearance_version
+                > version_avant,
             "apply_command doit invalider l'apparence"
         );
         // Inverse cohérent

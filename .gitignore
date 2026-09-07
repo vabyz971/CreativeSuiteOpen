@@ -1,54 +1,49 @@
-# Rust
-/target/
-**/*.rs.bk
-
-# Cargo
+```
+# Rust/Cargo
+target/
 Cargo.lock
+**/.cache/
+**/.graph/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-# Test
-coverage/
-*.profraw
-*.profdata
-
-# Misc
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Dependencies
+**/node_modules/
+**/venv/
+**/.venv/
+**/__pycache__/
+**/.mypy_cache/
+**/.pytest_cache/
 
 # Build artifacts
-*.o
-*.so
-*.dylib
-*.dll
-*.lib
-*.exe
-*.dSYM/
+**/dist/
+**/build/
+**/*.o
+**/*.obj
+**/*.exe
+**/*.dll
+**/*.so
+**/*.a
+**/*.out
 
-# Cargo install
-~/.cargo/bin/
+# Logs and temp files
+**/*.log
+**/*.tmp
+**/*.swp
 
-# NIXOS
-.direnv
+# Environment
+**/.env
+**/.env.local
+**/*.env.*
 
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/graft/
-/.cache/
-/.graph/
-/INDEX.md
+# Editors
+**/.vscode/
+**/.idea/
+
+# Coverage
+**/coverage/
+**/htmlcov/
+**/.coverage
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+```

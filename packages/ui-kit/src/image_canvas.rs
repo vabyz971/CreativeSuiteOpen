@@ -1577,9 +1577,9 @@ mod tests {
             assert_eq!(t.rgba.len() as u32, TILE * TILE * 4);
         }
         // Start and end points well stamped
-        let first = &tex.tiles.iter().find(|t| t.tx == 0 && t.ty == 0).unwrap();
+        let first = &tex.tiles.iter().find(|t| t.tx == 0 && t.ty == 0).expect("tile (0,0) should exist");
         assert!(alpha_at(first, 0, 0) > 0);
-        let last = &tex.tiles.iter().find(|t| t.tx == 5 && t.ty == 5).unwrap();
+        let last = &tex.tiles.iter().find(|t| t.tx == 5 && t.ty == 5).expect("tile (5,5) should exist");
         // 3000 - 5*512 = 440 : le centre du disque final est en (440,440) local
         assert!(alpha_at(last, 440, 440) > 0);
     }
