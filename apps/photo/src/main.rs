@@ -60,7 +60,7 @@ pub fn main() -> iced::Result {
             if app.is_preferences_window(window) {
                 return "Préférences — Creative Suite Open Photo".to_string();
             }
-            match &app.project_path {
+            match &app.document.project_path {
                 Some(path) => {
                     let name = path
                         .file_stem()

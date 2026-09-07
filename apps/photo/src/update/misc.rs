@@ -27,7 +27,7 @@ use ui_kit::image_canvas::{Corner, TransformHandle};
 fn handle_event(app: &mut PhotoApp, event: iced::Event, window: iced::window::Id) -> Task<Message> {
     // Keys pressed in the preferences window must NEVER reach the document shortcuts.
     if app.is_preferences_window(window) {
-        if let Some(w) = &mut app.preferences_window
+        if let Some(w) = &mut app.windows.preferences_window
             && let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key, modifiers, ..
             }) = event
@@ -39,7 +39,7 @@ fn handle_event(app: &mut PhotoApp, event: iced::Event, window: iced::window::Id
     // Global resolution: the subscription only delivers keys NOT consumed by
     // a widget (text fields are therefore safe).
     if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event
-        && let Some(action) = app.resolver.resolve(&key, modifiers)
+        && let Some(action) = app.windows.resolver.resolve(&key, modifiers)
     {
         return super::dispatch(app, Message::ExecuteAction(action));
     }
@@ -49,7 +49,7 @@ fn handle_event(app: &mut PhotoApp, event: iced::Event, window: iced::window::Id
 fn handle_execute_action(app: &mut PhotoApp, action: preferences::PhotoAction) -> Task<Message> {
     // Single typed action -> existing messages bridge (full reuse of the
     // handlers, zero logic duplication).
-    let target = || app.selected_layer.unwrap_or_else(uuid::Uuid::nil);
+    let target = || app.document.selected_layer.unwrap_or_else(uuid::Uuid::nil);
     let msg = match action {
         preferences::PhotoAction::ToolBrush => Message::SelectTool(Tool::Brush),
         preferences::PhotoAction::ToolEraser => Message::SelectTool(Tool::Eraser),
@@ -69,9 +69,9 @@ fn handle_execute_action(app: &mut PhotoApp, action: preferences::PhotoAction) -
         preferences::PhotoAction::ZoomOut => Message::ZoomOutPressed,
         preferences::PhotoAction::ZoomFit => Message::CanvasFit,
         preferences::PhotoAction::Zoom100 => {
-            app.zoom_level = 100;
-            app.canvas_pan = Vector::new(0.0, 0.0);
-            app.canvas_selection = None;
+            app.canvas.zoom_level = 100;
+            app.canvas.canvas_pan = Vector::new(0.0, 0.0);
+            app.canvas.canvas_selection = None;
             return Task::none();
         }
         preferences::PhotoAction::ToggleLayersPanel => {
@@ -89,7 +89,7 @@ fn handle_hardware_detected(
     app: &mut PhotoApp,
     report: preferences::HardwareReport,
 ) -> Task<Message> {
-    if let Some(window) = &mut app.preferences_window {
+    if let Some(window) = &mut app.windows.preferences_window {
         window.set_hardware(report);
     }
     Task::none()
@@ -97,20 +97,20 @@ fn handle_hardware_detected(
 
 fn handle_tick_frame(app: &mut PhotoApp) -> Task<Message> {
     // Spinner (de)animation (~30 fps)
-    app.spinner_angle = (app.spinner_angle + 24.0) % 360.0;
+    app.rendering.spinner_angle = (app.rendering.spinner_angle + 24.0) % 360.0;
     Task::none()
 }
 
 fn handle_canvas_fit(app: &mut PhotoApp) -> Task<Message> {
     // Zoom to see the whole image, centered (null pan)
     if let Some((iw, ih)) = app.doc_dims().map(|(w, h)| (w as f32, h as f32)) {
-        let vw = app.canvas_viewport.width.max(1.0);
-        let vh = app.canvas_viewport.height.max(1.0);
+        let vw = app.canvas.canvas_viewport.width.max(1.0);
+        let vh = app.canvas.canvas_viewport.height.max(1.0);
         let fit = (vw / iw).min(vh / ih) * 0.95; // 5% margin
         let zoom = fit.clamp(0.08, 6.0);
-        app.zoom_level = (zoom * 100.0).round() as u32;
-        app.canvas_pan = Vector::new(0.0, 0.0);
-        app.canvas_selection = None;
+        app.canvas.zoom_level = (zoom * 100.0).round() as u32;
+        app.canvas.canvas_pan = Vector::new(0.0, 0.0);
+        app.canvas.canvas_selection = None;
     }
     Task::none()
 }
@@ -128,28 +128,28 @@ fn handle_image_canvas_event(
         }
         ui_kit::image_canvas::ImageCanvasEvent::ColorPick { x, y } => handle_pick_color(app, x, y),
         ui_kit::image_canvas::ImageCanvasEvent::Viewport(size) => {
-            app.canvas_viewport = size;
+            app.canvas.canvas_viewport = size;
             Task::none()
         }
         ui_kit::image_canvas::ImageCanvasEvent::Pan(pan) => {
-            if app.selected_tool == Tool::Hand {
-                app.canvas_pan = pan;
+            if app.tools.selected_tool == Tool::Hand {
+                app.canvas.canvas_pan = pan;
             }
             Task::none()
         }
         ui_kit::image_canvas::ImageCanvasEvent::ZoomPan { zoom, pan } => {
-            app.zoom_level = (zoom * 100.0) as u32;
-            app.canvas_pan = pan;
+            app.canvas.zoom_level = (zoom * 100.0) as u32;
+            app.canvas.canvas_pan = pan;
             Task::none()
         }
         ui_kit::image_canvas::ImageCanvasEvent::ZoomAt { zoom, pan } => {
-            app.zoom_level = (zoom * 100.0) as u32;
-            app.canvas_pan = pan;
+            app.canvas.zoom_level = (zoom * 100.0) as u32;
+            app.canvas.canvas_pan = pan;
             Task::none()
         }
         ui_kit::image_canvas::ImageCanvasEvent::SelectRect(rect) => {
-            if app.selected_tool == Tool::Select || app.selected_tool == Tool::Zoom {
-                if app.selected_tool == Tool::Zoom {
+            if app.tools.selected_tool == Tool::Select || app.tools.selected_tool == Tool::Zoom {
+                if app.tools.selected_tool == Tool::Zoom {
                     // Zoom on the selected zone
                     if let Some(r) = rect
                         && r.width > 10.0
@@ -158,14 +158,14 @@ fn handle_image_canvas_event(
                         let sx = 800.0 / r.width;
                         let sy = 600.0 / r.height;
                         let new_zoom =
-                            (sx.min(sy) * app.zoom_level as f32 / 100.0).clamp(0.08, 6.0);
-                        app.zoom_level = (new_zoom * 100.0) as u32;
+                            (sx.min(sy) * app.canvas.zoom_level as f32 / 100.0).clamp(0.08, 6.0);
+                        app.canvas.zoom_level = (new_zoom * 100.0) as u32;
                         let cx = r.x + r.width / 2.0 - 400.0;
                         let cy = r.y + r.height / 2.0 - 300.0;
-                        app.canvas_pan = Vector::new(-cx, -cy);
+                        app.canvas.canvas_pan = Vector::new(-cx, -cy);
                     }
                 } else {
-                    app.canvas_selection = rect;
+                    app.canvas.canvas_selection = rect;
                 }
             }
             Task::none()
@@ -178,11 +178,11 @@ fn handle_image_canvas_event(
         }
         ui_kit::image_canvas::ImageCanvasEvent::TransformEnd => handle_transform_end(app),
         ui_kit::image_canvas::ImageCanvasEvent::ClearSelection => {
-            app.selected_layer = None;
-            app.canvas_selection = None;
-            app.expanded_masks.clear();
-            app.expanded_filters.clear();
-            app.transform_anchor = None;
+            app.document.selected_layer = None;
+            app.canvas.canvas_selection = None;
+            app.tools.expanded_masks.clear();
+            app.tools.expanded_filters.clear();
+            app.tools.transform_anchor = None;
             Task::none()
         }
     }
@@ -198,31 +198,41 @@ fn handle_transform_start(
     // (effets identiques à `Message::SelectLayer`, sans aller-retour Task.)
     let target = match id {
         Some(uid) => {
-            if app.selected_layer != Some(uid) {
-                app.selected_layer = Some(uid);
-                app.active_mask = None;
-                app.move_anchor = None;
-                app.transform_anchor = None;
+            if app.document.selected_layer != Some(uid) {
+                app.document.selected_layer = Some(uid);
+                app.tools.active_mask = None;
+                app.tools.move_anchor = None;
+                app.tools.transform_anchor = None;
             }
             uid
         }
-        None => app.selected_layer.unwrap_or_default(),
+        None => app.document.selected_layer.unwrap_or_default(),
     };
     if target == uuid::Uuid::nil() {
         return Task::none();
     }
     // Sous-calque de filtre → geste sur le calque porteur.
-    let target = app.doc.find_filter_parent(target).unwrap_or(target);
+    let target = app
+        .document
+        .doc
+        .find_filter_parent(target)
+        .unwrap_or(target);
     // Calque masqué → transformation interdite.
-    if app.doc.find(target).map(|n| !n.visible()).unwrap_or(true) {
+    if app
+        .document
+        .doc
+        .find(target)
+        .map(|n| !n.visible())
+        .unwrap_or(true)
+    {
         return Task::none();
     }
-    let Some(l) = app.doc.pixel_layer(target) else {
+    let Some(l) = app.document.doc.pixel_layer(target) else {
         return Task::none();
     };
     let base = l.transform;
-    app.move_anchor = Some((target, base));
-    app.transform_anchor = Some(TransformAnchor {
+    app.tools.move_anchor = Some((target, base));
+    app.tools.transform_anchor = Some(TransformAnchor {
         layer_id: target,
         kind,
         base,
@@ -237,14 +247,15 @@ fn handle_transform_start(
 }
 
 fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -> Task<Message> {
-    let Some(anchor) = app.transform_anchor else {
+    let Some(anchor) = app.tools.transform_anchor else {
         return Task::none();
     };
     // Premier mouvement RÉEL du geste : on lance ONE seule fois les
     // pré-calculs drag (fond sans ce calque + composite masqué). Pas de
     // mouvement → un simple clic de sélection ne déclenche AUCUNE composite.
-    let drag_task = if !app.drag_bg_job.is_running() && app.needs_fallback() {
+    let drag_task = if !app.rendering.drag_bg_job.is_running() && app.needs_fallback() {
         let has_mask = app
+            .document
             .doc
             .find(anchor.layer_id)
             .map(|n| n.masks().iter().any(|m| m.enabled))
@@ -260,8 +271,8 @@ fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -
     } else {
         Task::none()
     };
-    let Some(LayerNode::Pixel(l)) = app.doc.find_mut(anchor.layer_id) else {
-        app.transform_anchor = None;
+    let Some(LayerNode::Pixel(l)) = app.document.doc.find_mut(anchor.layer_id) else {
+        app.tools.transform_anchor = None;
         return drag_task;
     };
     let (w0, h0) = l.dimensions();
@@ -270,27 +281,27 @@ fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -
     let new_t = transform_for_cursor(&base, w0, h0, anchor.kind, anchor.cursor_doc, doc, uniform);
     l.transform = new_t;
     // Invalide la fallback stale (contient le calque à l'ancienne position).
-    if app.fallback_handle.is_some() {
-        app.fallback_handle = None;
-        app.fallback_size = None;
+    if app.rendering.fallback_handle.is_some() {
+        app.rendering.fallback_handle = None;
+        app.rendering.fallback_size = None;
     }
     drag_task
 }
 
 fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
-    app.transform_anchor = None;
-    app.drag_bg_job.finish();
+    app.tools.transform_anchor = None;
+    app.rendering.drag_bg_job.finish();
     // Purge immédiate des buffers drag — la prochaine frame affiche le
     // fallback complet sans artefacts.
-    app.drag_background = None;
-    app.drag_background_size = None;
-    app.drag_layer_composite = None;
-    app.drag_layer_composite_size = None;
+    app.rendering.drag_background = None;
+    app.rendering.drag_background_size = None;
+    app.rendering.drag_layer_composite = None;
+    app.rendering.drag_layer_composite_size = None;
     // Fin de geste : UNE commande ancre→finale (snapshot au début, aucune
     // pendant le geste). Geste immobile = aucune entrée d'historique et
     // AUCUNE recomposite — un simple clic de sélection ne doit rien coûter.
-    if let Some((id, anchor_t)) = app.move_anchor.take()
-        && let Some(LayerNode::Pixel(l)) = app.doc.find(id)
+    if let Some((id, anchor_t)) = app.tools.move_anchor.take()
+        && let Some(LayerNode::Pixel(l)) = app.document.doc.find(id)
         && l.transform != anchor_t
     {
         let cmd = Command::SetTransform {
@@ -298,7 +309,7 @@ fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
             old: anchor_t,
             new: l.transform,
         };
-        app.history.push_command_immediate(cmd);
+        app.document.history.push_command_immediate(cmd);
         if app.needs_fallback() {
             app.invalidate_fallback();
         }
@@ -437,10 +448,10 @@ fn handle_quit(_app: &mut PhotoApp) -> Task<Message> {
 /// échantillonne la couleur au point document donné. Respecte RENDERING.md
 /// invariant #1 (composite = spawn_blocking) + #5 (tâche async = background_tasks).
 fn handle_pick_color(app: &mut PhotoApp, x: f32, y: f32) -> Task<Message> {
-    let task_id = app.background_tasks.start("Pipette...");
-    let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
-    doc_copy.restore_snapshot(app.doc.snapshot());
-    doc_copy.warm_cache_from(&app.doc);
+    let task_id = app.rendering.background_tasks.start("Pipette...");
+    let mut doc_copy = photo_engine::Document::new(app.document.doc.width, app.document.doc.height);
+    doc_copy.restore_snapshot(app.document.doc.snapshot());
+    doc_copy.warm_cache_from(&app.document.doc);
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || doc_copy.sample_color(x, y))
@@ -459,15 +470,18 @@ fn handle_color_picked(
     task_id: u64,
     color: Option<iced::Color>,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
+    app.rendering.background_tasks.finish(task_id);
     // Hors du plan composite (clic en dehors des calques) : la pipette ne
     // change PAS la couleur courante (sémantique Photoshop).
     if let Some(color) = color {
-        app.brush_color = color;
+        app.tools.brush_color = color;
     }
     // Revient à l'outil précédent (comportement pipette standard).
-    app.selected_tool = app.previous_tool.unwrap_or(crate::message::Tool::Brush);
-    app.previous_tool = None;
+    app.tools.selected_tool = app
+        .tools
+        .previous_tool
+        .unwrap_or(crate::message::Tool::Brush);
+    app.tools.previous_tool = None;
     Task::none()
 }
 
@@ -477,26 +491,26 @@ fn handle_undo_redo(app: &mut PhotoApp, is_undo: bool) -> Task<Message> {
     // full recomposite or nothing (the UI texture cache sync already targets
     // the actually-modified layers).
     let action = if is_undo {
-        app.history.undo(&mut app.doc)
+        app.document.history.undo(&mut app.document.doc)
     } else {
-        app.history.redo(&mut app.doc)
+        app.document.history.redo(&mut app.document.doc)
     };
     match action {
         Some(UndoAction::FullRestore) => {
             // Restored structure: the selection may point to a vanished node,
             // we bound it (nœuds ET sous-calques de filtres).
-            if let Some(sel) = app.selected_layer
-                && app.doc.find(sel).is_none()
-                && app.doc.find_filter_layer(sel).is_none()
+            if let Some(sel) = app.document.selected_layer
+                && app.document.doc.find(sel).is_none()
+                && app.document.doc.find_filter_layer(sel).is_none()
             {
-                app.selected_layer = app.doc.iter_pixels().last().map(|l| l.id);
+                app.document.selected_layer = app.document.doc.iter_pixels().last().map(|l| l.id);
             }
-            app.move_anchor = None;
-            app.transform_anchor = None;
-            app.drag_background = None;
-            app.drag_background_size = None;
-            app.pending_paint = None;
-            app.stroke_layer = None;
+            app.tools.move_anchor = None;
+            app.tools.transform_anchor = None;
+            app.rendering.drag_background = None;
+            app.rendering.drag_background_size = None;
+            app.tools.pending_paint = None;
+            app.tools.stroke_layer = None;
             app.invalidate_fallback();
         }
         Some(UndoAction::Applied(cmd)) if cmd.affects_composite() => {
@@ -515,23 +529,27 @@ fn handle_fallback_computed(
     generation: u64,
     result: Result<Option<(Vec<u8>, u32, u32)>, String>,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
+    app.rendering.background_tasks.finish(task_id);
     use crate::state::Finish;
     // Si la génération ne correspond plus ou qu'une édition a eu lieu pendant
     // le vol, take_fallback_task doit relancer (l'état du job le sait déjà).
-    if !matches!(app.fallback_job.finish(generation), Finish::Applied) {
+    if !matches!(
+        app.rendering.fallback_job.finish(generation),
+        Finish::Applied
+    ) {
         return app.take_fallback_task().unwrap_or_else(Task::none);
     }
     match result {
         Ok(Some((rgba, w, h))) => {
-            app.fallback_size = Some(Size::new(w as f32, h as f32));
-            app.fallback_handle = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
+            app.rendering.fallback_size = Some(Size::new(w as f32, h as f32));
+            app.rendering.fallback_handle =
+                Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
         }
         Ok(None) => {
-            app.fallback_handle = None;
-            app.fallback_size = None;
+            app.rendering.fallback_handle = None;
+            app.rendering.fallback_size = None;
         }
-        Err(e) => app.image_error = Some(e),
+        Err(e) => app.canvas.image_error = Some(e),
     }
     Task::none()
 }
@@ -542,18 +560,18 @@ fn handle_drag_background_computed(
     layer_id: uuid::Uuid,
     result: Option<(Vec<u8>, u32, u32)>,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
+    app.rendering.background_tasks.finish(task_id);
     // Le calcul est terminé : on libère l'état job AVANT de vérifier si le
     // résultat est encore pertinent (le drag peut avoir changé de cible).
-    let still_running_for = app.drag_bg_job.is_running_for(layer_id);
-    app.drag_bg_job.finish();
+    let still_running_for = app.rendering.drag_bg_job.is_running_for(layer_id);
+    app.rendering.drag_bg_job.finish();
     // Only applies if we are STILL dragging the same subtree
-    if app.move_anchor.map(|(id, _)| id) == Some(layer_id)
+    if app.tools.move_anchor.map(|(id, _)| id) == Some(layer_id)
         && still_running_for
         && let Some((rgba, w, h)) = result
     {
-        app.drag_background = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
-        app.drag_background_size = Some(Size::new(w as f32, h as f32));
+        app.rendering.drag_background = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
+        app.rendering.drag_background_size = Some(Size::new(w as f32, h as f32));
     }
     Task::none()
 }
@@ -564,31 +582,32 @@ fn handle_drag_layer_composite_computed(
     layer_id: uuid::Uuid,
     result: Option<(Vec<u8>, u32, u32)>,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.drag_layer_job.finish();
+    app.rendering.background_tasks.finish(task_id);
+    app.rendering.drag_layer_job.finish();
     // Valide seulement si on DRAG toujours CE calque — sinon le buffer est
     // orphelin et écrasé au prochain MoveLayerStart.
-    if app.move_anchor.map(|(id, _)| id) == Some(layer_id)
+    if app.tools.move_anchor.map(|(id, _)| id) == Some(layer_id)
         && let Some((rgba, w, h)) = result
     {
-        app.drag_layer_composite = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
-        app.drag_layer_composite_size = Some(Size::new(w as f32, h as f32));
+        app.rendering.drag_layer_composite =
+            Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
+        app.rendering.drag_layer_composite_size = Some(Size::new(w as f32, h as f32));
     }
     Task::none()
 }
 
 fn handle_zoom_in(app: &mut PhotoApp) -> Task<Message> {
-    app.zoom_level = (app.zoom_level + 10).clamp(5, 1600);
+    app.canvas.zoom_level = (app.canvas.zoom_level + 10).clamp(5, 1600);
     Task::none()
 }
 
 fn handle_zoom_out(app: &mut PhotoApp) -> Task<Message> {
-    app.zoom_level = app.zoom_level.saturating_sub(10).max(5);
+    app.canvas.zoom_level = app.canvas.zoom_level.saturating_sub(10).max(5);
     Task::none()
 }
 
 fn handle_detect_gpu(app: &mut PhotoApp) -> Task<Message> {
-    let task_id = app.background_tasks.start("Détection du GPU...");
+    let task_id = app.rendering.background_tasks.start("Détection du GPU...");
     Task::perform(
         async move { crate::components::gpu::detect_gpu_info().await },
         move |info| Message::GpuDetected { task_id, info },
@@ -596,9 +615,9 @@ fn handle_detect_gpu(app: &mut PhotoApp) -> Task<Message> {
 }
 
 fn handle_gpu_detected(app: &mut PhotoApp, task_id: u64, info: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.gpu_info = Some(info);
-    app.gpu_available = true;
+    app.rendering.background_tasks.finish(task_id);
+    app.rendering.gpu_info = Some(info);
+    app.rendering.gpu_available = true;
     Task::none()
 }
 

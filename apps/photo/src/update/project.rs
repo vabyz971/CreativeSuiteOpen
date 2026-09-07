@@ -87,7 +87,7 @@ fn read_file_task(
     path: std::path::PathBuf,
     label: impl Into<String>,
 ) -> Task<Message> {
-    let task_id = app.background_tasks.start(label);
+    let task_id = app.rendering.background_tasks.start(label);
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
@@ -108,6 +108,7 @@ fn read_file_task(
 
 fn load_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Message> {
     let task_id = app
+        .rendering
         .background_tasks
         .start(format!("Ouverture de {}", file_label(&path)));
     Task::perform(
@@ -122,10 +123,11 @@ fn load_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Messa
 }
 
 fn save_project_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Message> {
-    let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
-    doc_copy.restore_snapshot(app.doc.snapshot());
+    let mut doc_copy = photo_engine::Document::new(app.document.doc.width, app.document.doc.height);
+    doc_copy.restore_snapshot(app.document.doc.snapshot());
     let name = file_label(&path);
     let task_id = app
+        .rendering
         .background_tasks
         .start(format!("Enregistrement de {name}"));
     Task::perform(
@@ -159,11 +161,14 @@ fn export_dialog_task() -> Task<Message> {
 /// Export off the UI thread: full composite (infinite plane cropped to the
 /// document) then encoding according to the chosen extension.
 fn export_image_task(app: &mut PhotoApp, path: std::path::PathBuf) -> Task<Message> {
-    let mut doc_copy = photo_engine::Document::new(app.doc.width, app.doc.height);
-    doc_copy.restore_snapshot(app.doc.snapshot());
-    doc_copy.warm_cache_from(&app.doc);
+    let mut doc_copy = photo_engine::Document::new(app.document.doc.width, app.document.doc.height);
+    doc_copy.restore_snapshot(app.document.doc.snapshot());
+    doc_copy.warm_cache_from(&app.document.doc);
     let name = file_label(&path);
-    let task_id = app.background_tasks.start(format!("Export de {name}"));
+    let task_id = app
+        .rendering
+        .background_tasks
+        .start(format!("Export de {name}"));
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
@@ -202,26 +207,26 @@ fn pick_image_task(map: fn(Option<std::path::PathBuf>) -> Message) -> Task<Messa
 }
 
 fn handle_new_project(app: &mut PhotoApp) -> Task<Message> {
-    app.doc = photo_engine::Document::new(0, 0);
-    app.selected_layer = None;
-    app.canvas_pan = Vector::new(0.0, 0.0);
-    app.zoom_level = 100;
-    app.fallback_size = None;
-    app.fallback_handle = None;
-    app.image_path = None;
-    app.image_error = None;
-    app.move_anchor = None;
-    app.transform_anchor = None;
-    app.new_doc_w = "1920".to_string();
-    app.new_doc_h = "1080".to_string();
-    app.welcome_error = None;
-    app.project_path = None;
-    app.history.reset();
+    app.document.doc = photo_engine::Document::new(0, 0);
+    app.document.selected_layer = None;
+    app.canvas.canvas_pan = Vector::new(0.0, 0.0);
+    app.canvas.zoom_level = 100;
+    app.rendering.fallback_size = None;
+    app.rendering.fallback_handle = None;
+    app.canvas.image_path = None;
+    app.canvas.image_error = None;
+    app.tools.move_anchor = None;
+    app.tools.transform_anchor = None;
+    app.tools.new_doc_w = "1920".to_string();
+    app.tools.new_doc_h = "1080".to_string();
+    app.tools.welcome_error = None;
+    app.document.project_path = None;
+    app.document.history.reset();
     Task::none()
 }
 
 fn handle_open_project(app: &mut PhotoApp) -> Task<Message> {
-    if app.background_tasks.is_empty() {
+    if app.rendering.background_tasks.is_empty() {
         open_document_task()
     } else {
         Task::none()
@@ -233,7 +238,7 @@ fn handle_project_open_picked(
     path_opt: Option<std::path::PathBuf>,
 ) -> Task<Message> {
     if let Some(path) = path_opt
-        && app.background_tasks.is_empty()
+        && app.rendering.background_tasks.is_empty()
     {
         if photo_engine::project::is_project_path(&path) {
             return load_project_task(app, path);
@@ -250,30 +255,30 @@ fn handle_project_opened_ok(
     task_id: u64,
     loaded: photo_engine::project::LoadedProject,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = None;
-    app.selected_layer = loaded.document.iter_pixels().last().map(|l| l.id);
-    app.doc = loaded.document;
-    app.image_path = loaded.source_name.clone();
-    app.project_path = loaded.path.clone();
-    app.canvas_pan = Vector::new(0.0, 0.0);
-    app.zoom_level = 100;
-    app.canvas_selection = None;
-    app.welcome_error = None;
-    app.history.reset();
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = None;
+    app.document.selected_layer = loaded.document.iter_pixels().last().map(|l| l.id);
+    app.document.doc = loaded.document;
+    app.canvas.image_path = loaded.source_name.clone();
+    app.document.project_path = loaded.path.clone();
+    app.canvas.canvas_pan = Vector::new(0.0, 0.0);
+    app.canvas.zoom_level = 100;
+    app.canvas.canvas_selection = None;
+    app.tools.welcome_error = None;
+    app.document.history.reset();
     app.invalidate_fallback();
     Task::none()
 }
 
 fn handle_project_opened_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = Some(e);
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = Some(e);
     Task::none()
 }
 
 fn handle_save_project(app: &mut PhotoApp) -> Task<Message> {
-    if app.background_tasks.is_empty() && app.doc_dims().is_some() {
-        match app.project_path.clone() {
+    if app.rendering.background_tasks.is_empty() && app.doc_dims().is_some() {
+        match app.document.project_path.clone() {
             Some(path) => return save_project_task(app, path),
             None => return save_as_dialog_task(),
         }
@@ -282,7 +287,7 @@ fn handle_save_project(app: &mut PhotoApp) -> Task<Message> {
 }
 
 fn handle_save_project_as(app: &mut PhotoApp) -> Task<Message> {
-    if app.background_tasks.is_empty() {
+    if app.rendering.background_tasks.is_empty() {
         save_as_dialog_task()
     } else {
         Task::none()
@@ -301,28 +306,28 @@ fn handle_save_project_path_picked(
         {
             path.set_extension(photo_engine::project::PROJECT_EXTENSION);
         }
-        app.project_path = Some(path.clone());
+        app.document.project_path = Some(path.clone());
         return save_project_task(app, path);
     }
     Task::none()
 }
 
 fn handle_project_saved_ok(app: &mut PhotoApp, task_id: u64, name: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = None;
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = None;
     // The project name feeds the canvas title if it is empty
-    app.image_path.get_or_insert(name);
+    app.canvas.image_path.get_or_insert(name);
     Task::none()
 }
 
 fn handle_project_saved_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = Some(e);
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = Some(e);
     Task::none()
 }
 
 fn handle_export_image(app: &mut PhotoApp) -> Task<Message> {
-    if app.background_tasks.is_empty() && app.doc_dims().is_some() {
+    if app.rendering.background_tasks.is_empty() && app.doc_dims().is_some() {
         export_dialog_task()
     } else {
         Task::none()
@@ -334,7 +339,7 @@ fn handle_export_path_picked(
     path_opt: Option<std::path::PathBuf>,
 ) -> Task<Message> {
     if let Some(path) = path_opt
-        && app.background_tasks.is_empty()
+        && app.rendering.background_tasks.is_empty()
         && app.doc_dims().is_some()
     {
         return export_image_task(app, path);
@@ -343,20 +348,20 @@ fn handle_export_path_picked(
 }
 
 fn handle_image_exported_ok(app: &mut PhotoApp, task_id: u64, _name: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = None;
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = None;
     // Discreet confirmation via the error zone (green in the future UI)
     Task::none()
 }
 
 fn handle_image_exported_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = Some(e);
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = Some(e);
     Task::none()
 }
 
 fn handle_open_image(app: &mut PhotoApp) -> Task<Message> {
-    if app.background_tasks.is_empty() {
+    if app.rendering.background_tasks.is_empty() {
         pick_image_task(Message::ImagePicked)
     } else {
         Task::none()
@@ -365,7 +370,7 @@ fn handle_open_image(app: &mut PhotoApp) -> Task<Message> {
 
 fn handle_image_picked(app: &mut PhotoApp, path_opt: Option<std::path::PathBuf>) -> Task<Message> {
     if let Some(path) = path_opt
-        && app.background_tasks.is_empty()
+        && app.rendering.background_tasks.is_empty()
     {
         let label = format!("Lecture de {}", file_label(&path));
         return read_file_task(app, path, label);
@@ -379,10 +384,13 @@ fn handle_image_read_ok(
     bytes: Vec<u8>,
     name: String,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_path = Some(name.clone());
-    app.image_error = None;
-    let decode_task_id = app.background_tasks.start(format!("Décodage de {name}"));
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_path = Some(name.clone());
+    app.canvas.image_error = None;
+    let decode_task_id = app
+        .rendering
+        .background_tasks
+        .start(format!("Décodage de {name}"));
     // La lecture du tas + le décodage + la construction du buffer tournent
     // hors thread UI (spawn_blocking) pendant que le spinner anime.
     Task::perform(
@@ -404,8 +412,8 @@ fn handle_image_read_ok(
 }
 
 fn handle_image_read_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = Some(e);
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = Some(e);
     Task::none()
 }
 
@@ -414,54 +422,54 @@ fn handle_image_decoded_ok(
     task_id: u64,
     decoded: DecodedLayer,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
+    app.rendering.background_tasks.finish(task_id);
     let node = LayerNode::Pixel(decoded.0);
     // The document takes the dimensions of the first image
-    if app.doc.width == 0 || app.doc.height == 0 {
+    if app.document.doc.width == 0 || app.document.doc.height == 0 {
         let (w, h) = node_dimensions(&node);
-        app.doc.width = w;
-        app.doc.height = h;
-        app.canvas_pan = Vector::new(0.0, 0.0);
-        app.canvas_selection = None;
-        app.zoom_level = 100;
+        app.document.doc.width = w;
+        app.document.doc.height = h;
+        app.canvas.canvas_pan = Vector::new(0.0, 0.0);
+        app.canvas.canvas_selection = None;
+        app.canvas.zoom_level = 100;
     }
-    app.history.push_snapshot(app.snapshot());
+    app.document.history.push_snapshot(app.snapshot());
     let new_id = node.id();
-    app.doc.push_layer(node);
-    app.selected_layer = Some(new_id);
+    app.document.doc.push_layer(node);
+    app.document.selected_layer = Some(new_id);
     app.invalidate_fallback();
     Task::none()
 }
 
 fn handle_image_decoded_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = Some(e);
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = Some(e);
     Task::none()
 }
 
 fn handle_new_doc_width(app: &mut PhotoApp, v: String) -> Task<Message> {
-    app.new_doc_w = v;
-    app.welcome_error = None;
+    app.tools.new_doc_w = v;
+    app.tools.welcome_error = None;
     Task::none()
 }
 
 fn handle_new_doc_height(app: &mut PhotoApp, v: String) -> Task<Message> {
-    app.new_doc_h = v;
-    app.welcome_error = None;
+    app.tools.new_doc_h = v;
+    app.tools.welcome_error = None;
     Task::none()
 }
 
 fn handle_set_doc_preset(app: &mut PhotoApp, w: u32, h: u32) -> Task<Message> {
-    app.new_doc_w = w.to_string();
-    app.new_doc_h = h.to_string();
-    app.welcome_error = None;
+    app.tools.new_doc_w = w.to_string();
+    app.tools.new_doc_h = h.to_string();
+    app.tools.welcome_error = None;
     Task::none()
 }
 
 fn handle_create_document(app: &mut PhotoApp) -> Task<Message> {
     let parsed = (
-        app.new_doc_w.trim().parse::<u32>(),
-        app.new_doc_h.trim().parse::<u32>(),
+        app.tools.new_doc_w.trim().parse::<u32>(),
+        app.tools.new_doc_h.trim().parse::<u32>(),
     );
     match parsed {
         (Ok(w), Ok(h)) if (1..=10000).contains(&w) && (1..=10000).contains(&h) => {
@@ -472,41 +480,43 @@ fn handle_create_document(app: &mut PhotoApp) -> Task<Message> {
             ));
             let layer = PixelLayer::new("Arrière-plan", Arc::new(white));
             let id = layer.id;
-            app.doc.restore(w, h, vec![LayerNode::Pixel(layer)]);
-            app.selected_layer = Some(id);
-            app.image_path = None;
-            app.image_error = None;
-            app.canvas_pan = Vector::new(0.0, 0.0);
-            app.zoom_level = 100;
-            app.welcome_error = None;
-            app.project_path = None;
-            app.history.reset();
+            app.document
+                .doc
+                .restore(w, h, vec![LayerNode::Pixel(layer)]);
+            app.document.selected_layer = Some(id);
+            app.canvas.image_path = None;
+            app.canvas.image_error = None;
+            app.canvas.canvas_pan = Vector::new(0.0, 0.0);
+            app.canvas.zoom_level = 100;
+            app.tools.welcome_error = None;
+            app.document.project_path = None;
+            app.document.history.reset();
             app.invalidate_fallback();
         }
         _ => {
-            app.welcome_error = Some("Dimensions invalides (1 à 10000 px)".into());
+            app.tools.welcome_error = Some("Dimensions invalides (1 à 10000 px)".into());
         }
     }
     Task::none()
 }
 
 fn handle_show_resize_dialog(app: &mut PhotoApp) -> Task<Message> {
-    app.resize_dialog_open = !app.resize_dialog_open;
-    if app.resize_dialog_open {
+    app.tools.resize_dialog_open = !app.tools.resize_dialog_open;
+    if app.tools.resize_dialog_open {
         let (w, h) = app.doc_dims().unwrap_or((800, 600));
-        app.resize_w = w.to_string();
-        app.resize_h = h.to_string();
+        app.tools.resize_w = w.to_string();
+        app.tools.resize_h = h.to_string();
     }
     Task::none()
 }
 
 fn handle_set_resize_width(app: &mut PhotoApp, s: String) -> Task<Message> {
-    app.resize_w = s;
+    app.tools.resize_w = s;
     Task::none()
 }
 
 fn handle_set_resize_height(app: &mut PhotoApp, s: String) -> Task<Message> {
-    app.resize_h = s;
+    app.tools.resize_h = s;
     Task::none()
 }
 
@@ -514,10 +524,10 @@ fn handle_resize_document(app: &mut PhotoApp, width: u32, height: u32) -> Task<M
     let w = width.max(1);
     let h = height.max(1);
     let pre = app.snapshot();
-    app.doc.width = w;
-    app.doc.height = h;
-    app.resize_dialog_open = false;
-    app.history.push_snapshot(pre);
+    app.document.doc.width = w;
+    app.document.doc.height = h;
+    app.tools.resize_dialog_open = false;
+    app.document.history.push_snapshot(pre);
     app.invalidate_fallback();
     Task::none()
 }

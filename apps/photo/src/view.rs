@@ -27,7 +27,7 @@ use crate::state::PhotoApp;
 pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     // Fenêtre OS des préférences : contenu dédié plein cadre
     if app.is_preferences_window(window) {
-        if let Some(prefs) = &app.preferences_window {
+        if let Some(prefs) = &app.windows.preferences_window {
             return container(prefs.view().map(Message::PreferencesMsg))
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -47,85 +47,88 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
         .doc_dims()
         .map(|(w, h)| iced::Size::new(w as f32, h as f32));
     // Contenu central : barre contextuelle (projet/zoom/export) + workspace
-    let menus = app_menus(app.tools_visible, app.selected_layer);
+    let menus = app_menus(app.canvas.tools_visible, app.document.selected_layer);
     let menu_buttons = ui_kit::menu::bar(&menus);
 
     // Bouton spinner façon Final Cut Pro : toujours visible, tourne pendant
     // un traitement en arrière-plan, clic → menu des tâches en cours.
     // La primitive vit dans ui_kit::shell (réutilisable par vidéo/audio).
-    let spinning = !app.background_tasks.is_empty();
+    let spinning = !app.rendering.background_tasks.is_empty();
     let spinner = Some(ui_kit::shell::task_indicator(
         spinning,
-        app.spinner_angle,
-        app.background_tasks.labels(),
-        app.task_menu_open,
+        app.rendering.spinner_angle,
+        app.rendering.background_tasks.labels(),
+        app.rendering.task_menu_open,
         Message::ToggleTaskMenu,
         Message::ToggleTaskMenu,
     ));
 
     // Barre haute : Export + menu du tool à sa droite, sans fond
-    let selected_scale_percent = app
-        .selected_layer
-        .and_then(|id| app.doc.pixel_layer(id).map(|l| l.transform.scale_x * 100.0));
+    let selected_scale_percent = app.document.selected_layer.and_then(|id| {
+        app.document
+            .doc
+            .pixel_layer(id)
+            .map(|l| l.transform.scale_x * 100.0)
+    });
     let context_bar = components::toolbar::context_bar(
-        app.selected_tool,
-        app.selected_layer,
+        app.tools.selected_tool,
+        app.document.selected_layer,
         selected_scale_percent,
-        app.canvas_selection.is_some(),
-        app.brush_color,
-        app.brush_size,
-        app.brush_opacity,
-        app.color_picker_open,
+        app.canvas.canvas_selection.is_some(),
+        app.tools.brush_color,
+        app.tools.brush_size,
+        app.tools.brush_opacity,
+        app.tools.color_picker_open,
     );
 
     let central = iced::widget::column![
         context_bar,
         components::workspace::render(
-            &app.panes,
-            app.focus,
-            &app.doc,
-            &app.preview_cache,
-            app.selected_layer,
-            app.dragged_layer,
-            app.active_mask,
-            &app.expanded_masks,
-            &app.expanded_filters,
-            app.filter_menu_open,
-            app.mask_brush_black,
+            &app.workspace.panes,
+            app.workspace.focus,
+            &app.document.doc,
+            &app.rendering.preview_cache,
+            app.document.selected_layer,
+            app.tools.dragged_layer,
+            app.tools.active_mask,
+            &app.tools.expanded_masks,
+            &app.tools.expanded_filters,
+            app.tools.filter_menu_open,
+            app.tools.mask_brush_black,
             doc_size,
-            app.fallback_handle.clone(),
-            app.fallback_size,
-            app.move_anchor.map(|(id, _)| id),
-            app.move_anchor.map(|(_, t)| (t.offset_x, t.offset_y)),
-            app.drag_background.clone(),
-            app.drag_background_size,
-            app.drag_layer_composite.clone(),
-            app.drag_layer_composite_size,
-            app.image_path.clone(),
-            app.image_error.clone(),
-            app.selected_tool,
-            app.brush_color,
-            app.color_picker_open,
-            app.tools_visible,
-            app.canvas_pan,
-            app.zoom_level,
-            app.canvas_selection,
-            app.color_profile.clone(),
-            app.canvas_viewport,
+            app.rendering.fallback_handle.clone(),
+            app.rendering.fallback_size,
+            app.tools.move_anchor.map(|(id, _)| id),
+            app.tools.move_anchor.map(|(_, t)| (t.offset_x, t.offset_y)),
+            app.rendering.drag_background.clone(),
+            app.rendering.drag_background_size,
+            app.rendering.drag_layer_composite.clone(),
+            app.rendering.drag_layer_composite_size,
+            app.canvas.image_path.clone(),
+            app.canvas.image_error.clone(),
+            app.tools.selected_tool,
+            app.tools.brush_color,
+            app.tools.color_picker_open,
+            app.canvas.tools_visible,
+            app.canvas.canvas_pan,
+            app.canvas.zoom_level,
+            app.canvas.canvas_selection,
+            app.canvas.color_profile.clone(),
+            app.canvas.canvas_viewport,
             ui_kit::image_canvas::BrushStyle {
                 color: [
-                    (app.brush_color.r * 255.0).clamp(0.0, 255.0) as u8,
-                    (app.brush_color.g * 255.0).clamp(0.0, 255.0) as u8,
-                    (app.brush_color.b * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.tools.brush_color.r * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.tools.brush_color.g * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.tools.brush_color.b * 255.0).clamp(0.0, 255.0) as u8,
                 ],
-                radius: app.brush_size / 2.0,
-                opacity: app.brush_opacity,
-                erase: app.selected_tool == crate::message::Tool::Eraser,
+                radius: app.tools.brush_size / 2.0,
+                opacity: app.tools.brush_opacity,
+                erase: app.tools.selected_tool == crate::message::Tool::Eraser,
             },
-            app.pending_paint.as_ref().map(|p| p.tex.clone()),
-            &app.new_doc_w,
-            &app.new_doc_h,
-            app.welcome_error.as_deref(),
+            app.tools.pending_paint.as_ref().map(|p| p.tex.clone()),
+            &app.tools.new_doc_w,
+            &app.tools.new_doc_h,
+            app.tools.welcome_error.as_deref(),
         )
     ];
     // Taille du document — titre du panel principal
@@ -156,7 +159,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     );
 
     // Dialogue redimensionnement document (Édition → Taille du document...)
-    if app.resize_dialog_open {
+    if app.tools.resize_dialog_open {
         let dialog = iced::widget::container(
             iced::widget::column![
                 iced::widget::text("Taille du document")
@@ -166,7 +169,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
                     iced::widget::text("Largeur")
                         .size(12)
                         .width(iced::Length::Fixed(60.0)),
-                    iced::widget::text_input("1920", &app.resize_w)
+                    iced::widget::text_input("1920", &app.tools.resize_w)
                         .on_input(Message::SetResizeWidth)
                         .width(iced::Length::Fixed(80.0)),
                     iced::widget::text("px").size(11),
@@ -177,7 +180,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
                     iced::widget::text("Hauteur")
                         .size(12)
                         .width(iced::Length::Fixed(60.0)),
-                    iced::widget::text_input("1080", &app.resize_h)
+                    iced::widget::text_input("1080", &app.tools.resize_h)
                         .on_input(Message::SetResizeHeight)
                         .width(iced::Length::Fixed(80.0)),
                     iced::widget::text("px").size(11),
@@ -190,8 +193,8 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
                         .style(|_, s| ui_kit::style::ghost(s)),
                     iced::widget::button(iced::widget::text("Appliquer").size(12))
                         .on_press(Message::ResizeDocument {
-                            width: app.resize_w.parse::<u32>().unwrap_or(800),
-                            height: app.resize_h.parse::<u32>().unwrap_or(600),
+                            width: app.tools.resize_w.parse::<u32>().unwrap_or(800),
+                            height: app.tools.resize_h.parse::<u32>().unwrap_or(600),
                         })
                         .style(|_, s| ui_kit::style::primary(s)),
                 ]
@@ -227,7 +230,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
 /// exemple) n'atteint jamais le résolveur — plus besoin d'un flag
 /// `text_input_focused` maintenu à la main.
 pub fn subscription(app: &PhotoApp) -> Subscription<Message> {
-    let tick = if !app.background_tasks.is_empty() {
+    let tick = if !app.rendering.background_tasks.is_empty() {
         iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::TickFrame)
     } else {
         Subscription::none()

@@ -25,12 +25,17 @@ use uuid::Uuid;
 
 pub fn handle_brush_start(app: &mut PhotoApp, x: f32, y: f32, erase: bool) -> Task<Message> {
     let _ = (x, y, erase);
-    if app.pending_paint.is_none()
-        && let Some(id) = app.selected_layer
-        && app.doc.pixel_layer(id).is_some()
-        && app.doc.find(id).map(|n| n.visible()).unwrap_or(false)
+    if app.tools.pending_paint.is_none()
+        && let Some(id) = app.document.selected_layer
+        && app.document.doc.pixel_layer(id).is_some()
+        && app
+            .document
+            .doc
+            .find(id)
+            .map(|n| n.visible())
+            .unwrap_or(false)
     {
-        app.stroke_layer = Some(id);
+        app.tools.stroke_layer = Some(id);
     }
     Task::none()
 }
@@ -41,20 +46,21 @@ pub fn handle_brush_end(
     tex: Option<ui_kit::image_canvas::StrokeTex>,
     erase: bool,
 ) -> Task<Message> {
-    let stroke_target = app.stroke_layer.take();
+    let stroke_target = app.tools.stroke_layer.take();
     if let Some(id) = stroke_target
-        && app.pending_paint.is_none()
+        && app.tools.pending_paint.is_none()
         && points.len() > 1
         && let Some(tex) = tex
     {
         // Masque actif : ciblage direct OU via le calque porteur (un masque
         // de sous-calque se peint depuis le parent, façon Affinity).
-        let active = app.active_mask.and_then(|t| {
-            let owner_ok = t.layer_id == id || app.doc.find_filter_parent(t.layer_id) == Some(id);
+        let active = app.tools.active_mask.and_then(|t| {
+            let owner_ok =
+                t.layer_id == id || app.document.doc.find_filter_parent(t.layer_id) == Some(id);
             owner_ok.then_some(t)
         });
         let stroke_mask_id = active
-            .filter(|t| app.doc.mask_of(t.layer_id, t.mask_id).is_some())
+            .filter(|t| app.document.doc.mask_of(t.layer_id, t.mask_id).is_some())
             .map(|t| t.mask_id);
         // Porteur effectif du masque (filtre ou calque) — utilisé pour la
         // lecture, le write-back et l'espace de transform.
@@ -64,16 +70,20 @@ pub fn handle_brush_end(
         // buffer se fait dans le worker (`commit_stroke`), pas sur le thread UI.
         let source = if is_mask {
             let owner = mask_owner.unwrap();
-            let m = app.doc.mask_of(owner, stroke_mask_id.unwrap()).unwrap();
+            let m = app
+                .document
+                .doc
+                .mask_of(owner, stroke_mask_id.unwrap())
+                .unwrap();
             let mask = Arc::clone(&m.image);
             // Espace du porteur : sous-calque → transform du calque parent.
-            let carrier = app.doc.find_filter_parent(owner).unwrap_or(owner);
-            let transform = match app.doc.find(carrier).unwrap() {
+            let carrier = app.document.doc.find_filter_parent(owner).unwrap_or(owner);
+            let transform = match app.document.doc.find(carrier).unwrap() {
                 photo_engine::LayerNode::Pixel(l) => l.transform,
                 _ => crate::layers::Transform2D::default(),
             };
             PaintSource::Mask(mask, transform)
-        } else if let Some(layer) = app.doc.pixel_layer(id) {
+        } else if let Some(layer) = app.document.doc.pixel_layer(id) {
             PaintSource::Dyn(Arc::clone(&layer.source_image), layer.transform)
         } else {
             return Task::none();
@@ -81,23 +91,23 @@ pub fn handle_brush_end(
         let pts = points;
         // Le write-back suit le PORTEUR du masque (peut être un filtre).
         let commit_owner = mask_owner.unwrap_or(id);
-        app.pending_paint = Some(crate::message::PendingPaint {
+        app.tools.pending_paint = Some(crate::message::PendingPaint {
             layer_id: commit_owner,
             mask_id: stroke_mask_id,
             tex: tex.clone(),
         });
-        app.history.push_snapshot(app.snapshot());
+        app.document.history.push_snapshot(app.snapshot());
         // Sur un masque (façon Affinity) : le pinceau peint la couleur du
         // toggle — noir = masque (cache), blanc = révèle ; la gomme révèle
         // toujours (blanc). Mode Paint pour écrire la couverture (canal R).
         let (stroke_color, stroke_mode) = if is_mask {
-            let reveal = erase || !app.mask_brush_black;
+            let reveal = erase || !app.tools.mask_brush_black;
             (
                 if reveal { [255, 255, 255] } else { [0, 0, 0] },
                 photo_engine::paint::StrokeMode::Paint,
             )
         } else {
-            let c = app.brush_color;
+            let c = app.tools.brush_color;
             (
                 [
                     (c.r * 255.0) as u8,
@@ -112,12 +122,12 @@ pub fn handle_brush_end(
             )
         };
         let brush = photo_engine::paint::BrushParams {
-            radius: app.brush_size / 2.0,
+            radius: app.tools.brush_size / 2.0,
             color: stroke_color,
-            opacity: app.brush_opacity,
+            opacity: app.tools.brush_opacity,
             mode: stroke_mode,
         };
-        let task_id = app.background_tasks.start("Trait de pinceau...");
+        let task_id = app.rendering.background_tasks.start("Trait de pinceau...");
         return Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
@@ -162,15 +172,16 @@ pub fn handle_paint_failed(
     layer_id: Uuid,
     mask_id: Option<Uuid>,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
+    app.rendering.background_tasks.finish(task_id);
     if app
+        .tools
         .pending_paint
         .as_ref()
         .is_some_and(|p| p.layer_id == layer_id && p.mask_id == mask_id)
     {
-        app.pending_paint = None;
+        app.tools.pending_paint = None;
     }
-    app.image_error = Some("Échec interne lors de l'application du trait".into());
+    app.canvas.image_error = Some("Échec interne lors de l'application du trait".into());
     Task::none()
 }
 
@@ -181,38 +192,39 @@ pub fn handle_paint_applied(
     mask_id: Option<Uuid>,
     buf: photo_engine::paint::StrokeCommit,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
+    app.rendering.background_tasks.finish(task_id);
     if let Some(img) = image::RgbaImage::from_raw(buf.width, buf.height, buf.rgba) {
         if let Some(mask_id) = mask_id {
-            if let Some(mask) = app.doc.mask_of_mut(layer_id, mask_id) {
+            if let Some(mask) = app.document.doc.mask_of_mut(layer_id, mask_id) {
                 mask.image = Arc::new(img);
                 mask.touch();
             }
         } else {
-            app.doc
+            app.document
+                .doc
                 .set_source_image(layer_id, image::DynamicImage::ImageRgba8(img));
         }
     }
-    app.pending_paint = None;
+    app.tools.pending_paint = None;
     app.invalidate_fallback();
     Task::none()
 }
 
 pub fn handle_set_brush_color(app: &mut PhotoApp, c: iced::Color) -> Task<Message> {
-    app.brush_color = c;
-    app.color_picker_open = false;
+    app.tools.brush_color = c;
+    app.tools.color_picker_open = false;
     Task::none()
 }
 pub fn handle_set_brush_size(app: &mut PhotoApp, s: f32) -> Task<Message> {
-    app.brush_size = s;
+    app.tools.brush_size = s;
     Task::none()
 }
 pub fn handle_set_brush_opacity(app: &mut PhotoApp, o: f32) -> Task<Message> {
-    app.brush_opacity = o;
+    app.tools.brush_opacity = o;
     Task::none()
 }
 pub fn handle_toggle_picker(app: &mut PhotoApp) -> Task<Message> {
-    app.color_picker_open = !app.color_picker_open;
+    app.tools.color_picker_open = !app.tools.color_picker_open;
     Task::none()
 }
 pub fn handle_select_tool(app: &mut PhotoApp, tool: crate::message::Tool) -> Task<Message> {
@@ -220,32 +232,33 @@ pub fn handle_select_tool(app: &mut PhotoApp, tool: crate::message::Tool) -> Tas
     // automatiquement après l'échantillonnage. Choisir un autre outil
     // explicitement efface la mémorisation.
     if tool == crate::message::Tool::Eyedropper {
-        if app.selected_tool != Tool::Eyedropper {
-            app.previous_tool = Some(app.selected_tool);
+        if app.tools.selected_tool != Tool::Eyedropper {
+            app.tools.previous_tool = Some(app.tools.selected_tool);
         }
     } else {
-        app.previous_tool = None;
+        app.tools.previous_tool = None;
     }
-    app.selected_tool = tool;
-    app.canvas_selection = None;
-    app.move_anchor = None;
-    app.transform_anchor = None;
+    app.tools.selected_tool = tool;
+    app.canvas.canvas_selection = None;
+    app.tools.move_anchor = None;
+    app.tools.transform_anchor = None;
     Task::none()
 }
 pub fn handle_toggle_tools(app: &mut PhotoApp) -> Task<Message> {
-    app.tools_visible = !app.tools_visible;
+    app.canvas.tools_visible = !app.canvas.tools_visible;
     Task::none()
 }
 pub fn handle_set_active_mask(
     app: &mut PhotoApp,
     target: Option<crate::message::MaskTarget>,
 ) -> Task<Message> {
-    app.active_mask = target;
+    app.tools.active_mask = target;
     Task::none()
 }
 pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     // Porteur = calque pixels/groupe OU sous-calque de filtre.
     let can = app
+        .document
         .doc
         .find(id)
         .map(|n| {
@@ -255,15 +268,18 @@ pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
             )
         })
         .unwrap_or(false)
-        || app.doc.find_filter_layer(id).is_some();
+        || app.document.doc.find_filter_layer(id).is_some();
     if can {
         // Dimensions source : le sous-calque vit dans l'espace du parent.
-        let carrier = app.doc.find_filter_parent(id).unwrap_or(id);
-        let (w, h) = match app.doc.find(carrier) {
+        let carrier = app.document.doc.find_filter_parent(id).unwrap_or(id);
+        let (w, h) = match app.document.doc.find(carrier) {
             Some(photo_engine::LayerNode::Pixel(l)) => l.dimensions(),
-            _ => (app.doc.width.max(1), app.doc.height.max(1)),
+            _ => (
+                app.document.doc.width.max(1),
+                app.document.doc.height.max(1),
+            ),
         };
-        let task_id = app.background_tasks.start("Ajout d'un masque...");
+        let task_id = app.rendering.background_tasks.start("Ajout d'un masque...");
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
@@ -292,39 +308,39 @@ pub fn handle_add_mask_computed(
     id: Uuid,
     mask: photo_engine::LayerMask,
 ) -> Task<Message> {
-    app.background_tasks.finish(task_id);
+    app.rendering.background_tasks.finish(task_id);
     let pre = app.snapshot();
     let mask_id = mask.id;
-    if let Some(masks) = app.doc.masks_of_mut(id) {
+    if let Some(masks) = app.document.doc.masks_of_mut(id) {
         masks.push(mask);
     }
-    app.expanded_masks.insert(id);
-    app.active_mask = Some(crate::message::MaskTarget {
+    app.tools.expanded_masks.insert(id);
+    app.tools.active_mask = Some(crate::message::MaskTarget {
         layer_id: id,
         mask_id,
     });
-    app.history.push_snapshot(pre);
+    app.document.history.push_snapshot(pre);
     app.invalidate_fallback();
     Task::none()
 }
 
 pub fn handle_add_mask_failed(app: &mut PhotoApp, task_id: u64, error: String) -> Task<Message> {
-    app.background_tasks.finish(task_id);
-    app.image_error = Some(error);
+    app.rendering.background_tasks.finish(task_id);
+    app.canvas.image_error = Some(error);
     Task::none()
 }
 
 pub fn handle_remove_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> Task<Message> {
-    let existed = app.doc.mask_of(layer_id, mask_id).is_some();
+    let existed = app.document.doc.mask_of(layer_id, mask_id).is_some();
     if existed {
         let pre = app.snapshot();
-        if let Some(masks) = app.doc.masks_of_mut(layer_id) {
+        if let Some(masks) = app.document.doc.masks_of_mut(layer_id) {
             masks.retain(|m| m.id != mask_id);
         }
-        if app.active_mask.map(|t| (t.layer_id, t.mask_id)) == Some((layer_id, mask_id)) {
-            app.active_mask = None;
+        if app.tools.active_mask.map(|t| (t.layer_id, t.mask_id)) == Some((layer_id, mask_id)) {
+            app.tools.active_mask = None;
         }
-        app.history.push_snapshot(pre);
+        app.document.history.push_snapshot(pre);
         app.invalidate_fallback();
     }
     Task::none()
@@ -334,43 +350,43 @@ pub fn handle_toggle_mask_enabled(
     layer_id: Uuid,
     mask_id: Uuid,
 ) -> Task<Message> {
-    if let Some(m) = app.doc.mask_of(layer_id, mask_id) {
+    if let Some(m) = app.document.doc.mask_of(layer_id, mask_id) {
         let cmd = photo_engine::Command::SetMaskEnabled {
             node_id: layer_id,
             mask_id,
             old: m.enabled,
             new: !m.enabled,
         };
-        app.history.push_command_immediate(cmd.clone());
-        let _ = app.doc.apply_command(cmd);
+        app.document.history.push_command_immediate(cmd.clone());
+        let _ = app.document.doc.apply_command(cmd);
         app.invalidate_fallback();
     }
     Task::none()
 }
 pub fn handle_invert_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> Task<Message> {
-    if let Some(m) = app.doc.mask_of(layer_id, mask_id) {
+    if let Some(m) = app.document.doc.mask_of(layer_id, mask_id) {
         let cmd = photo_engine::Command::SetMaskInverted {
             node_id: layer_id,
             mask_id,
             old: m.inverted,
             new: !m.inverted,
         };
-        app.history.push_command_immediate(cmd.clone());
-        let _ = app.doc.apply_command(cmd);
+        app.document.history.push_command_immediate(cmd.clone());
+        let _ = app.document.doc.apply_command(cmd);
         app.invalidate_fallback();
     }
     Task::none()
 }
 pub fn handle_toggle_mask_list(app: &mut PhotoApp, layer_id: Uuid) -> Task<Message> {
-    if app.expanded_masks.contains(&layer_id) {
-        app.expanded_masks.remove(&layer_id);
+    if app.tools.expanded_masks.contains(&layer_id) {
+        app.tools.expanded_masks.remove(&layer_id);
     } else {
-        app.expanded_masks.insert(layer_id);
+        app.tools.expanded_masks.insert(layer_id);
     }
     Task::none()
 }
 pub fn handle_toggle_mask_color(app: &mut PhotoApp) -> Task<Message> {
-    app.mask_brush_black = !app.mask_brush_black;
+    app.tools.mask_brush_black = !app.tools.mask_brush_black;
     Task::none()
 }
 

@@ -33,7 +33,7 @@ mod project;
 /// (cache dérivé des buffers purs du moteur — UN seul point de sync).
 pub fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
     let task = dispatch(app, message);
-    app.preview_cache.sync(&app.doc);
+    app.rendering.preview_cache.sync(&app.document.doc);
     // Le fallback périmé est recalculé HORS thread UI — jamais de gel.
     let fallback = app.take_fallback_task();
     Task::batch([task, fallback.unwrap_or_else(Task::none)])
@@ -84,58 +84,64 @@ mod tests {
     fn seed_layer(app: &mut PhotoApp, w: u32, h: u32) -> uuid::Uuid {
         let layer = photo_engine::PixelLayer::new("Test", solid_img(w, h));
         let id = layer.id;
-        app.doc.push_layer(photo_engine::LayerNode::Pixel(layer));
-        app.selected_layer = Some(id);
-        app.history.push_snapshot(app.snapshot());
+        app.document
+            .doc
+            .push_layer(photo_engine::LayerNode::Pixel(layer));
+        app.document.selected_layer = Some(id);
+        app.document.history.push_snapshot(app.snapshot());
         id
     }
 
     #[test]
     fn cycle_calque_undo_redo() {
         let mut app = PhotoApp::default();
-        app.doc = photo_engine::Document::new(4, 4);
+        app.document.doc = photo_engine::Document::new(4, 4);
         let id = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: 42.0 });
-        assert_eq!(app.doc.find(id).unwrap().opacity(), 42.0);
+        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 42.0);
         let _ = update(&mut app, Message::Undo);
-        assert_eq!(app.doc.find(id).unwrap().opacity(), 100.0);
+        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 100.0);
         let _ = update(&mut app, Message::Redo);
-        assert_eq!(app.doc.find(id).unwrap().opacity(), 42.0);
+        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 42.0);
     }
 
     #[test]
     fn duplication_produit_nouvel_id() {
         let mut app = PhotoApp::default();
-        app.doc = photo_engine::Document::new(2, 2);
+        app.document.doc = photo_engine::Document::new(2, 2);
         let id = seed_layer(&mut app, 2, 2);
         let id2 = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::DuplicateLayer(id2));
-        let dup = app.selected_layer.unwrap();
+        let dup = app.document.selected_layer.unwrap();
         assert_ne!(dup, id2);
         assert_ne!(dup, id);
-        assert_eq!(app.doc.pixel_count(), 3);
+        assert_eq!(app.document.doc.pixel_count(), 3);
     }
 
     #[test]
     fn suppression_dernier_calque_refusee() {
         let mut app = PhotoApp::default();
-        app.doc = photo_engine::Document::new(2, 2);
+        app.document.doc = photo_engine::Document::new(2, 2);
         let id = seed_layer(&mut app, 2, 2);
-        assert_eq!(app.doc.pixel_count(), 1);
+        assert_eq!(app.document.doc.pixel_count(), 1);
         let _ = update(&mut app, Message::DeleteLayer(id));
-        assert_eq!(app.doc.pixel_count(), 1, "dernier calque non supprimable");
+        assert_eq!(
+            app.document.doc.pixel_count(),
+            1,
+            "dernier calque non supprimable"
+        );
     }
 
     #[test]
     fn coalescing_opacite_en_un_undo() {
         let mut app = PhotoApp::default();
-        app.doc = photo_engine::Document::new(2, 2);
+        app.document.doc = photo_engine::Document::new(2, 2);
         let id = seed_layer(&mut app, 2, 2);
         for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
             let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: v });
         }
         let _ = update(&mut app, Message::Undo);
-        assert_eq!(app.doc.find(id).unwrap().opacity(), 100.0);
+        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 100.0);
     }
 
     /// Pendant un déplacement (outil Déplacer), AUCUN message ne doit
@@ -145,11 +151,12 @@ mod tests {
     #[test]
     fn drag_masque_zero_recomposite_par_mouvement() {
         let mut app = PhotoApp::default();
-        app.doc = photo_engine::Document::new(4, 4);
+        app.document.doc = photo_engine::Document::new(4, 4);
         let id = seed_layer(&mut app, 2, 2);
         // Masque actif → le rendu passe obligatoirement par le fallback.
         let mask_img = image::ImageBuffer::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
-        app.doc
+        app.document
+            .doc
             .pixel_layer_mut(id)
             .unwrap()
             .masks
@@ -173,10 +180,14 @@ mod tests {
                 doc: (0.0, 0.0),
             }),
         );
-        assert!(app.move_anchor.is_some(), "geste actif");
-        assert!(!app.drag_bg_job.is_running(), "rien de lancé au clic seul");
+        assert!(app.tools.move_anchor.is_some(), "geste actif");
         assert!(
-            !app.fallback_job.needs_recompute() && !app.fallback_job.in_flight(),
+            !app.rendering.drag_bg_job.is_running(),
+            "rien de lancé au clic seul"
+        );
+        assert!(
+            !app.rendering.fallback_job.needs_recompute()
+                && !app.rendering.fallback_job.in_flight(),
             "clic seul : fallback intact"
         );
 
@@ -188,9 +199,12 @@ mod tests {
                 uniform: false,
             }),
         );
-        assert!(app.drag_bg_job.is_running(), "fond de drag pré-calculé");
         assert!(
-            app.drag_layer_job.is_running(),
+            app.rendering.drag_bg_job.is_running(),
+            "fond de drag pré-calculé"
+        );
+        assert!(
+            app.rendering.drag_layer_job.is_running(),
             "composite masqué pré-calculé"
         );
 
@@ -209,7 +223,7 @@ mod tests {
                 ),
             );
             assert!(
-                !app.fallback_job.needs_recompute(),
+                !app.rendering.fallback_job.needs_recompute(),
                 "move {i} : fallback non invalide"
             );
             assert!(
@@ -224,7 +238,7 @@ mod tests {
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformEnd),
         );
         assert!(
-            app.fallback_job.in_flight(),
+            app.rendering.fallback_job.in_flight(),
             "le relâchement lance exactement UNE recomposite"
         );
         assert!(
@@ -238,10 +252,11 @@ mod tests {
     #[test]
     fn clic_selection_sans_mouvement_ne_lance_aucune_composite() {
         let mut app = PhotoApp::default();
-        app.doc = photo_engine::Document::new(4, 4);
+        app.document.doc = photo_engine::Document::new(4, 4);
         let id = seed_layer(&mut app, 2, 2);
         let mask_img = image::ImageBuffer::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
-        app.doc
+        app.document
+            .doc
             .pixel_layer_mut(id)
             .unwrap()
             .masks
@@ -257,7 +272,7 @@ mod tests {
         // Clic simple : Start (sélection) + End, AUCUN mouvement entre les
         // deux. Doit être gratuit — ni pré-calcul drag, ni recomposite, ni
         // entrée d'historique au-delà du seed initial.
-        let before = app.history.undo_len();
+        let before = app.document.history.undo_len();
         let _ = update(
             &mut app,
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformStart {
@@ -270,15 +285,19 @@ mod tests {
             &mut app,
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformEnd),
         );
-        assert_eq!(app.move_anchor, None, "geste terminé");
-        assert!(!app.drag_bg_job.is_running(), "aucun pré-calcul lancé");
+        assert_eq!(app.tools.move_anchor, None, "geste terminé");
         assert!(
-            !app.fallback_job.in_flight() && !app.fallback_job.needs_recompute(),
+            !app.rendering.drag_bg_job.is_running(),
+            "aucun pré-calcul lancé"
+        );
+        assert!(
+            !app.rendering.fallback_job.in_flight()
+                && !app.rendering.fallback_job.needs_recompute(),
             "aucune recomposite au relâchement"
         );
         assert!(app.take_fallback_task().is_none(), "aucune tâche fallback");
         assert_eq!(
-            app.history.undo_len(),
+            app.document.history.undo_len(),
             before,
             "aucune entrée d'historique pour un clic immobile"
         );

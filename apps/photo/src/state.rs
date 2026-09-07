@@ -14,7 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! État applicatif Photo : document LayerTree, canvas, outils, préférences.
+//! État applicatif Photo : regroupé par responsabilité (AGENT §9) :
+//! - [`DocumentState`] : arbre de calques, sélection, historique, projet
+//! - [`CanvasState`] : zoom, pan, viewport, état d'image, barre d'outils
+//! - [`ToolState`] : outil actif, pinceau, transformation, masques, dialogues
+//! - [`RenderingState`] : cache de preview, tâches de rendu, fallback, GPU
+//! - [`WorkspaceState`] : `pane_grid` et focus
+//! - [`WindowState`] : fenêtres secondaires, préférences, raccourcis
+//!
+//! [`PhotoApp`] reste l'entrée unique pour iced — ses méthodes orchestrent
+//! les sous-états sans devenir un god object (un domaine = un struct).
 
 use iced::widget::{image as iced_image, pane_grid};
 use iced::{Color, Rectangle, Size, Task, Vector};
@@ -22,6 +31,195 @@ use uuid::Uuid;
 
 use crate::components;
 use crate::message::{Message, PanelType, PendingPaint, Tool};
+
+// ---------------------------------------------------------------------------
+// Sous-états (AGENT §9) — un struct par responsabilité réelle.
+// ---------------------------------------------------------------------------
+
+/// État du document : l'arbre de calques, la sélection, l'historique,
+/// le chemin du projet. Tout ce qui survit à un changement d'outil.
+pub struct DocumentState {
+    /// Arbre de calques (index 0 = bas de la pile).
+    pub doc: photo_engine::Document,
+    pub selected_layer: Option<Uuid>,
+    /// Historique hybride (snapshots + commandes légères).
+    pub history: photo_engine::history::History,
+    pub project_path: Option<std::path::PathBuf>,
+}
+
+impl Default for DocumentState {
+    fn default() -> Self {
+        Self {
+            doc: photo_engine::Document::new(0, 0),
+            selected_layer: None,
+            history: photo_engine::history::History::new(),
+            project_path: None,
+        }
+    }
+}
+
+/// État du canvas : géométrie d'affichage, état d'image, navigation,
+/// visibilité de la barre d'outils flottante.
+pub struct CanvasState {
+    pub zoom_level: u32,
+    pub canvas_pan: Vector,
+    /// Publiée par le widget image_canvas.
+    pub canvas_viewport: Size,
+    pub canvas_selection: Option<Rectangle>,
+    pub color_profile: String,
+    pub image_path: Option<String>,
+    pub image_error: Option<String>,
+    pub tools_visible: bool,
+}
+
+impl Default for CanvasState {
+    fn default() -> Self {
+        Self {
+            zoom_level: 100,
+            canvas_pan: Vector::new(0.0, 0.0),
+            canvas_viewport: Size::new(800.0, 600.0),
+            canvas_selection: None,
+            color_profile: "sRGB IEC61966-2.1".into(),
+            image_path: None,
+            image_error: None,
+            tools_visible: true,
+        }
+    }
+}
+
+/// État de l'outil actif : outil sélectionné, pinceau, transformation en
+/// cours, masque actif, dialogues de création/édition de document.
+pub struct ToolState {
+    pub selected_tool: Tool,
+    /// Outil mémorisé avant la pipette — revenu automatique après l'échantillon.
+    pub previous_tool: Option<Tool>,
+    /// Transform COMPLET au début du geste Déplacer — sert à construire la
+    /// commande `SetTransform` ancre→finale poussée au relâchement.
+    pub move_anchor: Option<(Uuid, crate::layers::Transform2D)>,
+    /// Ancre du geste de transformation (poignées Affinity).
+    pub(crate) transform_anchor: Option<TransformAnchor>,
+    pub brush_color: Color,
+    pub brush_size: f32,
+    pub brush_opacity: f32,
+    pub color_picker_open: bool,
+    pub active_mask: Option<crate::message::MaskTarget>,
+    /// `true` = noir (masque), `false` = blanc (révèle).
+    pub mask_brush_black: bool,
+    pub expanded_masks: std::collections::HashSet<Uuid>,
+    pub expanded_filters: std::collections::HashSet<Uuid>,
+    pub filter_menu_open: bool,
+    pub stroke_layer: Option<Uuid>,
+    pub pending_paint: Option<PendingPaint>,
+    pub dragged_layer: Option<Uuid>,
+    // Écran d'accueil
+    pub new_doc_w: String,
+    pub new_doc_h: String,
+    pub welcome_error: Option<String>,
+    // Redimensionnement
+    pub resize_dialog_open: bool,
+    pub resize_w: String,
+    pub resize_h: String,
+}
+
+impl Default for ToolState {
+    fn default() -> Self {
+        Self {
+            selected_tool: Tool::Hand,
+            previous_tool: None,
+            move_anchor: None,
+            transform_anchor: None,
+            brush_color: ui_kit::theme::colors::BRUSH_DEFAULT,
+            brush_size: 12.0,
+            brush_opacity: 1.0,
+            color_picker_open: false,
+            active_mask: None,
+            mask_brush_black: true,
+            expanded_masks: std::collections::HashSet::new(),
+            expanded_filters: std::collections::HashSet::new(),
+            filter_menu_open: false,
+            stroke_layer: None,
+            pending_paint: None,
+            dragged_layer: None,
+            new_doc_w: "1920".to_string(),
+            new_doc_h: "1080".to_string(),
+            welcome_error: None,
+            resize_dialog_open: false,
+            resize_w: String::new(),
+            resize_h: String::new(),
+        }
+    }
+}
+
+/// État du pipeline de rendu : cache UI, jobs asynchrones, GPU détecté,
+/// indicateurs d'activité (spinner, menu tâches).
+pub struct RenderingState {
+    /// Taille du composite fallback (modes de fusion non-Normal).
+    pub fallback_size: Option<Size>,
+    /// Composite CPU unique — UNIQUEMENT si l'arbre exige du blending
+    /// inter-calques (sinon chemin rapide par calque, zéro recomposite).
+    pub fallback_handle: Option<iced_image::Handle>,
+    /// Fond composite PRÉ-CALCULÉ au début du drag (sans le calque déplacé).
+    /// Pendant le drag : zéro recomposite — on dessine ce fond + le calque
+    /// par-dessus. Le vrai blend est recalculé au relâchement.
+    pub drag_background: Option<iced_image::Handle>,
+    pub drag_background_size: Option<Size>,
+    /// Composite du calque seul (avec son masque) pré-calculé HORS thread UI
+    /// pour les drags en mode fallback.
+    pub drag_layer_composite: Option<iced_image::Handle>,
+    pub drag_layer_composite_size: Option<Size>,
+    /// Pipeline asynchrone (états explicites — voir PR1).
+    pub fallback_job: FallbackJob,
+    pub drag_bg_job: DragBgJob,
+    pub drag_layer_job: DragLayerJob,
+    /// Handles iced par calque (cache dérivé des buffers purs du moteur).
+    pub preview_cache: crate::ui_handles::PreviewCache,
+    pub gpu_info: Option<String>,
+    pub gpu_available: bool,
+    pub spinner_angle: f32,
+    pub task_menu_open: bool,
+    pub background_tasks: BackgroundTasks,
+}
+
+impl Default for RenderingState {
+    fn default() -> Self {
+        Self {
+            fallback_size: None,
+            fallback_handle: None,
+            drag_background: None,
+            drag_background_size: None,
+            drag_layer_composite: None,
+            drag_layer_composite_size: None,
+            fallback_job: FallbackJob::Idle,
+            drag_bg_job: DragBgJob::Idle,
+            drag_layer_job: DragLayerJob::Idle,
+            preview_cache: crate::ui_handles::PreviewCache::default(),
+            gpu_info: None,
+            gpu_available: components::gpu::GpuContext::is_available(),
+            spinner_angle: 0.0,
+            task_menu_open: false,
+            background_tasks: BackgroundTasks::default(),
+        }
+    }
+}
+
+/// État du workspace : layout `pane_grid` et focus du panneau actif.
+pub struct WorkspaceState {
+    pub panes: pane_grid::State<PanelType>,
+    pub focus: Option<pane_grid::Pane>,
+}
+
+/// État des fenêtres OS et des préférences multi-fenêtres.
+pub struct WindowState {
+    pub main_window: Option<iced::window::Id>,
+    pub preferences_window_id: Option<iced::window::Id>,
+    pub preferences_window: Option<crate::preferences_window::PreferencesWindow>,
+    pub preferences: preferences::Preferences,
+    pub resolver: preferences::KeybindingResolver,
+}
+
+// ---------------------------------------------------------------------------
+// PhotoApp — façade mince qui orchestre les sous-états.
+// ---------------------------------------------------------------------------
 
 /// Registre des traitements en arrière-plan.
 ///
@@ -61,136 +259,18 @@ impl BackgroundTasks {
 }
 
 pub struct PhotoApp {
-    pub zoom_level: u32,
-    pub panes: pane_grid::State<PanelType>,
-    pub focus: Option<pane_grid::Pane>,
-    // ---- Document (arbre de calques — index 0 racine = bas de la pile) ----
-    pub doc: photo_engine::Document,
-    pub selected_layer: Option<Uuid>,
-    /// Taille du composite fallback (modes de fusion non-Normal)
-    pub fallback_size: Option<Size>,
-    /// Composite CPU unique — UNIQUEMENT si l'arbre exige du blending
-    /// inter-calques (sinon chemin rapide par calque, zéro recomposite)
-    pub fallback_handle: Option<iced_image::Handle>,
-    // ---- Pipeline fallback ASYNCHRONE ----
-    /// Composite de fond en cours / périmée : un seul état explicite au lieu
-    /// des trois drapeaux (`generation` / `in_flight` / `dirty`) qui se
-    /// désynchronisaient. Le compteur monotone vit dans la branche `Running`
-    /// pour distinguer un résultat STALE d'un résultat à jour.
-    pub(crate) fallback_job: FallbackJob,
-    pub image_path: Option<String>,
-    pub image_error: Option<String>,
-    // Canvas interaction (outil Main + pan/zoom)
-    pub selected_tool: Tool,
-    /// Outil mémorisé avant la pipette : revenu automatique après l'échantillonnage.
-    pub previous_tool: Option<Tool>,
-    pub canvas_pan: Vector,
-    pub color_profile: String,
-    pub canvas_selection: Option<Rectangle>,
-    /// Taille du viewport du canvas (publiée par le widget image_canvas)
-    pub canvas_viewport: Size,
-    /// Barre d'outils flottante visible ou masquée
-    pub tools_visible: bool,
-    /// Ancre de déplacement du calque sélectionné (outil Déplacer) :
-    /// transform COMPLET au début du geste — sert à construire la commande
-    /// SetTransform ancre→finale poussée au relâchement.
-    pub move_anchor: Option<(Uuid, crate::layers::Transform2D)>,
-    /// Ancre du geste de transformation en cours (poignées Affinity).
-    /// `Some(anchor)` ⇔ un geste Resize/Rotate/Skew/Move est actif.
-    pub(crate) transform_anchor: Option<TransformAnchor>,
-    /// Fond composite PRÉ-CALCULÉ au début du drag (sans le calque déplacé).
-    /// Pendant le drag : zéro recomposite — on dessine ce fond + le calque
-    /// par-dessus. Le vrai blend est recalculé au relâchement.
-    pub drag_background: Option<iced_image::Handle>,
-    pub drag_background_size: Option<Size>,
-    /// Composite du calque seul (avec son masque) pré-calculé HORS thread UI
-    /// pour les drags en mode fallback. Évite de re-rendre le calque à chaque
-    /// frame (60 fps) tout en préservant le rendu du masque — le buffer est
-    /// calculé UNE fois au MoveLayerStart, puis réutilisé pour le geste.
-    pub drag_layer_composite: Option<iced_image::Handle>,
-    pub drag_layer_composite_size: Option<Size>,
-    /// Pré-calcul du fond SANS le sous-arbre déplacé (drag en mode fallback).
-    pub(crate) drag_bg_job: DragBgJob,
-    /// Verrou anti-doublon pour [`Self::drag_layer_composite_task`] — un
-    /// calque cible à la fois (le buffer est réutilisé pendant tout le geste).
-    pub(crate) drag_layer_job: DragLayerJob,
-    /// Traitements en arrière-plan (libellés affichés dans le menu du spinner).
-    /// Registre par identifiant stable : chaque tâche asynchrone pousse son
-    /// libellé à la création (`start`) et le retire à SON aboutissement ou à
-    /// SON échec (`finish`) — aucun libellé ne fuit, quelle que soit la
-    /// concurrence (un `.clear()` global effaçait les tâches concurrentes).
-    pub background_tasks: BackgroundTasks,
-    /// Menu des tâches ouvert (clic sur le spinner)
-    pub task_menu_open: bool,
-    /// Angle du spinner d'activité (animé par TickFrame)
-    pub spinner_angle: f32,
-    /// Résolveur de raccourcis construit depuis les préférences persistantes
-    pub resolver: preferences::KeybindingResolver,
-    /// Fenêtre principale — son Id (ouverte au boot)
-    pub main_window: Option<iced::window::Id>,
-    // ---- Historique (undo/redo) ----
-    /// Historique du DOCUMENT (arbre + dimensions). Les états sont des
-    /// snapshots bon marché : les pixels sont partagés via Arc.
-    pub history: photo_engine::history::History,
-    /// Chemin du projet .csophoto courant (None = jamais enregistré)
-    pub project_path: Option<std::path::PathBuf>,
-    // ---- Pinceau ----
-    pub brush_color: Color,
-    /// Diamètre du pinceau en pixels DOCUMENT
-    pub brush_size: f32,
-    /// Opacité globale du trait [0.05..1]
-    pub brush_opacity: f32,
-    pub color_picker_open: bool,
-    /// Masque actuellement sélectionné pour édition/peinture, s'il y en a un.
-    pub active_mask: Option<crate::message::MaskTarget>,
-    /// Couleur du pinceau en mode masque : true = noir (masque), false = blanc (révèle).
-    pub mask_brush_black: bool,
-    /// Calques dont la liste de masques est dépliée dans le panneau Calques.
-    pub expanded_masks: std::collections::HashSet<Uuid>,
-    /// Calques pixels dont les sous-calques de filtres sont dépliés.
-    pub expanded_filters: std::collections::HashSet<Uuid>,
-    /// Menu d'ajout de filtre du panneau Calques ouvert/fermé.
-    pub filter_menu_open: bool,
-    /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
-    pub stroke_layer: Option<Uuid>,
-    /// Commit lourd EN COURS hors thread UI — l'aperçu reste figé à l'écran
-    /// jusqu'à l'application (aucun gel de l'interface).
-    pub pending_paint: Option<PendingPaint>,
-
-    // ---- Écran d'accueil (nouveau document) ----
-    pub new_doc_w: String,
-    pub new_doc_h: String,
-    pub welcome_error: Option<String>,
-
-    // ---- Redimensionnement document ----
-    pub resize_dialog_open: bool,
-    pub resize_w: String,
-    pub resize_h: String,
-
-    // ---- Drag & drop calques ----
-    pub dragged_layer: Option<Uuid>,
-
-    /// Id de la VRAIE fenêtre OS des préférences (multi-fenêtres daemon)
-    pub preferences_window_id: Option<iced::window::Id>,
-    /// État interne de la fenêtre (brouillon de préférences)
-    pub preferences_window: Option<crate::preferences_window::PreferencesWindow>,
-    /// Préférences persistantes chargées au démarrage
-    pub preferences: preferences::Preferences,
-    // Options / Hardware
-    pub gpu_info: Option<String>,
-    pub gpu_available: bool,
-
-    /// Handles iced par calque (cache dérivé des buffers purs du moteur —
-    /// voir `crate::ui_handles` ; purgé/reconstruit automatiquement).
-    pub preview_cache: crate::ui_handles::PreviewCache,
+    pub document: DocumentState,
+    pub canvas: CanvasState,
+    pub tools: ToolState,
+    pub rendering: RenderingState,
+    pub workspace: WorkspaceState,
+    pub windows: WindowState,
 }
 
 impl PhotoApp {
     /// Boot daemon : le daemon n'ouvre AUCUNE fenêtre automatiquement —
     /// la fenêtre principale doit être créée ici via `window::open`
     /// (cf. iced examples/multi_window).
-    // L'Id de fenêtre n'existe qu'APRÈS `Self::default()` (layout des
-    // panneaux) : la réassignation est le pattern demandé par iced.
     #[allow(clippy::field_reassign_with_default)]
     pub fn new() -> (Self, Task<Message>) {
         let (main_id, open) = iced::window::open(iced::window::Settings {
@@ -199,32 +279,34 @@ impl PhotoApp {
             ..iced::window::Settings::default()
         });
         let mut app = Self::default();
-        app.main_window = Some(main_id);
-        app.history.reset();
+        app.windows.main_window = Some(main_id);
+        app.document.history.reset();
         (app, open.map(|_| Message::MockAction))
     }
 
     /// Dimensions du document si un document existe (sinon None).
     pub(crate) fn doc_dims(&self) -> Option<(u32, u32)> {
-        (self.doc.width > 0 && self.doc.height > 0).then_some((self.doc.width, self.doc.height))
+        let w = self.document.doc.width;
+        let h = self.document.doc.height;
+        (w > 0 && h > 0).then_some((w, h))
     }
 
     /// Snapshot complet du document pour l'historique (pixels partagés via Arc).
     pub(crate) fn snapshot(&self) -> photo_engine::history::Snapshot {
-        self.doc.snapshot()
+        self.document.doc.snapshot()
     }
 
     /// Cette fenêtre est-elle celle des préférences ?
     #[must_use]
     pub fn is_preferences_window(&self, window: iced::window::Id) -> bool {
-        self.preferences_window_id == Some(window)
+        self.windows.preferences_window_id == Some(window)
     }
 
     /// Ferme la fenêtre de préférences (état + surface OS) et retourne
     /// la tâche de fermeture à exécuter par le runtime.
     pub(crate) fn close_preferences_window(&mut self) -> Task<Message> {
-        self.preferences_window = None;
-        match self.preferences_window_id.take() {
+        self.windows.preferences_window = None;
+        match self.windows.preferences_window_id.take() {
             Some(id) => iced::window::close(id),
             None => Task::none(),
         }
@@ -233,7 +315,7 @@ impl PhotoApp {
     /// L'arbre exige-t-il la composite CPU ? (groupes en mode non-Normal,
     /// calques d'ajustement actifs, calques non-Normal) — délégué moteur.
     pub(crate) fn needs_fallback(&self) -> bool {
-        self.doc.needs_fallback()
+        self.document.doc.needs_fallback()
     }
 
     /// Marque le fallback PÉRIMÉ. Zéro travail bloquant : la composite
@@ -242,11 +324,11 @@ impl PhotoApp {
     /// simplement les handles.
     pub(crate) fn invalidate_fallback(&mut self) {
         if self.needs_fallback() {
-            self.fallback_job.invalidate();
+            self.rendering.fallback_job.invalidate();
         } else {
-            self.fallback_job.reset_to_idle();
-            self.fallback_handle = None;
-            self.fallback_size = None;
+            self.rendering.fallback_job.reset_to_idle();
+            self.rendering.fallback_handle = None;
+            self.rendering.fallback_size = None;
         }
     }
 
@@ -258,16 +340,17 @@ impl PhotoApp {
         if !self.needs_fallback() {
             return None;
         }
-        let generation = self.fallback_job.start_new_run()?;
+        let generation = self.rendering.fallback_job.start_new_run()?;
 
-        let task_id = self.background_tasks.start("Composite de l'arbre...");
+        let task_id = self
+            .rendering
+            .background_tasks
+            .start("Composite de l'arbre...");
 
-        let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
-        doc_copy.restore_snapshot(self.doc.snapshot());
-        // Réchauffe le cache d'apparences depuis le document vivant : la
-        // composite de fond HIT les calques inchangés au lieu de re-exécuter
-        // les chaînes de rendu (déjà calculées pour l'affichage).
-        doc_copy.warm_cache_from(&self.doc);
+        let mut doc_copy =
+            photo_engine::Document::new(self.document.doc.width, self.document.doc.height);
+        doc_copy.restore_snapshot(self.document.doc.snapshot());
+        doc_copy.warm_cache_from(&self.document.doc);
 
         Some(Task::perform(
             async move {
@@ -287,19 +370,21 @@ impl PhotoApp {
     }
 
     /// Pré-calcule le fond composite SANS le sous-arbre sur le point d'être
-    /// déplacé — HORS thread UI également. Pendant les quelques millisecondes
-    /// de calcul, le drag s'affiche déjà en dessin calque-par-calque
-    /// (approximation), puis le fond exact remplace l'approximation.
+    /// déplacé — HORS thread UI également.
     pub(crate) fn drag_background_task(&mut self, exclude_id: Uuid) -> Option<Task<Message>> {
         debug_assert!(self.needs_fallback());
-        if !self.drag_bg_job.try_start(exclude_id) {
+        if !self.rendering.drag_bg_job.try_start(exclude_id) {
             return None;
         }
-        let task_id = self.background_tasks.start("Fond de glissement...");
+        let task_id = self
+            .rendering
+            .background_tasks
+            .start("Fond de glissement...");
 
-        let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
-        doc_copy.restore_snapshot(self.doc.snapshot());
-        doc_copy.warm_cache_from(&self.doc);
+        let mut doc_copy =
+            photo_engine::Document::new(self.document.doc.width, self.document.doc.height);
+        doc_copy.restore_snapshot(self.document.doc.snapshot());
+        doc_copy.warm_cache_from(&self.document.doc);
 
         Some(Task::perform(
             async move {
@@ -322,34 +407,27 @@ impl PhotoApp {
     /// Calcule EN ARRIÈRE-PLAN le composite du calque seul AVEC son masque
     /// appliqué (mode Normal uniquement — le blend final du calque dans le
     /// document est recalculé au relâchement via [`Self::invalidate_fallback`]).
-    /// Lancé une seule fois au début du drag en mode fallback : le buffer
-    /// est réutilisé pour toutes les frames suivantes, car le calque change
-    /// de POSITION (pas de pixels) pendant le geste.
     pub(crate) fn drag_layer_composite_task(&mut self, layer_id: Uuid) -> Option<Task<Message>> {
         if !self.needs_fallback() {
             return None;
         }
-        if !self.drag_layer_job.try_start() {
+        if !self.rendering.drag_layer_job.try_start() {
             return None;
         }
-        let task_id = self.background_tasks.start("Rendu du calque déplacé...");
+        let task_id = self
+            .rendering
+            .background_tasks
+            .start("Rendu du calque déplacé...");
 
-        let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
-        doc_copy.restore_snapshot(self.doc.snapshot());
-        doc_copy.warm_cache_from(&self.doc);
+        let mut doc_copy =
+            photo_engine::Document::new(self.document.doc.width, self.document.doc.height);
+        doc_copy.restore_snapshot(self.document.doc.snapshot());
+        doc_copy.warm_cache_from(&self.document.doc);
 
         Some(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    // clone() le calque est sans Arc donc peu coûteux (les
-                    // buffers partagés ne sont pas dupliqués) ; on isole le
-                    // calque dans un documentjeté pour utiliser le pipeline
-                    // standard de compositing (prepare_top + combine_masks +
-                    // blend_into sur fond transparent).
                     let mut tmp = photo_engine::Document::new(doc_copy.width, doc_copy.height);
-                    // Le cache de doc_copy est chaud (réchauffé depuis le doc
-                    // vivant) : on le partage avec tmp pour ne pas re-rendre
-                    // l'apparence du calque déplacé.
                     tmp.warm_cache_from(&doc_copy);
                     if let Some(node) = doc_copy.find(layer_id).cloned() {
                         tmp.root.push(node);
@@ -374,8 +452,6 @@ impl PhotoApp {
 impl Default for PhotoApp {
     fn default() -> Self {
         // Layout : Canvas à gauche, à droite Propriétés (haut) + Calques (bas).
-        // split() ne peut échouer que si le pane source n'existe pas ; en
-        // cas d'imprvu on garde simplement le pane unique (pas de panic).
         let (mut panes, canvas_pane) = pane_grid::State::new(PanelType::Canvas);
         if let Some((right_pane, split_canvas_right)) = panes.split(
             pane_grid::Axis::Vertical,
@@ -390,65 +466,25 @@ impl Default for PhotoApp {
             }
         }
 
+        let prefs = preferences::Preferences::load("photo");
+        let resolver = preferences::KeybindingResolver::from_bindings(&prefs.keybindings.bindings);
+
         Self {
-            zoom_level: 100,
-            panes,
-            focus: Some(canvas_pane),
-            doc: photo_engine::Document::new(0, 0),
-            selected_layer: None,
-            fallback_size: None,
-            fallback_handle: None,
-            fallback_job: FallbackJob::Idle,
-            image_path: None,
-            image_error: None,
-            selected_tool: Tool::Hand,
-            previous_tool: None,
-            canvas_pan: Vector::new(0.0, 0.0),
-            color_profile: "sRGB IEC61966-2.1".into(),
-            canvas_selection: None,
-            canvas_viewport: Size::new(800.0, 600.0),
-            tools_visible: true,
-            move_anchor: None,
-            transform_anchor: None,
-            drag_background: None,
-            drag_background_size: None,
-            drag_layer_composite: None,
-            drag_layer_composite_size: None,
-            drag_bg_job: DragBgJob::Idle,
-            drag_layer_job: DragLayerJob::Idle,
-            background_tasks: BackgroundTasks::default(),
-            task_menu_open: false,
-            spinner_angle: 0.0,
-            resolver: preferences::KeybindingResolver::from_bindings(
-                &preferences::Preferences::load("photo").keybindings.bindings,
-            ),
-            main_window: None,
-            history: photo_engine::history::History::new(),
-            project_path: None,
-            brush_color: ui_kit::theme::colors::BRUSH_DEFAULT,
-            brush_size: 12.0,
-            brush_opacity: 1.0,
-            color_picker_open: false,
-            active_mask: None,
-            mask_brush_black: true,
-            expanded_masks: Default::default(),
-            expanded_filters: Default::default(),
-            filter_menu_open: false,
-            stroke_layer: None,
-            pending_paint: None,
-            new_doc_w: "1920".to_string(),
-            new_doc_h: "1080".to_string(),
-            welcome_error: None,
-            resize_dialog_open: false,
-            resize_w: String::new(),
-            resize_h: String::new(),
-            dragged_layer: None,
-            preferences_window_id: None,
-            preferences_window: None,
-            preferences: preferences::Preferences::load("photo"),
-            gpu_info: None,
-            gpu_available: components::gpu::GpuContext::is_available(),
-            preview_cache: crate::ui_handles::PreviewCache::default(),
+            document: DocumentState::default(),
+            canvas: CanvasState::default(),
+            tools: ToolState::default(),
+            rendering: RenderingState::default(),
+            workspace: WorkspaceState {
+                panes,
+                focus: Some(canvas_pane),
+            },
+            windows: WindowState {
+                main_window: None,
+                preferences_window_id: None,
+                preferences_window: None,
+                preferences: prefs,
+                resolver,
+            },
         }
     }
 }
@@ -467,17 +503,14 @@ pub(crate) struct TransformAnchor {
 }
 
 // ---------------------------------------------------------------------------
-// États explicites des jobs de rendu asynchrones (AGENT §8, §11).
-// Avant : 3 champs plats (`_in_flight`, `_dirty`, `_generation`) qui pouvaient
-// se désynchroniser. Maintenant : un enum par job — la machine à états est
-// dans le type, pas dans la tête du lecteur.
+// États explicites des jobs de rendu asynchrones (chantier 8 / 11).
 // ---------------------------------------------------------------------------
 
 /// Composite de fond (blend inter-calques). Compteur monotone inclus pour
 /// jeter un résultat calculé avec une génération antérieure (le document a
 /// changé pendant que la tâche tournait).
 #[derive(Default)]
-pub(crate) enum FallbackJob {
+pub enum FallbackJob {
     #[default]
     Idle,
     /// Tâche en vol ; un résultat qui reviendrait avec une `generation`
@@ -506,12 +539,11 @@ impl FallbackJob {
     }
 
     /// Lance un nouveau calcul IFF une invalidation est en attente. Retourne
-    /// la génération attribuée, ou `None` si rien à faire (déjà en vol, ou
-    /// rien d'invalidé). Appelé à chaque tour de boucle après un message.
+    /// la génération attribuée, ou `None` si rien à faire.
     pub(crate) fn start_new_run(&mut self) -> Option<u64> {
         match self {
-            Self::Idle => None, // rien d'invalidé, on n'invalide pas nous-mêmes
-            Self::Running { dirty: false, .. } => None, // déjà en vol, pas périmé
+            Self::Idle => None,
+            Self::Running { dirty: false, .. } => None,
             Self::Running { generation, .. } => {
                 let next = generation.wrapping_add(1);
                 *self = Self::Running {
@@ -524,13 +556,13 @@ impl FallbackJob {
     }
 
     /// Le calcul est-il en vol (sans tenir compte de l'invalidation) ?
-    #[allow(dead_code)] // observé par les tests d'invalidation du drag
+    #[allow(dead_code)]
     pub(crate) fn in_flight(&self) -> bool {
         matches!(self, Self::Running { .. })
     }
 
     /// Le calcul affiché est-il périmé (édition pendant le vol) ?
-    #[allow(dead_code)] // observé par les tests d'invalidation du drag
+    #[allow(dead_code)]
     pub(crate) fn needs_recompute(&self) -> bool {
         match self {
             Self::Idle => false,
@@ -538,12 +570,7 @@ impl FallbackJob {
         }
     }
 
-    /// Tâche terminée. Retourne un verdict :
-    /// - [`Finish::Applied`] : résultat à jour, l'appliquer.
-    /// - [`Finish::Retry`] : résultat périmé (édition pendant le vol) — le
-    ///   caller doit relancer via [`Self::start_new_run`].
-    /// - [`Finish::Stale`] : callback obsolète (une nouvelle tâche a déjà
-    ///   été lancée entre-temps), aucun travail.
+    /// Tâche terminée.
     pub(crate) fn finish(&mut self, generation: u64) -> Finish {
         match self {
             Self::Running {
@@ -574,17 +601,14 @@ pub(crate) enum Finish {
 }
 
 /// Pré-calcul du fond SANS le sous-arbre déplacé (drag en mode fallback).
-/// Un seul vol à la fois ; l'id du sous-arbre est conservé pour reconnaître
-/// un résultat obsolète quand le geste change de cible.
 #[derive(Default)]
-pub(crate) enum DragBgJob {
+pub enum DragBgJob {
     #[default]
     Idle,
     Running(Uuid),
 }
 
 impl DragBgJob {
-    /// `true` si on a pu démarrer (aucune tâche en cours).
     pub(crate) fn try_start(&mut self, exclude_id: Uuid) -> bool {
         if matches!(self, Self::Idle) {
             *self = Self::Running(exclude_id);
@@ -602,17 +626,14 @@ impl DragBgJob {
         matches!(self, Self::Running(_))
     }
 
-    /// Le calcul lancé pour cet id est-il toujours celui qu'on attend ?
     pub(crate) fn is_running_for(&self, id: Uuid) -> bool {
         matches!(self, Self::Running(x) if *x == id)
     }
 }
 
-/// Composite du calque seul AVEC masque — surimpression pendant le drag
-/// en mode fallback. Un seul vol à la fois ; la pertinence du résultat est
-/// vérifiée côté handler via `move_anchor` (le sous-arbre peut avoir changé).
+/// Composite du calque seul AVEC masque — surimpression pendant le drag.
 #[derive(Default)]
-pub(crate) enum DragLayerJob {
+pub enum DragLayerJob {
     #[default]
     Idle,
     Running,
@@ -632,7 +653,7 @@ impl DragLayerJob {
         *self = Self::Idle;
     }
 
-    #[allow(dead_code)] // observé par les tests d'invalidation du drag
+    #[allow(dead_code)]
     pub(crate) fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }
