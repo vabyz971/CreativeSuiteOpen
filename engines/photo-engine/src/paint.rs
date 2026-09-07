@@ -266,8 +266,8 @@ fn commit_stroke_locked(
     paint_stroke_rgba(&mut rgba, lw, lh, &pts, brush);
     // La longueur est garantie par construction : to_rgba8().into_raw() retourne w*h*4
     let painted = ::image::DynamicImage::ImageRgba8(
-        ::image::RgbaImage::from_raw(lw, lh, rgba.clone())
-            .unwrap_or_else(|_| ::image::RgbaImage::new(lw, lh)),
+            ::image::RgbaImage::from_raw(lw, lh, rgba.clone())
+                .unwrap_or_else(|| ::image::RgbaImage::new(lw, lh)),
     );
 
     StrokeCommit {
