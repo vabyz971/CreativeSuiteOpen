@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Nœud source : fournit l'image originale au graphe
+//! Nœud source : fournit l'image originale à la chaîne
 
 use super::{Effect, NodeCtx};
-use datatypes::{NodeCategory, NodeDefinition, NodeId, SocketDef, SocketType};
+use datatypes::{NodeCategory, NodeDefinition, SocketDef, SocketType};
 use image::DynamicImage;
 
 pub fn definition() -> NodeDefinition {
@@ -27,17 +27,9 @@ pub fn definition() -> NodeDefinition {
         .description("Source d'image")
 }
 
-fn apply(ctx: &NodeCtx, id: NodeId) -> Option<DynamicImage> {
-    if let Some(arc) = ctx.sources.get(&id) {
-        return Some(arc.as_ref().clone());
-    }
-    // Pas d'image assignée : transparent aux dimensions de l'original (évite de réafficher la 1ère image)
-    let (w, h) = (ctx.original.width().max(1), ctx.original.height().max(1));
-    Some(DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
-        w,
-        h,
-        image::Rgba([0, 0, 0, 0]),
-    )))
+fn apply(ctx: &NodeCtx) -> Option<DynamicImage> {
+    // Tête de chaîne : transmet l'entrée si elle existe, sinon l'originale.
+    ctx.input().cloned().or_else(|| Some(ctx.original.clone()))
 }
 
 pub fn effect() -> Effect {

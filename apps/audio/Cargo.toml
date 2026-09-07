@@ -9,6 +9,5 @@ license = "GPL-3.0-or-later"
 iced.workspace = true
 iced.features = ["debug"]
 ui-kit = { path = "../../packages/ui-kit" }
-suite-core = { path = "../../core/core", package = "suite-core" }
 datatypes = { path = "../../core/datatypes" }
 audio-engine = { path = "../../engines/audio-engine" }

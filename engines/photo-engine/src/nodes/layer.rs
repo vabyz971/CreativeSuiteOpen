@@ -21,7 +21,7 @@
 //! Le flag `enabled` du nœud sert de visibilité (bypass = calque masqué).
 
 use super::{Effect, NodeCtx, to_rgba8};
-use datatypes::{NodeCategory, NodeDefinition, NodeId, ParamValue, SocketDef, SocketType};
+use datatypes::{NodeCategory, NodeDefinition, ParamValue, SocketDef, SocketType};
 use image::{DynamicImage, ImageBuffer, Rgba};
 use rayon::prelude::*;
 
@@ -176,51 +176,34 @@ pub fn apply_effect(
     DynamicImage::ImageRgba8(out)
 }
 
-fn apply(ctx: &NodeCtx, id: NodeId) -> Option<DynamicImage> {
-    // Le dessus peut venir soit d'une connexion `top`, soit de l'image stockée du calque lui-même.
-    let top_input = ctx.input(id, "top");
-    let top_stored = ctx.sources.get(&id).map(|a| a.as_ref() as &DynamicImage);
-    let top = top_input.or(top_stored);
-    let base = ctx.input(id, "base");
-    match (base, top) {
-        (Some(b), Some(t)) => {
-            let opacity = ctx.param(id, "opacity", 100.0);
-            let ox = ctx.param(id, "offset_x", 0.0);
-            let oy = ctx.param(id, "offset_y", 0.0);
-            let blend_mode = ctx
-                .graph
-                .get(id)
-                .and_then(|n| n.params.get("blend_mode"))
-                .and_then(|v| v.as_enum())
-                .unwrap_or("Normal")
-                .to_string();
-            Some(apply_effect(b, t, opacity, &blend_mode, ox, oy))
-        }
-        (Some(b), None) => Some(b.clone()),
-        (None, Some(t)) => {
-            // Calque isolé (pas de base) : on applique quand même opacité et décalage
-            let opacity = ctx.param(id, "opacity", 100.0);
-            let ox = ctx.param(id, "offset_x", 0.0);
-            let oy = ctx.param(id, "offset_y", 0.0);
-            if ox == 0.0 && oy == 0.0 && (opacity - 100.0).abs() < 0.01 {
-                Some(t.clone())
-            } else {
-                // Fond transparent de même taille que le dessus, puis fusion
-                let (w, h) = (t.width(), t.height());
-                let transparent =
-                    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(w, h, Rgba([0, 0, 0, 0])));
-                let blend_mode = ctx
-                    .graph
-                    .get(id)
-                    .and_then(|n| n.params.get("blend_mode"))
-                    .and_then(|v| v.as_enum())
-                    .unwrap_or("Normal")
-                    .to_string();
-                Some(apply_effect(&transparent, t, opacity, &blend_mode, ox, oy))
-            }
-        }
-        (None, None) => None,
+fn blend_mode_of<'a>(ctx: &'a NodeCtx<'_>) -> &'a str {
+    ctx.params
+        .get("blend_mode")
+        .and_then(|v| v.as_enum())
+        .unwrap_or("Normal")
+}
+
+fn apply(ctx: &NodeCtx) -> Option<DynamicImage> {
+    // Chaîne linéaire = une seule image : on applique opacité et décalage
+    // sur fond transparent (même rôle que le calque isolé d'avant).
+    let input = ctx.input()?;
+    let opacity = ctx.param("opacity", 100.0);
+    let ox = ctx.param("offset_x", 0.0);
+    let oy = ctx.param("offset_y", 0.0);
+    if ox == 0.0 && oy == 0.0 && (opacity - 100.0).abs() < 0.01 {
+        return Some(input.clone());
     }
+    // Fond transparent de même taille que l'entrée, puis fusion
+    let (w, h) = (input.width(), input.height());
+    let transparent = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(w, h, Rgba([0, 0, 0, 0])));
+    Some(apply_effect(
+        &transparent,
+        input,
+        opacity,
+        blend_mode_of(ctx),
+        ox,
+        oy,
+    ))
 }
 
 pub fn effect() -> Effect {

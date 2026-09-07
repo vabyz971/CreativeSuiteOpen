@@ -12,7 +12,6 @@ iced_core = "0.14"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 iced_aw.workspace = true
 ui-kit = { path = "../../packages/ui-kit" }
-suite-core = { path = "../../core/core", package = "suite-core" }
 datatypes = { path = "../../core/datatypes" }
 photo-engine = { path = "../../engines/photo-engine" }
 preferences = { path = "../../packages/preferences" }

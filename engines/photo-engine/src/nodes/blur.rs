@@ -17,7 +17,7 @@
 //! Effet Flou gaussien (GPU compute + fallback CPU `image::blur`)
 
 use super::{Effect, NodeCtx};
-use datatypes::{NodeCategory, NodeDefinition, NodeId, ParamValue, SocketDef, SocketType};
+use datatypes::{NodeCategory, NodeDefinition, ParamValue, SocketDef, SocketType};
 use image::DynamicImage;
 
 pub fn definition() -> NodeDefinition {
@@ -40,9 +40,9 @@ pub fn apply_effect(img: &DynamicImage, radius: f32) -> DynamicImage {
     img.blur(radius)
 }
 
-fn apply(ctx: &NodeCtx, id: NodeId) -> Option<DynamicImage> {
-    let input = ctx.input(id, "image")?;
-    let r = ctx.param(id, "radius", 5.0);
+fn apply(ctx: &NodeCtx) -> Option<DynamicImage> {
+    let input = ctx.input()?;
+    let r = ctx.param("radius", 5.0);
     Some(apply_effect(input, r))
 }
 

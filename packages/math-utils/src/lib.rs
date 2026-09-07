@@ -21,10 +21,12 @@
 
 pub mod bezier;
 pub mod matrix;
+pub mod transform2d;
 pub mod vec3;
 
 pub use datatypes::Vec2;
 pub use matrix::Matrix4;
+pub use transform2d::Transform2D;
 pub use vec3::Vec3;
 
 pub use bezier::{BezierCurve, BezierSegment};

@@ -16,7 +16,7 @@
 
 //! Photo Engine — logique métier Photo extraite de apps/photo
 //! PUR : aucune dépendance UI (les buffers sont convertis côté app).
-//! Utilise suite-core + datatypes, exposé à shell et aux apps
+//! Utilise datatypes + math-utils, exposé aux apps
 
 pub mod command;
 pub mod document;
@@ -26,7 +26,6 @@ pub mod gpu;
 pub mod history;
 pub mod nodes;
 pub mod paint;
-pub mod processor;
 pub mod project;
 pub mod registry;
 pub mod render_pool;
@@ -41,8 +40,5 @@ pub use export::{DEFAULT_JPEG_QUALITY, ExportFormat, export_image};
 pub use filters::{filterable_types, new_filter};
 pub use gpu::GpuContext;
 pub use history::UndoAction;
-pub use processor::{evaluate, evaluate_incremental, evaluate_with_cache};
-pub use registry::{
-    all_definitions, create_empty_graph, create_minimal_graph, create_node_for_type, definition_for,
-};
+pub use registry::{all_definitions, definition_for};
 pub use renderer::{Renderer, filters_signature};

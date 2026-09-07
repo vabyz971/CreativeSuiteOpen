@@ -220,16 +220,17 @@ fn commit_stroke_locked(
     let oy = transform.offset_y;
     let sx = transform.scale_x.clamp(0.05, 8.0);
     let sy = transform.scale_y.clamp(0.05, 8.0);
-    let kx = transform.skew_x.to_radians().tan();
-    let ky = transform.skew_y.to_radians().tan();
+    // Matrice cisaillement×échelle canonique (même source que le compositing).
+    let (m00, m01, m10, m11) = crate::document::Transform2D {
+        scale_x: sx,
+        scale_y: sy,
+        ..*transform
+    }
+    .shear_scale_matrix();
     let rad = transform.rotation_deg.to_radians();
     let (cos, sin) = (rad.cos(), rad.sin());
     let (lw2, lh2) = (lw as f32 / 2.0, lh as f32 / 2.0);
     // M = K*S = [[sx, kx*sy],[ky*sx, sy]]
-    let m00 = sx;
-    let m01 = kx * sy;
-    let m10 = ky * sx;
-    let m11 = sy;
     let det = m00 * m11 - m01 * m10;
     let pts: Vec<(f32, f32)> = if det.abs() < 1e-4 {
         // Cisaillement dégénéré : repli sur l'ancien chemin uniforme.

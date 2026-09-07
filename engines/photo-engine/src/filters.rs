@@ -15,25 +15,17 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Moteur interne des live filters : la chaîne linéaire d'un calque est
-//! traduite à la volée en mini-graphe nodal (`input_image → f₁ → … → fₙ →
-//! output`) évalué par [`crate::processor`]. Le DAG existant ne disparaît
-//! donc pas — il devient l'exécuteur des filtres dynamiques.
+//! évaluée séquentiellement, effet par effet (simple pli) — aucun graphe.
 //!
 //! Un type d'effet inconnu (projet d'une version plus récente, effet retiré)
-//! est transparent : le processeur propage son entrée telle quelle.
+//! est transparent : l'image traverse telle quelle.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use datatypes::{NodeId, ParamValue, SocketType, Vec2};
+use datatypes::SocketType;
 use image::DynamicImage;
-use suite_core::{Connection, Graph, Node};
 
 use crate::document::FilterNode;
-
-/// Position fictive des nœuds du mini-graphe (sans importance pour
-/// l'évaluation, requise par le modèle de données).
-const GRAPH_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 
 /// Crée un filtre avec les paramètres PAR DÉFAUT de sa définition.
 /// Retourne None si le type_id n'est pas dans le registre.
@@ -64,56 +56,31 @@ pub fn filterable_types() -> Vec<datatypes::NodeDefinition> {
         .collect()
 }
 
-fn chain_node(graph: &mut Graph, type_id: &str, params: HashMap<String, ParamValue>) -> NodeId {
-    let mut node = Node::new(NodeId(0), type_id.to_string(), String::new(), GRAPH_POS);
-    node.params = params;
-    node.preview_enabled = false;
-    graph.add_node(node)
-}
-
 /// Applique la chaîne de filtres ACTIFS à `source`.
 ///
 /// - Chaîne vide ou tout désactivé → retourne `source` tel quel (zéro coût).
-/// - Sinon : construction du mini-graphe + évaluation complète.
-/// - Échec d'évaluation ou effet inconnu → dégradation gracieuse sur
-///   l'entrée (le processeur propage l'image à travers les effets inconnus).
+/// - Sinon : pli séquentiel (chaque effet reçoit la sortie du précédent).
+/// - Effet inconnu → dégradation gracieuse : l'entrée traverse telle quelle.
 pub fn render_chain(source: &Arc<DynamicImage>, filters: &[FilterNode]) -> Arc<DynamicImage> {
-    let active: Vec<&FilterNode> = filters.iter().filter(|f| f.enabled).collect();
-    if active.is_empty() {
+    if !filters.iter().any(|f| f.enabled) {
         return Arc::clone(source);
     }
 
-    let mut graph = Graph::new();
-    let mut sources: HashMap<NodeId, Arc<DynamicImage>> = HashMap::with_capacity(1);
-
-    let input = chain_node(&mut graph, "input_image", HashMap::new());
-    sources.insert(input, Arc::clone(source));
-
-    let mut prev = input;
-    for f in &active {
-        let node = chain_node(&mut graph, &f.type_id, f.params.clone());
-        let _ = graph.connect(Connection::new(
-            prev,
-            "image",
-            node,
-            "image",
-            SocketType::Image,
-        ));
-        prev = node;
+    let mut current: DynamicImage = (**source).clone();
+    for f in filters.iter().filter(|f| f.enabled) {
+        let Some(effect) = crate::nodes::find(&f.type_id) else {
+            continue; // effet inconnu : propage tel quel (comportement conservé)
+        };
+        let ctx = crate::nodes::NodeCtx {
+            params: &f.params,
+            input_image: Some(&current),
+            original: source,
+        };
+        if let Some(out) = (effect.apply)(&ctx) {
+            current = out;
+        }
     }
-    let output = chain_node(&mut graph, "output", HashMap::new());
-    let _ = graph.connect(Connection::new(
-        prev,
-        "image",
-        output,
-        "image",
-        SocketType::Image,
-    ));
-
-    match crate::processor::evaluate(&graph, source, &sources) {
-        Some(img) => Arc::new(img),
-        None => Arc::clone(source),
-    }
+    Arc::new(current)
 }
 
 #[cfg(test)]

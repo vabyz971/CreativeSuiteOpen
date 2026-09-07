@@ -325,8 +325,13 @@ fn prepare_top_affine(
     let t = item.transform;
     let ox = t.offset_x;
     let oy = t.offset_y;
-    let kx = t.skew_x.to_radians().tan();
-    let ky = t.skew_y.to_radians().tan();
+    // Échelles clampées comme `prepare_top` : la matrice partagée est
+    // calculée sur la transform clampée pour rester à l'identique.
+    let tc = Transform2D {
+        scale_x: sx,
+        scale_y: sy,
+        ..t
+    };
     let rad = t.rotation_deg.to_radians();
     let (cos, sin) = (rad.cos(), rad.sin());
     let cx = w0 as f32 / 2.0;
@@ -334,10 +339,7 @@ fn prepare_top_affine(
 
     // A = R * K * S (scale, puis cisaillement, puis rotation) :
     // m00 m01 / m10 m11 = K*S = [[sx, kx*sy],[ky*sx, sy]]
-    let m00 = sx;
-    let m01 = kx * sy;
-    let m10 = ky * sx;
-    let m11 = sy;
+    let (m00, m01, m10, m11) = tc.shear_scale_matrix();
     let det = m00 * m11 - m01 * m10;
     if det.abs() < 1e-4 {
         // Cisaillement dégénéré (tan → ∞) : repli sur scale seul.
@@ -348,16 +350,7 @@ fn prepare_top_affine(
         return (buf, ox, oy);
     }
 
-    let fwd = |x: f32, y: f32| -> (f32, f32) {
-        let ux = (x - cx) * sx;
-        let uy = (y - cy) * sy;
-        let tx = ux + kx * uy;
-        let ty = ky * ux + uy;
-        (
-            tx * cos - ty * sin + cx * sx + ox,
-            tx * sin + ty * cos + cy * sy + oy,
-        )
-    };
+    let fwd = |x: f32, y: f32| -> (f32, f32) { tc.local_to_doc(w0 as f32, h0 as f32, x, y) };
     let corners = [
         fwd(0.0, 0.0),
         fwd(w0 as f32, 0.0),

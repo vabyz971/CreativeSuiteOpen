@@ -289,41 +289,27 @@ pub struct CanvasLayer {
 }
 
 impl CanvasLayer {
-    /// Les 4 coins de la carte locale → doc (même convention que
-    /// `Transform2D::local_to_doc` du moteur : offset = coin supérieur-gauche
-    /// du rectangle scalé, cisaillement/rotation autour du centre scalé).
-    ///
-    /// ui-kit ne peut pas dépendre de `photo-engine` (couches : packages
-    /// jamais dépendantes des engines) : CETTE implémentation est donc une
-    /// copie de la convention affine canonique. Toute évolution du modèle
-    /// transform doit rester en sync ici et dans `prepare_top_affine`
-    /// (compositing moteur).
+    /// Vue `Transform2D` canonique de ce calque (même convention que le
+    /// moteur : offset = coin supérieur-gauche du rectangle scalé,
+    /// cisaillement/rotation autour du centre scalé).
+    #[must_use]
+    pub fn transform(&self) -> math_utils::Transform2D {
+        math_utils::Transform2D {
+            offset_x: self.offset_x,
+            offset_y: self.offset_y,
+            rotation_deg: self.rotation_deg,
+            scale_x: self.scale_x,
+            scale_y: self.scale_y,
+            skew_x: self.skew_x,
+            skew_y: self.skew_y,
+        }
+    }
+
+    /// Les 4 coins de la carte locale → doc (convention affine canonique
+    /// de `math_utils::Transform2D`, partagée avec le compositing moteur).
     #[must_use]
     pub fn corners(&self) -> [(f32, f32); 4] {
-        let sx = self.scale_x;
-        let sy = self.scale_y;
-        let kx = self.skew_x.to_radians().tan();
-        let ky = self.skew_y.to_radians().tan();
-        let r = self.rotation_deg.to_radians();
-        let (cos, sin) = (r.cos(), r.sin());
-        let cx = self.width / 2.0;
-        let cy = self.height / 2.0;
-        let transform = |x: f32, y: f32| -> (f32, f32) {
-            let ux = (x - cx) * sx;
-            let uy = (y - cy) * sy;
-            let tx = ux + kx * uy;
-            let ty = ky * ux + uy;
-            (
-                tx * cos - ty * sin + cx * sx + self.offset_x,
-                tx * sin + ty * cos + cy * sy + self.offset_y,
-            )
-        };
-        [
-            transform(0.0, 0.0),
-            transform(self.width, 0.0),
-            transform(self.width, self.height),
-            transform(0.0, self.height),
-        ]
+        self.transform().doc_corners(self.width, self.height)
     }
 
     /// Centre du parallélogramme affiché, en coordonnées doc (moyenne des 4
