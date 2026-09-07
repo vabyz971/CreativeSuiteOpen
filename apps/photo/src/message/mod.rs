@@ -14,63 +14,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Messages applicatifs + petits types partagés (outils, panneaux).
+//! Messages applicatifs et types partagés (AGENT §10 — forme conservatrice).
+//!
+//! L'enum [`Message`] reste monolithique pour éviter une vague de renommages
+//! dans 17 fichiers (AGENT §22 : un agent IA doit être conservateur avec ce
+//! projet). Seuls les types auxiliaires sans logique d'orchestration sont
+//! extraits dans [`helpers`] : `Tool`, `PanelType`, `OffsetAxis`,
+//! `MaskTarget`, `DestructiveOp`, `DestructiveResult`, `DecodedLayer`,
+//! `PendingPaint`. Un découpage par sous-enums (Canvas/Layers/...) est
+//! gardé pour un chantier futur quand le besoin de stabilité des variantes
+//! l'emportera sur le coût de la migration.
 
-use iced::Color;
+mod helpers;
+
 use iced::widget::pane_grid;
 use uuid::Uuid;
 
-use crate::layers::PixelLayer;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tool {
-    Hand,
-    Zoom,
-    Select,
-    Eyedropper,
-    Move,
-    /// Pinceau : peint sur le calque sélectionné
-    Brush,
-    /// Gomme : efface (réduit l'alpha) sur le calque sélectionné
-    Eraser,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanelType {
-    Canvas,
-    Properties,
-    Layers,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OffsetAxis {
-    X,
-    Y,
-}
-
-/// Calque pixels décodé (thread async) — Debug manuel car la texture n'est pas formattable
-#[derive(Clone)]
-pub struct DecodedLayer(pub PixelLayer);
-impl std::fmt::Debug for DecodedLayer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (w, h) = self.0.dimensions();
-        f.debug_struct("DecodedLayer")
-            .field("id", &self.0.id)
-            .field("dims", &(w, h))
-            .finish()
-    }
-}
-
-/// Trait terminé dont les pixels sont en cours de fusion hors thread UI.
-/// La texture d'aperçu (rastérisée par le canvas) reste affichée telle
-/// quelle jusqu'à PaintApplied — continuité visuelle parfaite.
-#[derive(Clone)]
-pub struct PendingPaint {
-    pub layer_id: Uuid,
-    /// Masque ciblé si le trait peignait un masque (None = pixels du calque).
-    pub mask_id: Option<Uuid>,
-    pub tex: ui_kit::image_canvas::StrokeTex,
-}
+pub use helpers::{
+    DecodedLayer, DestructiveOp, DestructiveResult, MaskTarget, OffsetAxis, PanelType,
+    PendingPaint, Tool,
+};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -319,7 +282,7 @@ pub enum Message {
         layer_id: Uuid,
         mask_id: Option<Uuid>,
     },
-    SetBrushColor(Color),
+    SetBrushColor(iced::Color),
     SetBrushSize(f32),
     SetBrushOpacity(f32),
     ToggleColorPicker,
@@ -332,7 +295,7 @@ pub enum Message {
     /// du plan composite → aucun changement de couleur.
     ColorPicked {
         task_id: u64,
-        color: Option<Color>,
+        color: Option<iced::Color>,
     },
 
     // ---- Écran d'accueil ----
@@ -391,35 +354,4 @@ pub enum Message {
     ToggleMaskList(Uuid),
     /// Bascule la couleur du pinceau masque entre noir et blanc.
     ToggleMaskColor,
-}
-
-/// Identifie un masque précis parmi les N masques d'un calque.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MaskTarget {
-    pub layer_id: Uuid,
-    pub mask_id: Uuid,
-}
-
-/// Type d'opération destructrice asynchrone (Flip, Crop).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DestructiveOp {
-    FlipHorizontal,
-    FlipVertical,
-    Crop,
-}
-
-/// Résultat d'une opération destructrice calculée hors thread UI.
-/// Contient le nouveau buffer source et les nouveaux buffers de masques
-/// (un par masque existant, dans le même ordre). Buffers RgbaImage PROPRES :
-/// l'application côté UI se fait par simple wrap (Arc), zéro copie pixels.
-/// Pour Crop, contient aussi le décalage de transform à appliquer.
-#[derive(Debug, Clone)]
-pub struct DestructiveResult {
-    pub source: image::RgbaImage,
-    pub masks: Vec<image::RgbaImage>,
-    /// Masques des sous-calques de filtres (id du filtre + ses masques dans
-    /// l'ordre) — mêmes opérations géométriques que les masques du calque.
-    pub filter_masks: Vec<(Uuid, Vec<image::RgbaImage>)>,
-    /// Décalage de transform à ajouter (Crop seulement ; `(0, 0)` pour Flip).
-    pub offset_delta: (f32, f32),
 }
