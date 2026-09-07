@@ -243,7 +243,7 @@ fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -
     // Premier mouvement RÉEL du geste : on lance ONE seule fois les
     // pré-calculs drag (fond sans ce calque + composite masqué). Pas de
     // mouvement → un simple clic de sélection ne déclenche AUCUNE composite.
-    let drag_task = if app.drag_bg_in_flight.is_none() && app.needs_fallback() {
+    let drag_task = if !app.drag_bg_job.is_running() && app.needs_fallback() {
         let has_mask = app
             .doc
             .find(anchor.layer_id)
@@ -279,7 +279,7 @@ fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -
 
 fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
     app.transform_anchor = None;
-    app.drag_bg_in_flight = None;
+    app.drag_bg_job.finish();
     // Purge immédiate des buffers drag — la prochaine frame affiche le
     // fallback complet sans artefacts.
     app.drag_background = None;
@@ -516,14 +516,11 @@ fn handle_fallback_computed(
     result: Result<Option<(Vec<u8>, u32, u32)>, String>,
 ) -> Task<Message> {
     app.background_tasks.finish(task_id);
-    app.fallback_in_flight = false;
-    if generation != app.fallback_generation {
-        // Stale result: the document changed during computation.
-        // take_fallback_task will re-emit because dirty is still true.
-        return Task::batch([
-            Task::none(),
-            app.take_fallback_task().unwrap_or_else(Task::none),
-        ]);
+    use crate::state::Finish;
+    // Si la génération ne correspond plus ou qu'une édition a eu lieu pendant
+    // le vol, take_fallback_task doit relancer (l'état du job le sait déjà).
+    if !matches!(app.fallback_job.finish(generation), Finish::Applied) {
+        return app.take_fallback_task().unwrap_or_else(Task::none);
     }
     match result {
         Ok(Some((rgba, w, h))) => {
@@ -546,9 +543,13 @@ fn handle_drag_background_computed(
     result: Option<(Vec<u8>, u32, u32)>,
 ) -> Task<Message> {
     app.background_tasks.finish(task_id);
-    app.drag_bg_in_flight = None;
+    // Le calcul est terminé : on libère l'état job AVANT de vérifier si le
+    // résultat est encore pertinent (le drag peut avoir changé de cible).
+    let still_running_for = app.drag_bg_job.is_running_for(layer_id);
+    app.drag_bg_job.finish();
     // Only applies if we are STILL dragging the same subtree
     if app.move_anchor.map(|(id, _)| id) == Some(layer_id)
+        && still_running_for
         && let Some((rgba, w, h)) = result
     {
         app.drag_background = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
@@ -564,7 +565,7 @@ fn handle_drag_layer_composite_computed(
     result: Option<(Vec<u8>, u32, u32)>,
 ) -> Task<Message> {
     app.background_tasks.finish(task_id);
-    app.drag_layer_composite_in_flight = false;
+    app.drag_layer_job.finish();
     // Valide seulement si on DRAG toujours CE calque — sinon le buffer est
     // orphelin et écrasé au prochain MoveLayerStart.
     if app.move_anchor.map(|(id, _)| id) == Some(layer_id)

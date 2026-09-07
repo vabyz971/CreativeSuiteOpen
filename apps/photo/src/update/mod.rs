@@ -174,11 +174,11 @@ mod tests {
             }),
         );
         assert!(app.move_anchor.is_some(), "geste actif");
+        assert!(!app.drag_bg_job.is_running(), "rien de lancé au clic seul");
         assert!(
-            app.drag_bg_in_flight.is_none(),
-            "rien de lancé au clic seul"
+            !app.fallback_job.needs_recompute() && !app.fallback_job.in_flight(),
+            "clic seul : fallback intact"
         );
-        assert!(!app.fallback_dirty, "clic seul : fallback intact");
 
         // Premier mouvement réel → pré-calculs lancés, une seule fois.
         let _ = update(
@@ -188,9 +188,9 @@ mod tests {
                 uniform: false,
             }),
         );
-        assert!(app.drag_bg_in_flight.is_some(), "fond de drag pré-calculé");
+        assert!(app.drag_bg_job.is_running(), "fond de drag pré-calculé");
         assert!(
-            app.drag_layer_composite_in_flight,
+            app.drag_layer_job.is_running(),
             "composite masqué pré-calculé"
         );
 
@@ -208,7 +208,10 @@ mod tests {
                     },
                 ),
             );
-            assert!(!app.fallback_dirty, "move {i} : fallback non invalide");
+            assert!(
+                !app.fallback_job.needs_recompute(),
+                "move {i} : fallback non invalide"
+            );
             assert!(
                 app.take_fallback_task().is_none(),
                 "move {i} : aucune recomposite pendant le geste"
@@ -221,7 +224,7 @@ mod tests {
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformEnd),
         );
         assert!(
-            app.fallback_in_flight,
+            app.fallback_job.in_flight(),
             "le relâchement lance exactement UNE recomposite"
         );
         assert!(
@@ -268,8 +271,11 @@ mod tests {
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformEnd),
         );
         assert_eq!(app.move_anchor, None, "geste terminé");
-        assert!(app.drag_bg_in_flight.is_none(), "aucun pré-calcul lancé");
-        assert!(!app.fallback_dirty, "aucune recomposite au relâchement");
+        assert!(!app.drag_bg_job.is_running(), "aucun pré-calcul lancé");
+        assert!(
+            !app.fallback_job.in_flight() && !app.fallback_job.needs_recompute(),
+            "aucune recomposite au relâchement"
+        );
         assert!(app.take_fallback_task().is_none(), "aucune tâche fallback");
         assert_eq!(
             app.history.undo_len(),

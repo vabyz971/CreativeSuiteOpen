@@ -73,15 +73,11 @@ pub struct PhotoApp {
     /// inter-calques (sinon chemin rapide par calque, zéro recomposite)
     pub fallback_handle: Option<iced_image::Handle>,
     // ---- Pipeline fallback ASYNCHRONE ----
-    /// Compteur d'invalidations : un résultat calculé avec une génération
-    /// antérieure est jeté (le document a changé entre-temps).
-    pub(crate) fallback_generation: u64,
-    /// Une composite est en cours hors thread UI — on n'en relance pas deux.
-    pub(crate) fallback_in_flight: bool,
-    /// Le rendu affiché est périmé : une nouvelle composite est requise.
-    pub(crate) fallback_dirty: bool,
-    /// Fond de drag déjà demandé pour ce sous-arbre (évite les doublons).
-    pub(crate) drag_bg_in_flight: Option<Uuid>,
+    /// Composite de fond en cours / périmée : un seul état explicite au lieu
+    /// des trois drapeaux (`generation` / `in_flight` / `dirty`) qui se
+    /// désynchronisaient. Le compteur monotone vit dans la branche `Running`
+    /// pour distinguer un résultat STALE d'un résultat à jour.
+    pub(crate) fallback_job: FallbackJob,
     pub image_path: Option<String>,
     pub image_error: Option<String>,
     // Canvas interaction (outil Main + pan/zoom)
@@ -113,8 +109,11 @@ pub struct PhotoApp {
     /// calculé UNE fois au MoveLayerStart, puis réutilisé pour le geste.
     pub drag_layer_composite: Option<iced_image::Handle>,
     pub drag_layer_composite_size: Option<Size>,
-    /// Verrou anti-doublon pour [`Self::drag_layer_composite_task`].
-    pub(crate) drag_layer_composite_in_flight: bool,
+    /// Pré-calcul du fond SANS le sous-arbre déplacé (drag en mode fallback).
+    pub(crate) drag_bg_job: DragBgJob,
+    /// Verrou anti-doublon pour [`Self::drag_layer_composite_task`] — un
+    /// calque cible à la fois (le buffer est réutilisé pendant tout le geste).
+    pub(crate) drag_layer_job: DragLayerJob,
     /// Traitements en arrière-plan (libellés affichés dans le menu du spinner).
     /// Registre par identifiant stable : chaque tâche asynchrone pousse son
     /// libellé à la création (`start`) et le retire à SON aboutissement ou à
@@ -243,9 +242,9 @@ impl PhotoApp {
     /// simplement les handles.
     pub(crate) fn invalidate_fallback(&mut self) {
         if self.needs_fallback() {
-            self.fallback_dirty = true;
+            self.fallback_job.invalidate();
         } else {
-            self.fallback_dirty = false;
+            self.fallback_job.reset_to_idle();
             self.fallback_handle = None;
             self.fallback_size = None;
         }
@@ -256,13 +255,11 @@ impl PhotoApp {
     /// revient par [`Message::FallbackComputed`] avec sa génération —
     /// un résultat périmé est jeté et une nouvelle tournée repart.
     pub(crate) fn take_fallback_task(&mut self) -> Option<Task<Message>> {
-        if !self.fallback_dirty || self.fallback_in_flight || !self.needs_fallback() {
+        if !self.needs_fallback() {
             return None;
         }
-        self.fallback_generation = self.fallback_generation.wrapping_add(1);
-        let generation = self.fallback_generation;
-        self.fallback_in_flight = true;
-        self.fallback_dirty = false;
+        let generation = self.fallback_job.start_new_run()?;
+
         let task_id = self.background_tasks.start("Composite de l'arbre...");
 
         let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
@@ -295,10 +292,9 @@ impl PhotoApp {
     /// (approximation), puis le fond exact remplace l'approximation.
     pub(crate) fn drag_background_task(&mut self, exclude_id: Uuid) -> Option<Task<Message>> {
         debug_assert!(self.needs_fallback());
-        if self.drag_bg_in_flight.is_some() {
+        if !self.drag_bg_job.try_start(exclude_id) {
             return None;
         }
-        self.drag_bg_in_flight = Some(exclude_id);
         let task_id = self.background_tasks.start("Fond de glissement...");
 
         let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
@@ -330,10 +326,12 @@ impl PhotoApp {
     /// est réutilisé pour toutes les frames suivantes, car le calque change
     /// de POSITION (pas de pixels) pendant le geste.
     pub(crate) fn drag_layer_composite_task(&mut self, layer_id: Uuid) -> Option<Task<Message>> {
-        if !self.needs_fallback() || self.drag_layer_composite_in_flight {
+        if !self.needs_fallback() {
             return None;
         }
-        self.drag_layer_composite_in_flight = true;
+        if !self.drag_layer_job.try_start() {
+            return None;
+        }
         let task_id = self.background_tasks.start("Rendu du calque déplacé...");
 
         let mut doc_copy = photo_engine::Document::new(self.doc.width, self.doc.height);
@@ -400,10 +398,7 @@ impl Default for PhotoApp {
             selected_layer: None,
             fallback_size: None,
             fallback_handle: None,
-            fallback_generation: 0,
-            fallback_in_flight: false,
-            fallback_dirty: false,
-            drag_bg_in_flight: None,
+            fallback_job: FallbackJob::Idle,
             image_path: None,
             image_error: None,
             selected_tool: Tool::Hand,
@@ -419,7 +414,8 @@ impl Default for PhotoApp {
             drag_background_size: None,
             drag_layer_composite: None,
             drag_layer_composite_size: None,
-            drag_layer_composite_in_flight: false,
+            drag_bg_job: DragBgJob::Idle,
+            drag_layer_job: DragLayerJob::Idle,
             background_tasks: BackgroundTasks::default(),
             task_menu_open: false,
             spinner_angle: 0.0,
@@ -468,4 +464,176 @@ pub(crate) struct TransformAnchor {
     pub base: crate::layers::Transform2D,
     /// Position curseur document au début du geste.
     pub cursor_doc: (f32, f32),
+}
+
+// ---------------------------------------------------------------------------
+// États explicites des jobs de rendu asynchrones (AGENT §8, §11).
+// Avant : 3 champs plats (`_in_flight`, `_dirty`, `_generation`) qui pouvaient
+// se désynchroniser. Maintenant : un enum par job — la machine à états est
+// dans le type, pas dans la tête du lecteur.
+// ---------------------------------------------------------------------------
+
+/// Composite de fond (blend inter-calques). Compteur monotone inclus pour
+/// jeter un résultat calculé avec une génération antérieure (le document a
+/// changé pendant que la tâche tournait).
+#[derive(Default)]
+pub(crate) enum FallbackJob {
+    #[default]
+    Idle,
+    /// Tâche en vol ; un résultat qui reviendrait avec une `generation`
+    /// différente serait périmé. La branche `Dirty` signale qu'une
+    /// recomposite supplémentaire sera nécessaire au retour.
+    Running { generation: u64, dirty: bool },
+}
+
+impl FallbackJob {
+    /// Édition signalée — la composite affichée devient périmée.
+    pub(crate) fn invalidate(&mut self) {
+        match self {
+            Self::Idle => {
+                *self = Self::Running {
+                    generation: 0,
+                    dirty: true,
+                }
+            }
+            Self::Running { dirty, .. } => *dirty = true,
+        }
+    }
+
+    /// Purge l'état (mode rapide actif : pas de composite à refaire).
+    pub(crate) fn reset_to_idle(&mut self) {
+        *self = Self::Idle;
+    }
+
+    /// Lance un nouveau calcul IFF une invalidation est en attente. Retourne
+    /// la génération attribuée, ou `None` si rien à faire (déjà en vol, ou
+    /// rien d'invalidé). Appelé à chaque tour de boucle après un message.
+    pub(crate) fn start_new_run(&mut self) -> Option<u64> {
+        match self {
+            Self::Idle => None, // rien d'invalidé, on n'invalide pas nous-mêmes
+            Self::Running { dirty: false, .. } => None, // déjà en vol, pas périmé
+            Self::Running { generation, .. } => {
+                let next = generation.wrapping_add(1);
+                *self = Self::Running {
+                    generation: next,
+                    dirty: false,
+                };
+                Some(next)
+            }
+        }
+    }
+
+    /// Le calcul est-il en vol (sans tenir compte de l'invalidation) ?
+    #[allow(dead_code)] // observé par les tests d'invalidation du drag
+    pub(crate) fn in_flight(&self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
+    /// Le calcul affiché est-il périmé (édition pendant le vol) ?
+    #[allow(dead_code)] // observé par les tests d'invalidation du drag
+    pub(crate) fn needs_recompute(&self) -> bool {
+        match self {
+            Self::Idle => false,
+            Self::Running { dirty, .. } => *dirty,
+        }
+    }
+
+    /// Tâche terminée. Retourne un verdict :
+    /// - [`Finish::Applied`] : résultat à jour, l'appliquer.
+    /// - [`Finish::Retry`] : résultat périmé (édition pendant le vol) — le
+    ///   caller doit relancer via [`Self::start_new_run`].
+    /// - [`Finish::Stale`] : callback obsolète (une nouvelle tâche a déjà
+    ///   été lancée entre-temps), aucun travail.
+    pub(crate) fn finish(&mut self, generation: u64) -> Finish {
+        match self {
+            Self::Running {
+                generation: g,
+                dirty,
+            } if *g == generation => {
+                if *dirty {
+                    *self = Self::Running {
+                        generation: *g,
+                        dirty: false,
+                    };
+                    Finish::Retry
+                } else {
+                    *self = Self::Idle;
+                    Finish::Applied
+                }
+            }
+            _ => Finish::Stale,
+        }
+    }
+}
+
+/// Verdict de [`FallbackJob::finish`].
+pub(crate) enum Finish {
+    Applied,
+    Retry,
+    Stale,
+}
+
+/// Pré-calcul du fond SANS le sous-arbre déplacé (drag en mode fallback).
+/// Un seul vol à la fois ; l'id du sous-arbre est conservé pour reconnaître
+/// un résultat obsolète quand le geste change de cible.
+#[derive(Default)]
+pub(crate) enum DragBgJob {
+    #[default]
+    Idle,
+    Running(Uuid),
+}
+
+impl DragBgJob {
+    /// `true` si on a pu démarrer (aucune tâche en cours).
+    pub(crate) fn try_start(&mut self, exclude_id: Uuid) -> bool {
+        if matches!(self, Self::Idle) {
+            *self = Self::Running(exclude_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn finish(&mut self) {
+        *self = Self::Idle;
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(self, Self::Running(_))
+    }
+
+    /// Le calcul lancé pour cet id est-il toujours celui qu'on attend ?
+    pub(crate) fn is_running_for(&self, id: Uuid) -> bool {
+        matches!(self, Self::Running(x) if *x == id)
+    }
+}
+
+/// Composite du calque seul AVEC masque — surimpression pendant le drag
+/// en mode fallback. Un seul vol à la fois ; la pertinence du résultat est
+/// vérifiée côté handler via `move_anchor` (le sous-arbre peut avoir changé).
+#[derive(Default)]
+pub(crate) enum DragLayerJob {
+    #[default]
+    Idle,
+    Running,
+}
+
+impl DragLayerJob {
+    pub(crate) fn try_start(&mut self) -> bool {
+        if matches!(self, Self::Idle) {
+            *self = Self::Running;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn finish(&mut self) {
+        *self = Self::Idle;
+    }
+
+    #[allow(dead_code)] // observé par les tests d'invalidation du drag
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(self, Self::Running)
+    }
 }
