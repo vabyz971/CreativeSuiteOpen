@@ -33,6 +33,7 @@ Cargo.lock
 **/.env
 **/.env.local
 **/*.env.*
+graft/
 
 # Editors
 **/.vscode/
