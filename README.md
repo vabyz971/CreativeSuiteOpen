@@ -35,7 +35,7 @@ Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0`
 - **Per-layer real-time dragging** (60 fps, zero recomposite during the gesture)
 
 ### Live filters (non-destructive)
-- Per-layer filter chains: brightness/contrast, blur, color correction… evaluated through an internal node-graph engine
+- Per-layer filter chains: brightness/contrast, blur, color correction… evaluated sequentially (each effect receives the previous one's output)
 - Filters never alter the source image — edit parameters anytime, disable without losing settings
 - **Per-layer appearance cache keyed by a signature of the filter chain + source identity**: editing layer N recomputes layer N only; neighbors keep their textures untouched
 
@@ -56,8 +56,8 @@ Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0`
 - Compute-shader filters (brightness/contrast, blur…) with graceful CPU fallback when no adapter is present
 - GPU detection (Vulkan/DX12/Metal) and hardware info in preferences
 
-### Nodal texture generator
-- Built-in node editor (dedicated panel) — intended for texture generation and filters applicable to layers (work in progress)
+### Procedural effects
+- Every effect (blur, color adjustments…) is also usable as a non-destructive live filter on any layer (work in progress: generated textures applied to layers)
 
 ### Tools
 Hand, Zoom, Rectangle selection, Move, **Brush**, **Eraser** (destination-out, ring preview), Eyedropper — floating toolbar hideable with `Tab` (shortcuts `B` / `E`)
@@ -84,14 +84,13 @@ CreativeSuiteOpen/
 │   ├── video-engine/         # Video engine (upcoming)
 │   └── audio-engine/         # Audio engine (upcoming)
 ├── core/                     # Shared foundation reused across apps
-│   ├── core/                 # suite-core: generic node graph (evaluation, connections)
 │   ├── datatypes/            # Shared types: nodes, sockets, parameters, Vec2
-│   └── shell/                # Common shell: layout, menu bar, window
 ├── packages/                 # Reusable libraries (never depend on engines/apps)
 │   ├── ui-kit/               # Iced widgets: theme.rs (SOLE source of tokens), style.rs,
 │   │                         #   image_canvas.rs, layer_canvas.rs,
 │   │                         #   menu.rs / dropdown.rs, timeline.rs / piano_roll.rs
-│   ├── math-utils/           # Shared math: Vec3, Matrix4, Bézier (canonical Vec2 = datatypes)
+│   ├── math-utils/           # Shared math: Vec3, Matrix4, Bézier, Transform2D
+│   │                         #   (canonical affine transform; canonical Vec2 = datatypes)
 │   └── file-utils/           # I/O: drag & drop, file dialogs
 ├── assets/fonts/             # Hanken Grotesk, Material Icons
 ├── flake.nix                 # NixOS dev environment (Vulkan, Wayland)
