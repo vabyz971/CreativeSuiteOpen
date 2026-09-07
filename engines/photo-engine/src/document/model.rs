@@ -26,8 +26,8 @@
 //! - [`Document`] possède un arbre de [`LayerNode`] : calques pixels,
 //!   groupes et calques d'ajustement, imbriqués à volonté.
 //! - Chaque [`PixelLayer`] garde son image SOURCE intacte ; les retouches
-//!   vivent dans une chaîne linéaire de [`FilterNode`] (live filters)
-//!   évaluée par le moteur nodal interne (voir [`crate::filters`]).
+//!   vivent dans des sous-calques [`FilterLayer`] (façon Affinity)
+//!   évalués séquentiellement (voir [`crate::filters`]).
 //! - L'apparence dérivée (source × filtres) est calculée paresseusement et
 //!   mise en cache par version d'apparence : un réglage ne recalcule que la
 //!   chaîne du calque concerné, l'undo/redo ne recalcule que si nécessaire.
@@ -139,8 +139,9 @@ impl BlendMode {
 pub use math_utils::Transform2D;
 
 /// Un filtre dynamique (live filter) : référence nommée vers un effet du
-/// registre nodal + ses paramètres. La chaîne d'un calque est évaluée comme
-/// un mini-graphe interne (input → filtres → output), voir [`crate::filters`].
+/// registre + ses paramètres. Utilisé TEL QUEL par les calques
+/// d'ajustement ; les calques pixels portent des [`FilterLayer`]
+/// (sous-calques à part entière, façon Affinity).
 #[derive(Debug, Clone)]
 pub struct FilterNode {
     pub id: Uuid,
@@ -162,6 +163,94 @@ impl FilterNode {
     }
 }
 
+/// Un filtre vivant comme SOUS-CALQUE d'un calque pixels (façon Affinity :
+/// live filters imbriqués, réordonnables, chacun avec opacité, fusion,
+/// transformation et masques propres). L'effet (`type_id` + `params`)
+/// s'applique au résultat accumulé en dessous de lui dans la chaîne du
+/// parent, puis est composité avec ses attributs de calque.
+///
+/// L'ordre du `Vec` parent = ordre d'application (index 0 = premier).
+#[derive(Debug, Clone)]
+pub struct FilterLayer {
+    /// Identifiant stable (sélection, historique, projet).
+    pub id: Uuid,
+    /// Nom d'affichage (défaut = nom de la définition, renommable).
+    pub name: String,
+    /// type_id du registre d'effets (ex. « brightness_contrast », « blur »)
+    pub type_id: String,
+    pub params: HashMap<String, datatypes::ParamValue>,
+    /// Interrupteur d'effet (œil du panneau Calques) — désactivé =
+    /// transparent, réglages conservés.
+    pub enabled: bool,
+    /// 0..=100 — pondération du résultat filtré sur l'accumulé.
+    pub opacity: f32,
+    pub blend_mode: BlendMode,
+    /// Espace du parent (identité par défaut — comme un filtre imbriqué
+    /// Affinity qui suit son calque).
+    pub transform: Transform2D,
+    /// Masques de couverture — fusionnés multiplicativement dans l'espace
+    /// du parent, AVANT la transform du sous-calque (même espace que la
+    /// peinture, qui utilise la transform du porteur).
+    pub masks: Vec<LayerMask>,
+}
+
+impl FilterLayer {
+    /// Nouveau sous-calque avec les paramètres PAR DÉFAUT de sa définition.
+    pub fn new(
+        type_id: impl Into<String>,
+        name: impl Into<String>,
+        params: HashMap<String, datatypes::ParamValue>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            type_id: type_id.into(),
+            params,
+            enabled: true,
+            opacity: 100.0,
+            blend_mode: BlendMode::Normal,
+            transform: Transform2D::default(),
+            masks: Vec::new(),
+        }
+    }
+
+    /// Sous-calque « neutre » : opacité pleine, fusion normale, sans
+    /// transform ni masque — rendu strictement identique à l'ancien pli.
+    pub fn neutral(
+        type_id: impl Into<String>,
+        params: HashMap<String, datatypes::ParamValue>,
+    ) -> Self {
+        let type_id = type_id.into();
+        Self::new(type_id.clone(), type_id, params)
+    }
+
+    /// Sous-calque reconstitué depuis un filtre simple (ajustements) —
+    /// attributs de calque neutres, identité (id, état) préservée.
+    pub fn from_node(node: FilterNode) -> Self {
+        Self {
+            id: node.id,
+            name: node.type_id.clone(),
+            type_id: node.type_id,
+            params: node.params,
+            enabled: node.enabled,
+            opacity: 100.0,
+            blend_mode: BlendMode::Normal,
+            transform: Transform2D::default(),
+            masks: Vec::new(),
+        }
+    }
+
+    /// Chemin rapide : aucun attribut de calque actif — le résultat de
+    /// l'effet remplace l'accumulé tel quel (zéro blend, zéro allocation).
+    #[must_use]
+    pub fn is_passthrough(&self) -> bool {
+        (self.opacity - 100.0).abs() < 0.01
+            && self.blend_mode == BlendMode::Normal
+            && self.transform == Transform2D::default()
+            && !self.masks.iter().any(|m| m.enabled)
+    }
+}
+
 /// Compteur global monotone des versions d'apparence : garantit qu'un numéro
 /// ne désigne jamais deux contenus différents (undo/redo inclus).
 static APPEARANCE_VERSION: AtomicU64 = AtomicU64::new(1);
@@ -170,8 +259,9 @@ pub fn next_appearance_version() -> u64 {
     APPEARANCE_VERSION.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Masque raster non destructif attaché à un PixelLayer ou un GroupLayer.
-/// Vit dans le MÊME espace que le calque (dimensions du calque, suit sa
+/// Masque raster non destructif attaché à un PixelLayer, un GroupLayer ou
+/// un sous-calque de filtre (dans ce dernier cas : espace du calque parent).
+/// Vit dans le MÊME espace que son porteur (dimensions du porteur, suit sa
 /// transform) — comme le masque « lié » par défaut d'Affinity/Photoshop.
 /// Stocké en RGBA8 (R=G=B=couverture, A=255) pour réutiliser
 /// `paint::paint_stroke_rgba` sans dupliquer la rastérisation.
@@ -216,7 +306,7 @@ impl LayerMask {
     }
 }
 
-/// Calque pixels : image SOURCE non destructive + chaîne de live filters.
+/// Calque pixels : image SOURCE non destructive + sous-calques de filtres.
 ///
 /// L'image source ne change que lors d'événements explicites (peinture,
 /// import, édition destructive volontaire) ; tout le reste vit dans les
@@ -226,8 +316,9 @@ pub struct PixelLayer {
     pub id: Uuid,
     pub name: String,
     pub source_image: Arc<DynamicImage>,
-    /// Chaîne linéaire de traitement non destructif (ordre = ordre d'application)
-    pub live_filters: Vec<FilterNode>,
+    /// Sous-calques de filtres non destructifs (façon Affinity — ordre =
+    /// ordre d'application, index 0 = premier).
+    pub filter_layers: Vec<FilterLayer>,
     pub transform: Transform2D,
     /// 0..=100
     pub opacity: f32,
@@ -247,7 +338,7 @@ impl PixelLayer {
             id: Uuid::new_v4(),
             name: name.into(),
             source_image: image,
-            live_filters: Vec::new(),
+            filter_layers: Vec::new(),
             transform: Transform2D::default(),
             opacity: 100.0,
             blend_mode: BlendMode::Normal,
@@ -415,10 +506,11 @@ impl LayerNode {
         }
     }
 
-    /// Filtres du nœud (live filters OU chaîne d'ajustement).
+    /// Chaîne de filtres d'un calque D'AJUSTEMENT (les pixels portent des
+    /// sous-calques [`FilterLayer`] — voir `PixelLayer::filter_layers`).
     pub fn filters(&self) -> Option<&Vec<FilterNode>> {
         match self {
-            LayerNode::Pixel(l) => Some(&l.live_filters),
+            LayerNode::Pixel(_) => None,
             LayerNode::Adjustment(a) => Some(&a.filters),
             LayerNode::Group(_) => None,
         }
@@ -426,7 +518,7 @@ impl LayerNode {
 
     pub fn filters_mut(&mut self) -> Option<&mut Vec<FilterNode>> {
         match self {
-            LayerNode::Pixel(l) => Some(&mut l.live_filters),
+            LayerNode::Pixel(_) => None,
             LayerNode::Adjustment(a) => Some(&mut a.filters),
             LayerNode::Group(_) => None,
         }
@@ -459,17 +551,27 @@ impl LayerNode {
     }
 
     /// Réassigne des identifiants frais (duplication) et invalide l'apparence.
+    /// Les masques sont inclus : ils sont adressés par id (miniatures UI).
     pub(crate) fn regenerate_ids(&mut self) {
         match self {
             LayerNode::Pixel(l) => {
                 l.id = Uuid::new_v4();
-                for f in &mut l.live_filters {
+                for f in &mut l.filter_layers {
                     f.id = Uuid::new_v4();
+                    for m in &mut f.masks {
+                        m.id = Uuid::new_v4();
+                    }
+                }
+                for m in &mut l.masks {
+                    m.id = Uuid::new_v4();
                 }
                 l.touch();
             }
             LayerNode::Group(g) => {
                 g.id = Uuid::new_v4();
+                for m in &mut g.masks {
+                    m.id = Uuid::new_v4();
+                }
                 for c in &mut g.children {
                     c.regenerate_ids();
                 }

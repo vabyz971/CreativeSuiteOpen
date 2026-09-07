@@ -7,7 +7,7 @@ pub mod tree;
 
 pub(crate) use compositing::{preview_buf, thumb_buf};
 pub use model::{
-    AdjustmentLayer, Appearance, BlendMode, FilterNode, GroupLayer, LayerMask, LayerNode,
-    PixelLayer, RgbaBuf, Transform2D, next_appearance_version,
+    AdjustmentLayer, Appearance, BlendMode, FilterLayer, FilterNode, GroupLayer, LayerMask,
+    LayerNode, PixelLayer, RgbaBuf, Transform2D, next_appearance_version,
 };
 pub use tree::Document;

@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn filtre_param_commande_invalide_le_cache_apparence() {
-        use crate::document::FilterNode;
+        use crate::document::FilterLayer;
         let mut doc = Document::new(2, 2);
         let img = DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
             2,
@@ -405,12 +405,13 @@ mod tests {
             image::Rgba([100, 100, 100, 255]),
         ));
         let mut layer = PixelLayer::new("f", Arc::new(img));
-        layer
-            .live_filters
-            .push(FilterNode::new("brightness_contrast"));
+        layer.filter_layers.push(FilterLayer::neutral(
+            "brightness_contrast",
+            Default::default(),
+        ));
         doc.push_layer(LayerNode::Pixel(layer));
         let layer_id = doc.root[0].id();
-        let filter_id = doc.pixel_layer(layer_id).unwrap().live_filters[0].id;
+        let filter_id = doc.pixel_layer(layer_id).unwrap().filter_layers[0].id;
 
         let version_avant = doc.pixel_layer(layer_id).unwrap().appearance_version;
         let cmd = Command::SetFilterParam {

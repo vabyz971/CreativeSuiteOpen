@@ -47,21 +47,28 @@ pub fn handle_brush_end(
         && points.len() > 1
         && let Some(tex) = tex
     {
-        let active_mask = app.active_mask.filter(|t| t.layer_id == id);
-        let stroke_mask_id = active_mask
-            .filter(|t| app.doc.find(id).and_then(|n| n.mask(t.mask_id)).is_some())
+        // Masque actif : ciblage direct OU via le calque porteur (un masque
+        // de sous-calque se peint depuis le parent, façon Affinity).
+        let active = app.active_mask.and_then(|t| {
+            let owner_ok = t.layer_id == id || app.doc.find_filter_parent(t.layer_id) == Some(id);
+            owner_ok.then_some(t)
+        });
+        let stroke_mask_id = active
+            .filter(|t| app.doc.mask_of(t.layer_id, t.mask_id).is_some())
             .map(|t| t.mask_id);
+        // Porteur effectif du masque (filtre ou calque) — utilisé pour la
+        // lecture, le write-back et l'espace de transform.
+        let mask_owner = active.map(|t| t.layer_id);
         let is_mask = stroke_mask_id.is_some();
         // Ne capturer QUE des Arc (zéro copie) : sur un masque, la copie du
         // buffer se fait dans le worker (`commit_stroke`), pas sur le thread UI.
         let source = if is_mask {
-            let m = app
-                .doc
-                .find(id)
-                .and_then(|n| n.mask(stroke_mask_id.unwrap()))
-                .unwrap();
+            let owner = mask_owner.unwrap();
+            let m = app.doc.mask_of(owner, stroke_mask_id.unwrap()).unwrap();
             let mask = Arc::clone(&m.image);
-            let transform = match app.doc.find(id).unwrap() {
+            // Espace du porteur : sous-calque → transform du calque parent.
+            let carrier = app.doc.find_filter_parent(owner).unwrap_or(owner);
+            let transform = match app.doc.find(carrier).unwrap() {
                 photo_engine::LayerNode::Pixel(l) => l.transform,
                 _ => crate::layers::Transform2D::default(),
             };
@@ -72,8 +79,10 @@ pub fn handle_brush_end(
             return Task::none();
         };
         let pts = points;
+        // Le write-back suit le PORTEUR du masque (peut être un filtre).
+        let commit_owner = mask_owner.unwrap_or(id);
         app.pending_paint = Some(crate::message::PendingPaint {
-            layer_id: id,
+            layer_id: commit_owner,
             mask_id: stroke_mask_id,
             tex: tex.clone(),
         });
@@ -126,13 +135,13 @@ pub fn handle_brush_end(
             move |result| match result {
                 Ok(buf) => Message::PaintApplied {
                     task_id,
-                    layer_id: id,
+                    layer_id: commit_owner,
                     mask_id: stroke_mask_id,
                     buf,
                 },
                 Err(_) => Message::PaintFailed {
                     task_id,
-                    layer_id: id,
+                    layer_id: commit_owner,
                     mask_id: stroke_mask_id,
                 },
             },
@@ -175,7 +184,7 @@ pub fn handle_paint_applied(
     app.background_tasks.finish(task_id);
     if let Some(img) = image::RgbaImage::from_raw(buf.width, buf.height, buf.rgba) {
         if let Some(mask_id) = mask_id {
-            if let Some(mask) = app.doc.find_mut(layer_id).and_then(|n| n.mask_mut(mask_id)) {
+            if let Some(mask) = app.doc.mask_of_mut(layer_id, mask_id) {
                 mask.image = Arc::new(img);
                 mask.touch();
             }
@@ -235,6 +244,7 @@ pub fn handle_set_active_mask(
     Task::none()
 }
 pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    // Porteur = calque pixels/groupe OU sous-calque de filtre.
     let can = app
         .doc
         .find(id)
@@ -244,9 +254,12 @@ pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
                 photo_engine::LayerNode::Pixel(_) | photo_engine::LayerNode::Group(_)
             )
         })
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || app.doc.find_filter_layer(id).is_some();
     if can {
-        let (w, h) = match app.doc.find(id) {
+        // Dimensions source : le sous-calque vit dans l'espace du parent.
+        let carrier = app.doc.find_filter_parent(id).unwrap_or(id);
+        let (w, h) = match app.doc.find(carrier) {
             Some(photo_engine::LayerNode::Pixel(l)) => l.dimensions(),
             _ => (app.doc.width.max(1), app.doc.height.max(1)),
         };
@@ -282,7 +295,7 @@ pub fn handle_add_mask_computed(
     app.background_tasks.finish(task_id);
     let pre = app.snapshot();
     let mask_id = mask.id;
-    if let Some(masks) = app.doc.find_mut(id).and_then(|n| n.masks_mut()) {
+    if let Some(masks) = app.doc.masks_of_mut(id) {
         masks.push(mask);
     }
     app.expanded_masks.insert(id);
@@ -302,14 +315,10 @@ pub fn handle_add_mask_failed(app: &mut PhotoApp, task_id: u64, error: String) -
 }
 
 pub fn handle_remove_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> Task<Message> {
-    let existed = app
-        .doc
-        .find(layer_id)
-        .and_then(|n| n.mask(mask_id))
-        .is_some();
+    let existed = app.doc.mask_of(layer_id, mask_id).is_some();
     if existed {
         let pre = app.snapshot();
-        if let Some(masks) = app.doc.find_mut(layer_id).and_then(|n| n.masks_mut()) {
+        if let Some(masks) = app.doc.masks_of_mut(layer_id) {
             masks.retain(|m| m.id != mask_id);
         }
         if app.active_mask.map(|t| (t.layer_id, t.mask_id)) == Some((layer_id, mask_id)) {
@@ -325,7 +334,7 @@ pub fn handle_toggle_mask_enabled(
     layer_id: Uuid,
     mask_id: Uuid,
 ) -> Task<Message> {
-    if let Some(m) = app.doc.find(layer_id).and_then(|n| n.mask(mask_id)) {
+    if let Some(m) = app.doc.mask_of(layer_id, mask_id) {
         let cmd = photo_engine::Command::SetMaskEnabled {
             node_id: layer_id,
             mask_id,
@@ -339,7 +348,7 @@ pub fn handle_toggle_mask_enabled(
     Task::none()
 }
 pub fn handle_invert_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> Task<Message> {
-    if let Some(m) = app.doc.find(layer_id).and_then(|n| n.mask(mask_id)) {
+    if let Some(m) = app.doc.mask_of(layer_id, mask_id) {
         let cmd = photo_engine::Command::SetMaskInverted {
             node_id: layer_id,
             mask_id,

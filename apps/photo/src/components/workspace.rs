@@ -34,12 +34,15 @@ pub fn render<'a>(
     dragged_layer: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
     expanded_masks: &'a std::collections::HashSet<Uuid>,
+    expanded_filters: &'a std::collections::HashSet<Uuid>,
+    filter_menu_open: bool,
     mask_brush_black: bool,
     doc_size: Option<Size>,
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
     // Calque en cours de déplacement (mode fallback)
     drag_layer: Option<Uuid>,
+    // composite masqué (bake du transform de départ) sur le déplacement live.
     // Fond composite pré-calculé sans le calque déplacé
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
@@ -134,6 +137,8 @@ pub fn render<'a>(
                     dragged_layer,
                     active_mask,
                     expanded_masks,
+                    expanded_filters,
+                    filter_menu_open,
                 ),
             ),
         };
@@ -245,8 +250,10 @@ fn render_canvas_preview<'a>(
     // la sélection fonctionne aussi en fallback où `layers` = composite seul.
     let hit_layers = all_layers.clone();
     // Visualiseur de transformation : le calque sélectionné (overlay dessiné
-    // par-dessus les couches, indépendant du chemin de rendu).
-    let transform_target = selected_layer
+    // par-dessus les couches, indépendant du chemin de rendu). Un sous-calque
+    // de filtre résout vers son calque porteur.
+    let canvas_target = selected_layer.and_then(|id| doc.find_filter_parent(id).or(Some(id)));
+    let transform_target = canvas_target
         .and_then(|id| doc.pixel_layer(id))
         .filter(|l| l.visible)
         .and_then(|l| {
@@ -362,7 +369,7 @@ fn render_canvas_preview<'a>(
             skew_x: 0.0,
             skew_y: 0.0,
         }];
-        let can_paint = selected_layer
+        let can_paint = canvas_target
             .and_then(|id| doc.find(id))
             .map(|n| n.visible())
             .unwrap_or(false);
@@ -386,7 +393,7 @@ fn render_canvas_preview<'a>(
             .clip(true)
             .into()
     } else {
-        let can_paint = selected_layer
+        let can_paint = canvas_target
             .and_then(|id| doc.find(id))
             .map(|n| n.visible())
             .unwrap_or(false);

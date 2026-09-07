@@ -44,7 +44,7 @@ use std::sync::Arc;
 use image::DynamicImage;
 use uuid::Uuid;
 
-use crate::document::{Appearance, Document, FilterNode, PixelLayer};
+use crate::document::{Appearance, Document, FilterLayer, PixelLayer};
 
 /// Entrée de cache : apparence dérivée + preuves de validité.
 struct CacheEntry {
@@ -85,7 +85,7 @@ impl Renderer {
 
     /// Corps de [`Renderer::appearance`] — jamais appelé directement.
     fn appearance_locked(&mut self, layer: &PixelLayer) -> Appearance {
-        let signature = filters_signature(&layer.live_filters);
+        let signature = filters_signature(&layer.filter_layers);
         // perf-entry-api: use Entry to avoid double hashing on miss path
         use std::collections::hash_map::Entry;
         match self.entries.entry(layer.id) {
@@ -99,7 +99,7 @@ impl Renderer {
             Entry::Occupied(mut entry) => {
                 self.misses += 1;
                 let rendered =
-                    crate::filters::render_chain(&layer.source_image, &layer.live_filters);
+                    crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
                 let appearance = Appearance {
                     preview: crate::document::preview_buf(&rendered),
                     thumb: crate::document::thumb_buf(&rendered),
@@ -115,7 +115,7 @@ impl Renderer {
             Entry::Vacant(slot) => {
                 self.misses += 1;
                 let rendered =
-                    crate::filters::render_chain(&layer.source_image, &layer.live_filters);
+                    crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
                 let appearance = Appearance {
                     preview: crate::document::preview_buf(&rendered),
                     thumb: crate::document::thumb_buf(&rendered),
@@ -194,15 +194,21 @@ impl Renderer {
     }
 }
 
-/// Signature ORDONNÉE d'une chaîne de live filters : deux chaînes ont la
-/// même signature ssi mêmes filtres (id, type, état actif) avec mêmes
-/// paramètres dans le même ordre. L'ordre est significatif — c'est une
-/// CHAÎNE de traitement, pas un ensemble.
+/// Signature ORDONNÉE d'une chaîne de sous-calques de filtres : deux chaînes
+/// ont la même signature ssi mêmes sous-calques (id, type, état actif,
+/// opacité, fusion, transform, masques) avec mêmes paramètres dans le même
+/// ordre. L'ordre est significatif — c'est une CHAÎNE de traitement, pas
+/// un ensemble.
+///
+/// Les masques des sous-calques EN FONT PARTIE (contrairement aux masques
+/// des calques pixels) : ils sont bakés dans l'apparence par
+/// `composite_filter_layer`, donc toute édition (peinture, toggle,
+/// inversion) doit invalider le cache — la version du masque l'assure.
 ///
 /// Déterministe entre processus (`DefaultHasher::new()` = clés fixes),
 /// indépendant de l'itération désordonnée de `HashMap` (clés triées).
 #[must_use]
-pub fn filters_signature(filters: &[FilterNode]) -> u64 {
+pub fn filters_signature(filters: &[FilterLayer]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
 
@@ -212,6 +218,28 @@ pub fn filters_signature(filters: &[FilterNode]) -> u64 {
         h.write(f.id.as_bytes());
         h.write(f.type_id.as_bytes());
         h.write_u8(u8::from(f.enabled));
+        h.write_u32(f.opacity.to_bits());
+        h.write_u32(f.blend_mode.id());
+        for v in [
+            f.transform.offset_x,
+            f.transform.offset_y,
+            f.transform.rotation_deg,
+            f.transform.scale_x,
+            f.transform.scale_y,
+            f.transform.skew_x,
+            f.transform.skew_y,
+        ] {
+            h.write_u32(v.to_bits());
+        }
+        // Masques bakés dans l'apparence : id + état + version (la peinture
+        // remplace le buffer ET touche la version → MISS garanti).
+        h.write_usize(f.masks.len());
+        for m in &f.masks {
+            h.write(m.id.as_bytes());
+            h.write_u8(u8::from(m.enabled));
+            h.write_u8(u8::from(m.inverted));
+            h.write_u64(m.version);
+        }
         // Params triés par clé : même contenu => même signature
         let mut keys: Vec<&str> = Vec::with_capacity(f.params.len());
         keys.extend(f.params.keys().map(String::as_str));
@@ -279,10 +307,10 @@ mod tests {
 
     fn layer_with_filter(brightness: f32) -> PixelLayer {
         let mut l = PixelLayer::new("test", solid(100));
-        let mut f = FilterNode::new("brightness_contrast");
+        let mut f = FilterLayer::neutral("brightness_contrast", Default::default());
         f.params
             .insert("brightness".to_string(), ParamValue::Float(brightness));
-        l.live_filters.push(f);
+        l.filter_layers.push(f);
         l
     }
 
@@ -308,8 +336,8 @@ mod tests {
         let _ = r.appearance(&layer);
 
         // Réglage du slider : même id de filtre, nouvelle valeur
-        let fid = layer.live_filters[0].id;
-        layer.live_filters[0]
+        let fid = layer.filter_layers[0].id;
+        layer.filter_layers[0]
             .params
             .insert("brightness".to_string(), ParamValue::Float(20.0));
         let _ = r.appearance(&layer);
@@ -343,7 +371,7 @@ mod tests {
         let mut r = Renderer::default();
         let _ = r.appearance(&layer);
 
-        layer.live_filters[0].enabled = false;
+        layer.filter_layers[0].enabled = false;
         let _ = r.appearance(&layer);
         assert_eq!(r.misses(), 2);
 
@@ -389,7 +417,7 @@ mod tests {
         assert_eq!((r.misses(), r.hits()), (2, 0));
 
         let mut la_mod = la.clone();
-        if let Some(f) = la_mod.live_filters.first_mut() {
+        if let Some(f) = la_mod.filter_layers.first_mut() {
             f.params
                 .insert("brightness".to_string(), ParamValue::Float(6.0));
         }
@@ -399,8 +427,8 @@ mod tests {
         assert_eq!((r.misses(), r.hits()), (3, 1));
 
         // Signature tests (pure partie)
-        let s = filters_signature(&la.live_filters);
-        assert_eq!(s, filters_signature(&la.live_filters));
+        let s = filters_signature(&la.filter_layers);
+        assert_eq!(s, filters_signature(&la.filter_layers));
     }
 
     #[test]
@@ -427,10 +455,37 @@ mod tests {
         );
     }
 
-    fn filter_of(name: &str, brightness: f32) -> FilterNode {
-        let mut f = FilterNode::new(name);
+    fn filter_of(name: &str, brightness: f32) -> FilterLayer {
+        let mut f = FilterLayer::neutral(name, Default::default());
         f.params
             .insert("brightness".to_string(), ParamValue::Float(brightness));
         f
+    }
+
+    #[test]
+    fn opacite_et_fusion_comptent_dans_la_signature() {
+        let base = vec![filter_of("brightness_contrast", 12.0)];
+        let mut attenuated = base.clone();
+        attenuated[0].opacity = 50.0;
+        assert_ne!(filters_signature(&base), filters_signature(&attenuated));
+
+        let mut multiplied = base.clone();
+        multiplied[0].blend_mode = crate::document::BlendMode::Multiply;
+        assert_ne!(filters_signature(&base), filters_signature(&multiplied));
+    }
+
+    #[test]
+    fn masque_sous_calque_invalide_le_cache() {
+        use crate::document::LayerMask;
+        let base = vec![filter_of("brightness_contrast", 12.0)];
+        // Ajout d'un masque → signature différente
+        let mut masked = base.clone();
+        masked[0].masks.push(LayerMask::full(2, 2));
+        assert_ne!(filters_signature(&base), filters_signature(&masked));
+
+        // Peinture (touch = nouvelle version) → signature différente
+        let mut touched = masked.clone();
+        touched[0].masks[0].touch();
+        assert_ne!(filters_signature(&masked), filters_signature(&touched));
     }
 }

@@ -37,13 +37,28 @@ fn resolve_target(app: &PhotoApp, id: Uuid) -> Option<Uuid> {
     } else {
         Some(id)
     };
-    target.filter(|tid| app.doc.find(*tid).is_some())
+    target.and_then(|tid| {
+        // Un sous-calque de filtre redirige vers son calque porteur pour
+        // les opérations canvas (rotation, flip, crop…).
+        if app.doc.find(tid).is_some() {
+            Some(tid)
+        } else {
+            app.doc.find_filter_parent(tid)
+        }
+    })
 }
 
 fn rename_duplicate_suffix(doc: &mut photo_engine::Document, new_id: Uuid) {
     if let Some(node) = doc.find_mut(new_id) {
         let base = node.name().to_string();
         node.set_name(format!("{base} copie"));
+    }
+}
+
+fn rename_duplicate_suffix_filter(doc: &mut photo_engine::Document, new_id: Uuid) {
+    if let Some(f) = doc.find_filter_layer_mut(new_id) {
+        let base = f.name.clone();
+        f.name = format!("{base} copie");
     }
 }
 
@@ -103,7 +118,16 @@ fn handle_add_solid(app: &mut PhotoApp, color: iced::Color) -> Task<Message> {
 }
 
 pub fn handle_select_layer(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
-    if app.doc.find(id).map(|n| !n.visible()).unwrap_or(true) {
+    // Nœud ou sous-calque de filtre — les invisibles/désactivés refusent.
+    let selectable = match app.doc.find(id) {
+        Some(n) => n.visible(),
+        None => app
+            .doc
+            .find_filter_layer(id)
+            .map(|f| f.enabled)
+            .unwrap_or(false),
+    };
+    if !selectable {
         return Task::none();
     }
     app.selected_layer = Some(id);
@@ -136,10 +160,12 @@ pub fn handle_toggle_visible(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
 }
 
 pub fn handle_set_opacity(app: &mut PhotoApp, id: Uuid, opacity: f32) -> Task<Message> {
-    if let Some(node) = app.doc.find(id) {
+    // Polymorphe : nœud ou sous-calque de filtre (même Command, appli
+    // routée côté moteur + touch du porteur).
+    if let Some(old) = app.doc.opacity_of(id) {
         let cmd = Command::SetOpacity {
             layer_id: id,
-            old: node.opacity(),
+            old,
             new: opacity,
         };
         app.history.push_command(coalesce_key(id, 1), cmd.clone());
@@ -154,9 +180,7 @@ pub fn handle_set_blend(
     id: Uuid,
     mode: crate::layers::BlendMode,
 ) -> Task<Message> {
-    if let Some(node) = app.doc.find(id)
-        && let Some(old) = node.blend_mode()
-    {
+    if let Some(old) = app.doc.blend_of(id) {
         let cmd = Command::SetBlendMode {
             node_id: id,
             old,
@@ -170,10 +194,15 @@ pub fn handle_set_blend(
 }
 
 pub fn handle_rename(app: &mut PhotoApp, id: Uuid, name: String) -> Task<Message> {
-    if let Some(node) = app.doc.find(id) {
+    let old = app
+        .doc
+        .find(id)
+        .map(|n| n.name().to_string())
+        .or_else(|| app.doc.find_filter_layer(id).map(|f| f.name.clone()));
+    if let Some(old) = old {
         let cmd = Command::RenameLayer {
             node_id: id,
-            old: node.name().to_string(),
+            old,
             new: name,
         };
         app.history.push_command(coalesce_key(id, 0), cmd.clone());
@@ -188,15 +217,16 @@ pub fn handle_set_offset(
     axis: OffsetAxis,
     value: f32,
 ) -> Task<Message> {
-    if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
-        let mut new_t = l.transform;
+    // Polymorphe : pixels et sous-calques de filtres portent un Transform2D.
+    if let Some(t) = app.doc.transform_of(id) {
+        let mut new_t = t;
         match axis {
             OffsetAxis::X => new_t.offset_x = value,
             OffsetAxis::Y => new_t.offset_y = value,
         }
         let cmd = Command::SetTransform {
             layer_id: id,
-            old: l.transform,
+            old: t,
             new: new_t,
         };
         app.history.push_command(coalesce_key(id, 2), cmd.clone());
@@ -207,13 +237,13 @@ pub fn handle_set_offset(
 }
 
 pub fn handle_set_rotation(app: &mut PhotoApp, id: Uuid, degrees: f32) -> Task<Message> {
-    if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+    if let Some(t) = app.doc.transform_of(id) {
         let cmd = Command::SetTransform {
             layer_id: id,
-            old: l.transform,
+            old: t,
             new: Transform2D {
                 rotation_deg: degrees.clamp(-360.0, 360.0),
-                ..l.transform
+                ..t
             },
         };
         app.history.push_command(coalesce_key(id, 3), cmd.clone());
@@ -256,12 +286,17 @@ pub fn handle_flip(app: &mut PhotoApp, id: Uuid, horizontal: bool) -> Task<Messa
         // On ne clone QUE les Arc (bon marché, zéro copie pixels) : le
         // déréférencement + fliph/flipv du buffer complet se font dans le
         // worker. Le Document n'est pas Sync, on ne peut pas l'expédier.
-        let (source, masks) = match app.doc.pixel_layer(tid) {
+        let (source, masks, filter_masks) = match app.doc.pixel_layer(tid) {
             Some(l) => {
                 let source = Arc::clone(&l.source_image);
                 let masks: Vec<Arc<image::RgbaImage>> =
                     l.masks.iter().map(|m| Arc::clone(&m.image)).collect();
-                (source, masks)
+                let filter_masks: Vec<(Uuid, Vec<Arc<image::RgbaImage>>)> = l
+                    .filter_layers
+                    .iter()
+                    .map(|f| (f.id, f.masks.iter().map(|m| Arc::clone(&m.image)).collect()))
+                    .collect();
+                (source, masks, filter_masks)
             }
             None => return Task::none(),
         };
@@ -285,9 +320,24 @@ pub fn handle_flip(app: &mut PhotoApp, id: Uuid, horizontal: bool) -> Task<Messa
                         }
                         masks_rgba.push(copy);
                     }
+                    let mut filter_masks_rgba = Vec::with_capacity(filter_masks.len());
+                    for (fid, fms) in &filter_masks {
+                        let mut out = Vec::with_capacity(fms.len());
+                        for m in fms {
+                            let mut copy = (**m).clone();
+                            if horizontal {
+                                image::imageops::flip_horizontal_in_place(&mut copy);
+                            } else {
+                                image::imageops::flip_vertical_in_place(&mut copy);
+                            }
+                            out.push(copy);
+                        }
+                        filter_masks_rgba.push((*fid, out));
+                    }
                     Ok(crate::message::DestructiveResult {
                         source: flipped,
                         masks: masks_rgba,
+                        filter_masks: filter_masks_rgba,
                         offset_delta: (0.0, 0.0),
                     })
                 })
@@ -309,16 +359,16 @@ pub fn handle_flip(app: &mut PhotoApp, id: Uuid, horizontal: bool) -> Task<Messa
 pub fn handle_rotate(app: &mut PhotoApp, id: Uuid, delta: f32) -> Task<Message> {
     let target = resolve_target(app, id);
     if let Some(tid) = target
-        && let Some(LayerNode::Pixel(l)) = app.doc.find(tid)
+        && let Some(t) = app.doc.transform_of(tid)
     {
-        let r = (l.transform.rotation_deg + delta + 180.0).rem_euclid(360.0) - 180.0;
+        let r = (t.rotation_deg + delta + 180.0).rem_euclid(360.0) - 180.0;
         let new_rot = if r == -180.0 { 180.0 } else { r };
         let cmd = Command::SetTransform {
             layer_id: tid,
-            old: l.transform,
+            old: t,
             new: Transform2D {
                 rotation_deg: new_rot,
-                ..l.transform
+                ..t
             },
         };
         app.history.push_command_immediate(cmd.clone());
@@ -334,21 +384,21 @@ pub fn handle_set_scale_axis(
     axis: crate::OffsetAxis,
     scale: f32,
 ) -> Task<Message> {
-    if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+    if let Some(t) = app.doc.transform_of(id) {
         let scale = scale.clamp(0.05, 8.0);
         let new = match axis {
             crate::OffsetAxis::X => Transform2D {
                 scale_x: scale,
-                ..l.transform
+                ..t
             },
             crate::OffsetAxis::Y => Transform2D {
                 scale_y: scale,
-                ..l.transform
+                ..t
             },
         };
         let cmd = Command::SetTransform {
             layer_id: id,
-            old: l.transform,
+            old: t,
             new,
         };
         app.history.push_command(coalesce_key(id, 4), cmd.clone());
@@ -364,21 +414,15 @@ pub fn handle_set_skew(
     axis: crate::OffsetAxis,
     deg: f32,
 ) -> Task<Message> {
-    if let Some(LayerNode::Pixel(l)) = app.doc.find(id) {
+    if let Some(t) = app.doc.transform_of(id) {
         let deg = deg.clamp(-80.0, 80.0);
         let new = match axis {
-            crate::OffsetAxis::X => Transform2D {
-                skew_x: deg,
-                ..l.transform
-            },
-            crate::OffsetAxis::Y => Transform2D {
-                skew_y: deg,
-                ..l.transform
-            },
+            crate::OffsetAxis::X => Transform2D { skew_x: deg, ..t },
+            crate::OffsetAxis::Y => Transform2D { skew_y: deg, ..t },
         };
         let cmd = Command::SetTransform {
             layer_id: id,
-            old: l.transform,
+            old: t,
             new,
         };
         app.history.push_command(coalesce_key(id, 4), cmd.clone());
@@ -391,18 +435,18 @@ pub fn handle_set_skew(
 pub fn handle_reset_transform(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     let target = resolve_target(app, id);
     if let Some(tid) = target
-        && let Some(LayerNode::Pixel(l)) = app.doc.find(tid)
+        && let Some(t) = app.doc.transform_of(tid)
     {
         let cmd = Command::SetTransform {
             layer_id: tid,
-            old: l.transform,
+            old: t,
             new: Transform2D {
                 rotation_deg: 0.0,
                 scale_x: 1.0,
                 scale_y: 1.0,
                 skew_x: 0.0,
                 skew_y: 0.0,
-                ..l.transform
+                ..t
             },
         };
         app.history.push_command_immediate(cmd.clone());
@@ -463,6 +507,11 @@ pub fn handle_crop(app: &mut PhotoApp) -> Task<Message> {
         let source = Arc::clone(&layer.source_image);
         let masks: Vec<Arc<image::RgbaImage>> =
             layer.masks.iter().map(|m| Arc::clone(&m.image)).collect();
+        let filter_masks: Vec<(Uuid, Vec<Arc<image::RgbaImage>>)> = layer
+            .filter_layers
+            .iter()
+            .map(|f| (f.id, f.masks.iter().map(|m| Arc::clone(&m.image)).collect()))
+            .collect();
         let task_id = app.background_tasks.start("Rognage du calque...");
         Task::perform(
             async move {
@@ -477,9 +526,21 @@ pub fn handle_crop(app: &mut PhotoApp) -> Task<Message> {
                             image::imageops::crop_imm(&copy, cx_u, cy_u, cw_u, ch_u).to_image();
                         masks_rgba.push(cm);
                     }
+                    let mut filter_masks_rgba = Vec::with_capacity(filter_masks.len());
+                    for (fid, fms) in &filter_masks {
+                        let mut out = Vec::with_capacity(fms.len());
+                        for m in fms {
+                            let copy = (**m).clone();
+                            let cm =
+                                image::imageops::crop_imm(&copy, cx_u, cy_u, cw_u, ch_u).to_image();
+                            out.push(cm);
+                        }
+                        filter_masks_rgba.push((*fid, out));
+                    }
                     Ok(crate::message::DestructiveResult {
                         source: cropped,
                         masks: masks_rgba,
+                        filter_masks: filter_masks_rgba,
                         offset_delta: (dx, dy),
                     })
                 })
@@ -529,6 +590,17 @@ pub fn handle_destructive_op_computed(
                             m.touch();
                         }
                     }
+                    // Masques des sous-calques (même espace source)
+                    for (fid, fms) in r.filter_masks.into_iter() {
+                        if let Some(f) = layer.filter_layers.iter_mut().find(|f| f.id == fid) {
+                            for (i, new_mask) in fms.into_iter().enumerate() {
+                                if let Some(m) = f.masks.get_mut(i) {
+                                    m.image = Arc::new(new_mask);
+                                    m.touch();
+                                }
+                            }
+                        }
+                    }
                     // Crop : compense l'origine monde (le pixel (x,y)
                     // d'origine reste à sa place).
                     if r.offset_delta != (0.0, 0.0) {
@@ -573,6 +645,17 @@ pub fn handle_reorder(
     Task::none()
 }
 pub fn handle_duplicate(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    // Sous-calque de filtre : clone juste au-dessus dans le même parent.
+    if let Some(parent) = app.doc.find_filter_parent(id) {
+        let pre = app.snapshot();
+        if let Some(new_id) = app.doc.duplicate_filter(parent, id) {
+            rename_duplicate_suffix_filter(&mut app.doc, new_id);
+            app.selected_layer = Some(new_id);
+            app.history.push_snapshot(pre);
+            app.invalidate_fallback();
+        }
+        return Task::none();
+    }
     let target = resolve_target(app, id);
     if let Some(src) = target {
         let pre = app.snapshot();
@@ -586,6 +669,17 @@ pub fn handle_duplicate(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     Task::none()
 }
 pub fn handle_delete(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    // Sous-calque de filtre : suppression dans le parent (pas de garde
+    // pixel_count — un calque peut perdre tous ses filtres).
+    if let Some(parent) = app.doc.find_filter_parent(id) {
+        let pre = app.snapshot();
+        if app.doc.remove_filter(parent, id).is_some() {
+            app.selected_layer = Some(parent);
+            app.history.push_snapshot(pre);
+            app.invalidate_fallback();
+        }
+        return Task::none();
+    }
     let target = resolve_target(app, id);
     if let Some(t) = target
         && app.doc.pixel_count() > 1
@@ -600,6 +694,15 @@ pub fn handle_delete(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     Task::none()
 }
 pub fn handle_move_up(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    // Sous-calque : remonte dans la chaîne du parent (= appliqué plus tard).
+    if let Some(parent) = app.doc.find_filter_parent(id) {
+        let pre = app.snapshot();
+        if app.doc.move_filter(parent, id, true) {
+            app.history.push_snapshot(pre);
+            app.invalidate_fallback();
+        }
+        return Task::none();
+    }
     if app.doc.move_up(id) {
         let pre = app.snapshot();
         app.history.push_snapshot(pre);
@@ -608,6 +711,14 @@ pub fn handle_move_up(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     Task::none()
 }
 pub fn handle_move_down(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    if let Some(parent) = app.doc.find_filter_parent(id) {
+        let pre = app.snapshot();
+        if app.doc.move_filter(parent, id, false) {
+            app.history.push_snapshot(pre);
+            app.invalidate_fallback();
+        }
+        return Task::none();
+    }
     if app.doc.move_down(id) {
         let pre = app.snapshot();
         app.history.push_snapshot(pre);
@@ -640,10 +751,33 @@ pub fn handle_toggle_collapsed(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     Task::none()
 }
 
+pub fn handle_toggle_filter_list(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    if app.expanded_filters.contains(&id) {
+        app.expanded_filters.remove(&id);
+    } else {
+        app.expanded_filters.insert(id);
+    }
+    Task::none()
+}
+
+pub fn handle_toggle_filter_menu(app: &mut PhotoApp) -> Task<Message> {
+    app.filter_menu_open = !app.filter_menu_open;
+    Task::none()
+}
+
 pub fn handle_add_live_filter(app: &mut PhotoApp, id: Uuid, type_id: String) -> Task<Message> {
-    if let Some(filter) = photo_engine::new_filter(&type_id) {
+    if let Some(filter) = photo_engine::new_filter_layer(&type_id) {
         let pre = app.snapshot();
-        if app.doc.add_filter(id, filter).is_some() {
+        if let Some(fid) = app.doc.add_filter(id, filter) {
+            // Pixels : le parent se déplie et le nouveau sous-calque est
+            // sélectionné (édition directe dans Propriétés). Ajustements :
+            // la sélection reste (liste classique dans Propriétés).
+            if app.doc.pixel_layer(id).is_some() {
+                app.expanded_filters.insert(id);
+                app.selected_layer = Some(fid);
+                app.active_mask = None;
+            }
+            app.filter_menu_open = false;
             app.history.push_snapshot(pre);
             app.invalidate_fallback();
         }
@@ -658,10 +792,58 @@ pub fn handle_remove_live_filter(
 ) -> Task<Message> {
     let pre = app.snapshot();
     if app.doc.remove_filter(layer_id, filter_id).is_some() {
+        if app.selected_layer == Some(filter_id) {
+            app.selected_layer = Some(layer_id);
+        }
         app.history.push_snapshot(pre);
         app.invalidate_fallback();
     }
     Task::none()
+}
+
+/// Lecture d'un paramètre de filtre (pixels : sous-calques, ajustements :
+/// chaîne simple).
+fn old_filter_param(
+    app: &PhotoApp,
+    layer_id: Uuid,
+    filter_id: Uuid,
+    key: &str,
+) -> Option<datatypes::ParamValue> {
+    match app.doc.find(layer_id) {
+        Some(LayerNode::Pixel(l)) => l
+            .filter_layers
+            .iter()
+            .find(|f| f.id == filter_id)?
+            .params
+            .get(key)
+            .cloned(),
+        _ => app
+            .doc
+            .find(layer_id)?
+            .filters()?
+            .iter()
+            .find(|f| f.id == filter_id)?
+            .params
+            .get(key)
+            .cloned(),
+    }
+}
+
+fn current_filter_enabled(app: &PhotoApp, layer_id: Uuid, filter_id: Uuid) -> Option<bool> {
+    match app.doc.find(layer_id) {
+        Some(LayerNode::Pixel(l)) => l
+            .filter_layers
+            .iter()
+            .find(|f| f.id == filter_id)
+            .map(|f| f.enabled),
+        _ => app
+            .doc
+            .find(layer_id)?
+            .filters()?
+            .iter()
+            .find(|f| f.id == filter_id)
+            .map(|f| f.enabled),
+    }
 }
 
 pub fn handle_set_filter_param(
@@ -675,13 +857,7 @@ pub fn handle_set_filter_param(
     // Pixel layer: the appearance recomputes itself via the version cache
     // (zero global recomposite). Adjustment: the global blend changes ->
     // recomposite.
-    let old_value = app
-        .doc
-        .find(layer_id)
-        .and_then(|n| n.filters())
-        .and_then(|fs| fs.iter().find(|f| f.id == filter_id))
-        .and_then(|f| f.params.get(&key))
-        .cloned();
+    let old_value = old_filter_param(app, layer_id, filter_id, &key);
     match old_value {
         Some(old) => {
             let cmd = Command::SetFilterParam {
@@ -714,13 +890,17 @@ pub fn handle_toggle_filter_enabled(
     let pre = app.snapshot();
     if app.doc.set_filter_enabled(layer_id, filter_id, {
         // invert the current state
-        app.doc
-            .find(layer_id)
-            .and_then(|n| n.filters())
-            .and_then(|fs| fs.iter().find(|f| f.id == filter_id))
-            .map(|f| !f.enabled)
+        current_filter_enabled(app, layer_id, filter_id)
+            .map(|e| !e)
             .unwrap_or(false)
     }) {
+        // Comme l'œil des calques : désactiver le filtre sélectionné
+        // resélectionne le porteur.
+        if app.selected_layer == Some(filter_id)
+            && current_filter_enabled(app, layer_id, filter_id) == Some(false)
+        {
+            app.selected_layer = Some(layer_id);
+        }
         app.history.push_snapshot(pre);
         app.invalidate_fallback();
     }
@@ -776,6 +956,8 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::GroupLayers(id) => Some(handle_group(app, id)),
         Message::UngroupLayers(id) => Some(handle_ungroup(app, id)),
         Message::ToggleGroupCollapsed(id) => Some(handle_toggle_collapsed(app, id)),
+        Message::ToggleFilterList(id) => Some(handle_toggle_filter_list(app, id)),
+        Message::ToggleFilterMenu => Some(handle_toggle_filter_menu(app)),
         Message::AddLiveFilter { id, type_id } => Some(handle_add_live_filter(app, id, type_id)),
         Message::RemoveLiveFilter {
             layer_id,
@@ -829,6 +1011,8 @@ pub fn handles(msg: &Message) -> bool {
             | Message::GroupLayers(_)
             | Message::UngroupLayers(_)
             | Message::ToggleGroupCollapsed(_)
+            | Message::ToggleFilterList(_)
+            | Message::ToggleFilterMenu
             | Message::AddLiveFilter { .. }
             | Message::RemoveLiveFilter { .. }
             | Message::SetFilterParam { .. }

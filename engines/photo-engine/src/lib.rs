@@ -33,11 +33,11 @@ pub mod renderer;
 
 pub use command::{Command, RenderEvent};
 pub use document::{
-    AdjustmentLayer, Appearance, BlendMode, Document, FilterNode, GroupLayer, LayerMask, LayerNode,
-    PixelLayer, RgbaBuf, Transform2D,
+    AdjustmentLayer, Appearance, BlendMode, Document, FilterLayer, FilterNode, GroupLayer,
+    LayerMask, LayerNode, PixelLayer, RgbaBuf, Transform2D,
 };
 pub use export::{DEFAULT_JPEG_QUALITY, ExportFormat, export_image};
-pub use filters::{filterable_types, new_filter};
+pub use filters::{filterable_types, new_filter_layer};
 pub use gpu::GpuContext;
 pub use history::UndoAction;
 pub use registry::{all_definitions, definition_for};

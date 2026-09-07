@@ -9,6 +9,7 @@ use crate::history::Snapshot;
 use datatypes::ParamValue;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use std::sync::Arc;
+use uuid::Uuid;
 
 fn solid(w: u32, h: u32, rgba: [u8; 4]) -> DynamicImage {
     DynamicImage::ImageRgba8(ImageBuffer::from_pixel(w, h, Rgba(rgba)))
@@ -205,10 +206,10 @@ fn composite_sans_sous_arbre_reste_en_cache_chaud() {
     let mut doc = Document::new(2, 2);
     for name in ["a", "b"] {
         let mut l = PixelLayer::new(name, arc(&img));
-        let mut f = FilterNode::new("brightness_contrast");
+        let mut f = FilterLayer::neutral("brightness_contrast", Default::default());
         f.params
             .insert("brightness".into(), ParamValue::Float(10.0));
-        l.live_filters.push(f);
+        l.filter_layers.push(f);
         doc.push_layer(LayerNode::Pixel(l));
     }
     let id_b = doc.root[1].id();
@@ -408,7 +409,10 @@ fn live_filter_modifie_l_apparence_pas_la_source() {
     let id = doc.root[0].id();
 
     let fid = doc
-        .add_filter(id, FilterNode::new("brightness_contrast"))
+        .add_filter(
+            id,
+            FilterLayer::neutral("brightness_contrast", Default::default()),
+        )
         .expect("add_filter");
     assert!(
         doc.set_filter_param(id, fid, "brightness", ParamValue::Float(50.0)),
@@ -427,7 +431,91 @@ fn live_filter_modifie_l_apparence_pas_la_source() {
 
     // Suppression du filtre
     assert!(doc.remove_filter(id, fid).is_some());
-    assert!(doc.pixel_layer(id).unwrap().live_filters.is_empty());
+    assert!(doc.pixel_layer(id).unwrap().filter_layers.is_empty());
+}
+
+#[test]
+fn sous_calque_opacite_mixe_l_apparence() {
+    // Façon Affinity : opacité 50 % sur le sous-calque = mix source↔filtré.
+    let img = solid(2, 2, [100, 100, 100, 255]);
+    let mut doc = Document::new(2, 2);
+    doc.push_layer(LayerNode::Pixel(PixelLayer::new("filtre", arc(&img))));
+    let id = doc.root[0].id();
+
+    let mut f = FilterLayer::neutral("brightness_contrast", Default::default());
+    f.params
+        .insert("brightness".into(), ParamValue::Float(40.0)); // plein = 202
+    f.opacity = 50.0;
+    doc.add_filter(id, f).expect("add_filter");
+
+    let appearance = doc.appearance(id).expect("apparence");
+    assert_close(px(&appearance.image, 0, 0), [151, 151, 151, 255]);
+}
+
+#[test]
+fn peinture_masque_sous_calque_rafraichit_l_apparence() {
+    // Non-régression : vider le masque au pinceau doit changer l'apparence
+    // SANS toggle du calque (le masque est baké dans l'apparence).
+    let img = solid(2, 2, [100, 100, 100, 255]);
+    let mut doc = Document::new(2, 2);
+    doc.push_layer(LayerNode::Pixel(PixelLayer::new("filtre", arc(&img))));
+    let id = doc.root[0].id();
+
+    let mut f = FilterLayer::neutral("brightness_contrast", Default::default());
+    f.params
+        .insert("brightness".into(), ParamValue::Float(40.0)); // plein = 202
+    f.masks.push(LayerMask::full(2, 2));
+    let fid = doc.add_filter(id, f).expect("add_filter");
+
+    let full = doc.appearance(id).expect("apparence");
+    assert_close(px(&full.image, 0, 0), [202, 202, 202, 255]);
+
+    // Coup de pinceau noir : couverture → 0 sur tout le masque.
+    {
+        let fl = doc.find_filter_layer_mut(fid).expect("sous-calque");
+        let mut buf = ImageBuffer::from_pixel(2, 2, Rgba([0, 0, 0, 255]));
+        for px in buf.pixels_mut() {
+            *px = Rgba([0, 0, 0, 255]);
+        }
+        fl.masks[0].image = Arc::new(buf);
+        fl.masks[0].touch();
+    }
+    let wiped = doc.appearance(id).expect("apparence après peinture");
+    assert_close(px(&wiped.image, 0, 0), [100, 100, 100, 255]);
+}
+
+#[test]
+fn sous_calque_reordonnable_et_duplicable() {
+    let img = solid(2, 2, [100, 100, 100, 255]);
+    let mut doc = Document::new(2, 2);
+    doc.push_layer(LayerNode::Pixel(PixelLayer::new("filtre", arc(&img))));
+    let id = doc.root[0].id();
+
+    let mut a = FilterLayer::neutral("brightness_contrast", Default::default());
+    a.params
+        .insert("brightness".into(), ParamValue::Float(40.0));
+    let mut b = FilterLayer::neutral("color_correct", Default::default());
+    b.params.insert("saturation".into(), ParamValue::Float(2.0));
+    let ida = doc.add_filter(id, a).expect("add a");
+    let idb = doc.add_filter(id, b).expect("add b");
+    fn order(doc: &Document, id: Uuid) -> Vec<Uuid> {
+        doc.pixel_layer(id)
+            .unwrap()
+            .filter_layers
+            .iter()
+            .map(|f| f.id)
+            .collect()
+    }
+    assert_eq!(order(&doc, id), vec![ida, idb]);
+
+    // Monter le premier = l'appliquer en dernier
+    assert!(doc.move_filter(id, ida, true));
+    assert_eq!(order(&doc, id), vec![idb, ida]);
+
+    // Dupliquer = clone avec nouvel id juste au-dessus
+    let idc = doc.duplicate_filter(id, idb).expect("duplicate");
+    assert_ne!(idc, idb);
+    assert_eq!(order(&doc, id), vec![idb, idc, ida]);
 }
 
 #[test]
@@ -436,7 +524,10 @@ fn filtre_inconnu_est_transparent() {
     let mut doc = Document::new(2, 2);
     doc.push_layer(LayerNode::Pixel(PixelLayer::new("x", arc(&img))));
     let id = doc.root[0].id();
-    doc.add_filter(id, FilterNode::new("effet_qui_n_existe_pas"));
+    doc.add_filter(
+        id,
+        FilterLayer::neutral("effet_qui_n_existe_pas", Default::default()),
+    );
     let appearance = doc.appearance(id).expect("apparence");
     assert_close(px(&appearance.image, 0, 0), [42, 42, 42, 255]);
 }

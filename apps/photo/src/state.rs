@@ -148,6 +148,10 @@ pub struct PhotoApp {
     pub mask_brush_black: bool,
     /// Calques dont la liste de masques est dépliée dans le panneau Calques.
     pub expanded_masks: std::collections::HashSet<Uuid>,
+    /// Calques pixels dont les sous-calques de filtres sont dépliés.
+    pub expanded_filters: std::collections::HashSet<Uuid>,
+    /// Menu d'ajout de filtre du panneau Calques ouvert/fermé.
+    pub filter_menu_open: bool,
     /// Trait en cours : calque cible + polyligne en coordonnées DOCUMENT
     pub stroke_layer: Option<Uuid>,
     /// Commit lourd EN COURS hors thread UI — l'aperçu reste figé à l'écran
@@ -432,6 +436,8 @@ impl Default for PhotoApp {
             active_mask: None,
             mask_brush_black: true,
             expanded_masks: Default::default(),
+            expanded_filters: Default::default(),
+            filter_menu_open: false,
             stroke_layer: None,
             pending_paint: None,
             new_doc_w: "1920".to_string(),

@@ -181,6 +181,7 @@ fn handle_image_canvas_event(
             app.selected_layer = None;
             app.canvas_selection = None;
             app.expanded_masks.clear();
+            app.expanded_filters.clear();
             app.transform_anchor = None;
             Task::none()
         }
@@ -210,6 +211,8 @@ fn handle_transform_start(
     if target == uuid::Uuid::nil() {
         return Task::none();
     }
+    // Sous-calque de filtre → geste sur le calque porteur.
+    let target = app.doc.find_filter_parent(target).unwrap_or(target);
     // Calque masqué → transformation interdite.
     if app.doc.find(target).map(|n| !n.visible()).unwrap_or(true) {
         return Task::none();
@@ -473,9 +476,10 @@ fn handle_undo_redo(app: &mut PhotoApp, is_undo: bool) -> Task<Message> {
     match action {
         Some(UndoAction::FullRestore) => {
             // Restored structure: the selection may point to a vanished node,
-            // we bound it.
+            // we bound it (nœuds ET sous-calques de filtres).
             if let Some(sel) = app.selected_layer
                 && app.doc.find(sel).is_none()
+                && app.doc.find_filter_layer(sel).is_none()
             {
                 app.selected_layer = app.doc.iter_pixels().last().map(|l| l.id);
             }

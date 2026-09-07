@@ -14,17 +14,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Panneau Propriétés : réglages du nœud sélectionné.
-//! Calque pixels : nom, opacité, fusion, transform, infos source ET chaîne
-//! de live filters (ajout depuis le registre, réglages, activation).
-//! Ajustement : opacité + sa chaîne de filtres. Groupe : opacité/fusion.
+//! Panneau Propriétés : réglages de la sélection.
+//! Calque pixels : nom, opacité, fusion, transform, infos source (ses
+//! sous-calques de filtres s'éditent en les sélectionnant dans le panneau
+//! Calques — ajout depuis la dropdown du panneau Calques).
+//! Sous-calque de filtre : nom, opacité, fusion, transform, paramètres
+//! d'effet, activation. Ajustement : opacité + sa chaîne de filtres.
+//! Groupe : opacité/fusion.
 
 use crate::Message;
-use crate::layers::{BlendMode, LayerNode};
+use crate::layers::{BlendMode, FilterLayer, LayerNode};
 use datatypes::ParamValue;
 use iced::widget::{Space, column, container, row, scrollable, slider, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
-use photo_engine::{Document, FilterNode, LayerMask};
+use photo_engine::{Document, LayerMask};
+use std::collections::HashMap;
 use ui_kit::theme::colors;
 
 pub fn render<'a>(
@@ -34,9 +38,18 @@ pub fn render<'a>(
 ) -> Element<'a, Message> {
     // Un masque actif prime : on affiche ses options, pas celles du calque.
     if let Some(t) = active_mask
-        && let Some(m) = doc.find(t.layer_id).and_then(|n| n.mask(t.mask_id))
+        && let Some(m) = doc.mask_of(t.layer_id, t.mask_id)
     {
         return mask_panel(doc, t, m);
+    }
+
+    // Un sous-calque de filtre sélectionné : son éditeur dédié.
+    if selected.is_some_and(|id| doc.find(id).is_none())
+        && let Some(fid) = selected
+        && let Some(parent) = doc.find_filter_parent(fid)
+        && let Some(f) = doc.find_filter_layer(fid)
+    {
+        return filter_editor(doc, parent, f);
     }
 
     let node = selected.and_then(|id| doc.find(id));
@@ -177,25 +190,152 @@ pub fn render<'a>(
 
     let mut content = column![header, container(column![common].padding(12))];
 
-    // --- Chaîne de filtres (pixels et ajustements) ---
+    // --- Chaîne de filtres des calques D'AJUSTEMENT (les pixels portent
+    // des sous-calques, éditables via leur sélection dans le panneau Calques)
     if let Some(filters) = node.filters() {
         let mut section = column![
-            text(if matches!(node, LayerNode::Adjustment(_)) {
-                "Filtres d'ajustement"
-            } else {
-                "Live filters (non destructif)"
-            })
-            .size(12)
-            .color(colors::ON_SURFACE),
+            text("Filtres d'ajustement")
+                .size(12)
+                .color(colors::ON_SURFACE),
             Space::new().height(Length::Fixed(6.0)),
             add_filter_pick(id),
         ]
         .spacing(6);
         for f in filters.iter().rev() {
-            section = section.push(filter_card(id, f));
+            section = section.push(filter_card(id, f.id, &f.type_id, f.enabled, &f.params));
         }
         content = content.push(container(section.padding(12)));
     }
+
+    scrollable(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Éditeur d'un sous-calque de filtre : attributs de calque (nom, opacité,
+/// fusion, transform) + paramètres d'effet + activation/suppression.
+fn filter_editor<'a>(
+    doc: &'a Document,
+    parent_id: uuid::Uuid,
+    f: &'a FilterLayer,
+) -> Element<'a, Message> {
+    let fid = f.id;
+    let parent_name = doc
+        .find(parent_id)
+        .map(|n| n.name().to_string())
+        .unwrap_or_default();
+    let short_id = fid.simple().to_string();
+    let short = if short_id.len() > 8 {
+        &short_id[..8]
+    } else {
+        &short_id
+    };
+
+    let header = {
+        let name_field: Element<'_, Message> = text_input("Nom du filtre", &f.name)
+            .size(14)
+            .padding(4)
+            .on_input(move |s| Message::RenameLayer { id: fid, name: s })
+            .into();
+        container(
+            column![
+                name_field,
+                text(format!("Sous-calque de filtre · {parent_name} · {short}"))
+                    .size(11)
+                    .color(colors::TEXT_MUTED),
+            ]
+            .spacing(2),
+        )
+    }
+    .padding(12)
+    .style(|_t| container::Style {
+        background: Some(colors::BG_TRANSPARENT.into()),
+        ..Default::default()
+    });
+
+    let common = column![
+        param_slider("Opacité", f.opacity, 0.0..=100.0, 1.0, move |v| {
+            Message::SetLayerOpacity {
+                id: fid,
+                opacity: v,
+            }
+        }),
+        blend_mode_buttons(Some(f.blend_mode), fid),
+        offset_row("Décalage X", f.transform.offset_x, move |v| {
+            Message::SetLayerOffset {
+                id: fid,
+                axis: crate::OffsetAxis::X,
+                value: v,
+            }
+        }),
+        offset_row("Décalage Y", f.transform.offset_y, move |v| {
+            Message::SetLayerOffset {
+                id: fid,
+                axis: crate::OffsetAxis::Y,
+                value: v,
+            }
+        }),
+        param_slider(
+            "Échelle X (%)",
+            f.transform.scale_x * 100.0,
+            5.0..=800.0,
+            1.0,
+            move |v| Message::SetLayerScaleAxis {
+                id: fid,
+                axis: crate::OffsetAxis::X,
+                scale: v / 100.0,
+            },
+        ),
+        param_slider(
+            "Échelle Y (%)",
+            f.transform.scale_y * 100.0,
+            5.0..=800.0,
+            1.0,
+            move |v| Message::SetLayerScaleAxis {
+                id: fid,
+                axis: crate::OffsetAxis::Y,
+                scale: v / 100.0,
+            },
+        ),
+        param_slider(
+            "Inclinaison X (°)",
+            f.transform.skew_x,
+            -80.0..=80.0,
+            1.0,
+            move |v| Message::SetLayerSkew {
+                id: fid,
+                axis: crate::OffsetAxis::X,
+                degrees: v,
+            },
+        ),
+        param_slider(
+            "Inclinaison Y (°)",
+            f.transform.skew_y,
+            -80.0..=80.0,
+            1.0,
+            move |v| Message::SetLayerSkew {
+                id: fid,
+                axis: crate::OffsetAxis::Y,
+                degrees: v,
+            },
+        ),
+    ]
+    .spacing(10);
+
+    let content = column![
+        header,
+        container(column![common].padding(12)),
+        container(
+            column![
+                text("Effet").size(12).color(colors::ON_SURFACE),
+                Space::new().height(Length::Fixed(6.0)),
+                filter_card(parent_id, fid, &f.type_id, f.enabled, &f.params),
+            ]
+            .spacing(6)
+            .padding(12)
+        ),
+    ];
 
     scrollable(content)
         .width(Length::Fill)
@@ -213,6 +353,12 @@ fn mask_panel<'a>(
     let layer_name = doc
         .find(t.layer_id)
         .map(|n| n.name().to_string())
+        .or_else(|| {
+            // Masque porté par un sous-calque : nom du calque porteur.
+            doc.find_filter_parent(t.layer_id)
+                .and_then(|p| doc.find(p))
+                .map(|n| n.name().to_string())
+        })
         .unwrap_or_default();
     let status = if m.enabled {
         "Masque actif"
@@ -359,15 +505,22 @@ fn add_filter_pick(layer_id: uuid::Uuid) -> Element<'static, Message> {
 }
 
 /// Carte d'un filtre : activation, réglages floats, suppression.
-fn filter_card<'a>(layer_id: uuid::Uuid, f: &'a FilterNode) -> Element<'a, Message> {
-    let fid = f.id;
+/// `title` = type d'effet affiché ; `params` = réglages courants.
+fn filter_card<'a>(
+    layer_id: uuid::Uuid,
+    filter_id: uuid::Uuid,
+    title: &'a str,
+    enabled: bool,
+    params: &'a HashMap<String, ParamValue>,
+) -> Element<'a, Message> {
+    let fid = filter_id;
     let material = ui_kit::icon_button::MATERIAL_ICONS;
 
     let toggle = iced::widget::button(
-        text(if f.enabled { "\u{e8f4}" } else { "\u{e8f5}" })
+        text(if enabled { "\u{e8f4}" } else { "\u{e8f5}" })
             .font(material)
             .size(14)
-            .color(if f.enabled {
+            .color(if enabled {
                 colors::ACCENT
             } else {
                 colors::TEXT_MUTED
@@ -394,7 +547,7 @@ fn filter_card<'a>(layer_id: uuid::Uuid, f: &'a FilterNode) -> Element<'a, Messa
     let mut card = column![
         row![
             toggle.style(|_t, s| ui_kit::style::ghost(s)),
-            text(&f.type_id).size(11).color(colors::TEXT_SECONDARY),
+            text(title).size(11).color(colors::TEXT_SECONDARY),
             Space::new().width(Length::Fill),
             remove.style(|_t, s| ui_kit::style::ghost(s)),
         ]
@@ -403,8 +556,8 @@ fn filter_card<'a>(layer_id: uuid::Uuid, f: &'a FilterNode) -> Element<'a, Messa
     ]
     .spacing(4);
 
-    if f.enabled {
-        for (key, value) in &f.params {
+    if enabled {
+        for (key, value) in params {
             if let ParamValue::Float(v) = value {
                 let k = key.clone();
                 let (lo, hi) = float_param_range(key);

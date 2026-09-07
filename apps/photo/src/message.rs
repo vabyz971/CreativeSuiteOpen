@@ -173,6 +173,10 @@ pub enum Message {
     UngroupLayers(Uuid),
     /// Replie/déplie un groupe dans le panneau Calques
     ToggleGroupCollapsed(Uuid),
+    /// Replie/déplie les sous-calques de filtres d'un calque pixels
+    ToggleFilterList(Uuid),
+    /// Ouvre/ferme le menu d'ajout de filtre du panneau Calques
+    ToggleFilterMenu,
 
     // Live filters / calques d'ajustement
     /// Ajoute un filtre dynamique en fin de chaîne du nœud
@@ -413,6 +417,9 @@ pub enum DestructiveOp {
 pub struct DestructiveResult {
     pub source: image::RgbaImage,
     pub masks: Vec<image::RgbaImage>,
+    /// Masques des sous-calques de filtres (id du filtre + ses masques dans
+    /// l'ordre) — mêmes opérations géométriques que les masques du calque.
+    pub filter_masks: Vec<(Uuid, Vec<image::RgbaImage>)>,
     /// Décalage de transform à ajouter (Crop seulement ; `(0, 0)` pour Flip).
     pub offset_delta: (f32, f32),
 }

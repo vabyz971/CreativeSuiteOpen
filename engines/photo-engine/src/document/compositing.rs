@@ -1,4 +1,6 @@
-use super::model::{BlendMode, FilterNode, LayerMask, LayerNode, RgbaBuf, Transform2D};
+use super::model::{
+    BlendMode, FilterLayer, FilterNode, LayerMask, LayerNode, RgbaBuf, Transform2D,
+};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use rayon::prelude::*;
 use std::sync::Arc;
@@ -422,9 +424,10 @@ pub fn prepare_mask(mask: &LayerMask, transform: Transform2D) -> ImageBuffer<Rgb
 }
 
 /// Fusionne multiplicativement les couvertures de tous les masques ACTIFS d'un
-/// calque, après les avoir transformés avec la même géométrie que l'image.
+/// calque (ou sous-calque de filtre), après les avoir transformés avec la
+/// même géométrie que l'image.
 /// Retourne `None` si aucun masque actif (aucune opacité supplémentaire).
-fn combine_masks(
+pub(crate) fn combine_masks(
     masks: &[LayerMask],
     transform: Transform2D,
 ) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
@@ -634,6 +637,86 @@ pub fn fold_scope(
     contributed
 }
 
+/// Composite le résultat filtré d'un sous-calque de filtre SUR l'accumulé
+/// (façon Affinity : le filtre s'applique au contenu en dessous, puis son
+/// résultat est fondu avec opacité/fusion/transform/masques propres).
+///
+/// Espaces : `base` et `filtered` vivent dans l'espace du PARENT (mêmes
+/// dimensions, sortie d'effet). Les masques sont appliqués EN PREMIER dans
+/// cet espace (même espace que la peinture, qui utilise la transform du
+/// porteur), PUIS le résultat atténué est transformé — jamais l'inverse.
+/// `filtered` est pris par valeur : le cas neutre ne copie rien (move).
+pub fn composite_filter_layer(
+    base: &DynamicImage,
+    filtered: DynamicImage,
+    layer: &FilterLayer,
+) -> DynamicImage {
+    if layer.is_passthrough() {
+        return filtered;
+    }
+    let attenuated = attenuate_by_masks(filtered, &layer.masks);
+    let item = DrawItem {
+        image: &attenuated,
+        transform: layer.transform,
+    };
+    let (top, ox, oy) = prepare_top(&item);
+    let mut acc = base.to_rgba8();
+    blend_into(
+        &mut acc,
+        &top,
+        None,
+        layer.opacity,
+        layer.blend_mode,
+        ox,
+        oy,
+    );
+    DynamicImage::ImageRgba8(acc)
+}
+
+/// Atténue une image par la couverture combinée des masques ACTIFS
+/// (canal alpha × couverture — même sémantique que `blend_into`).
+/// Les masques vivent dans l'espace source du porteur : dimensions
+/// identiques requises, sinon garde-fou (pas d'atténuation plutôt qu'un
+/// noir erroné). Sans masque actif : retourne l'image telle quelle.
+fn attenuate_by_masks(img: DynamicImage, masks: &[LayerMask]) -> DynamicImage {
+    let mut it = masks.iter().filter(|m| m.enabled);
+    let Some(first) = it.next() else {
+        return img;
+    };
+    let mut cover = mask_coverage(first);
+    for m in it {
+        cover = multiply_coverage(&cover, &mask_coverage(m));
+    }
+    if cover.dimensions() != img.dimensions() {
+        return img;
+    }
+    let mut buf = img.to_rgba8();
+    let raw = cover.as_raw();
+    buf.as_flat_samples_mut()
+        .samples
+        .par_chunks_exact_mut(4)
+        .enumerate()
+        .for_each(|(i, px)| {
+            let cov = raw[i * 4] as f32 / 255.0;
+            px[3] = (px[3] as f32 * cov).round() as u8;
+        });
+    DynamicImage::ImageRgba8(buf)
+}
+
+/// Couverture d'un masque en buffer propre (`inverted` appliqué — même
+/// règle que `prepare_mask`).
+fn mask_coverage(mask: &LayerMask) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    if !mask.inverted {
+        return (*mask.image).clone();
+    }
+    let mut buf = (*mask.image).clone();
+    for px in buf.pixels_mut() {
+        let v = 255 - px[0];
+        *px = Rgba([v, v, v, 255]);
+    }
+    buf
+}
+
 /// Applique une chaîne d'ajustements à l'accumulateur, pondérée par
 /// l'opacité (mix linéaire original ↔ ajusté). Retourne true si appliqué.
 pub fn apply_adjustment(
@@ -646,7 +729,7 @@ pub fn apply_adjustment(
         return false;
     }
     let original = acc.clone();
-    let adjusted = crate::filters::render_chain(
+    let adjusted = crate::filters::render_nodes(
         &Arc::new(DynamicImage::ImageRgba8(original.clone())),
         filters,
     );

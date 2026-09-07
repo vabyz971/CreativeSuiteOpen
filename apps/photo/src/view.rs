@@ -89,6 +89,8 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             app.dragged_layer,
             app.active_mask,
             &app.expanded_masks,
+            &app.expanded_filters,
+            app.filter_menu_open,
             app.mask_brush_black,
             doc_size,
             app.fallback_handle.clone(),

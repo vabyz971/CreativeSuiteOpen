@@ -19,6 +19,6 @@
 //! apps de la suite) ; l'affichage passe par le canvas GPU.
 
 pub use photo_engine::document::{
-    AdjustmentLayer, Appearance, BlendMode, FilterNode, GroupLayer, LayerNode, PixelLayer,
-    Transform2D,
+    AdjustmentLayer, Appearance, BlendMode, FilterLayer, FilterNode, GroupLayer, LayerNode,
+    PixelLayer, Transform2D,
 };
