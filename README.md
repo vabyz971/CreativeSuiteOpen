@@ -28,6 +28,7 @@ Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0`
 
 ### Affinity-style layer tree
 - **Hierarchical layer tree**: pixel layers, **groups** (collapsible, with their own opacity/blend) and **adjustment layers** that process everything beneath them
+- **Domain-organized messages**: Message enum split into submodules (canvas, document, layers, jobs, project, system, tools, preferences) for cleaner architecture — all variants still accessible via `message::*` prefix (AGENT PR3)
 - Ordered stack: **add, duplicate, delete, reorder (within parent), rename**, group/dissolve
 - Live thumbnails, per-layer visibility toggle
 - **Opacity and blend applied at draw time (GPU)** — sliders respond instantly: zero pixel regeneration, zero flicker
