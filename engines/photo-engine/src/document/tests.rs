@@ -627,7 +627,7 @@ fn needs_fallback_avec_masque_actif() {
     assert!(doc.needs_fallback());
     // désactivé → pas de fallback
     if let Some(LayerNode::Pixel(l)) = doc.find_mut(doc.root[0].id()) {
-        l.masks.iter_mut().next().unwrap().enabled = false;
+        l.masks.first_mut().unwrap().enabled = false;
     }
     assert!(!doc.needs_fallback());
 }
