@@ -36,7 +36,7 @@ pub fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
     app.rendering.preview_cache.sync(&app.document.doc);
     // Le fallback périmé est recalculé HORS thread UI — jamais de gel.
     let fallback = app.take_fallback_task();
-    Task::batch([task, fallback.unwrap_or_else(Task::none)])
+    Task::batch([task, fallback.unwrap_or_default()])
 }
 
 fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
@@ -47,19 +47,19 @@ fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
     // traiter le discriminant (aucune copie), puis le message est transmis
     // PAR DÉPLACEMENT au module qui le possède.
     if layers::handles(&message) {
-        return layers::handle(app, message).unwrap_or_else(Task::none);
+        return layers::handle(app, message).unwrap_or_default();
     }
     if paint::handles(&message) {
-        return paint::handle(app, message).unwrap_or_else(Task::none);
+        return paint::handle(app, message).unwrap_or_default();
     }
     if project::handles(&message) {
-        return project::handle(app, message).unwrap_or_else(Task::none);
+        return project::handle(app, message).unwrap_or_default();
     }
     if panels::handles(&message) {
-        return panels::handle(app, message).unwrap_or_else(Task::none);
+        return panels::handle(app, message).unwrap_or_default();
     }
     if misc::handles(&message) {
-        return misc::handle(app, message).unwrap_or_else(Task::none);
+        return misc::handle(app, message).unwrap_or_default();
     }
     Task::none()
 }
@@ -98,11 +98,11 @@ mod tests {
         app.document.doc = photo_engine::Document::new(4, 4);
         let id = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: 42.0 });
-        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 42.0);
+        assert_eq!(app.document.doc.find(id).expect("layer should exist after SetLayerOpacity").opacity(), 42.0);
         let _ = update(&mut app, Message::Undo);
-        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 100.0);
+        assert_eq!(app.document.doc.find(id).expect("layer should exist after Undo").opacity(), 100.0);
         let _ = update(&mut app, Message::Redo);
-        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 42.0);
+        assert_eq!(app.document.doc.find(id).expect("layer should exist after Redo").opacity(), 42.0);
     }
 
     #[test]
@@ -112,7 +112,7 @@ mod tests {
         let id = seed_layer(&mut app, 2, 2);
         let id2 = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::DuplicateLayer(id2));
-        let dup = app.document.selected_layer.unwrap();
+        let dup = app.document.selected_layer.expect("selected layer should exist");
         assert_ne!(dup, id2);
         assert_ne!(dup, id);
         assert_eq!(app.document.doc.pixel_count(), 3);
@@ -141,7 +141,7 @@ mod tests {
             let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: v });
         }
         let _ = update(&mut app, Message::Undo);
-        assert_eq!(app.document.doc.find(id).unwrap().opacity(), 100.0);
+        assert_eq!(app.document.doc.find(id).expect("layer should exist after coalesced undo").opacity(), 100.0);
     }
 
     /// Pendant un déplacement (outil Déplacer), AUCUN message ne doit
@@ -158,7 +158,7 @@ mod tests {
         app.document
             .doc
             .pixel_layer_mut(id)
-            .unwrap()
+            .expect("layer should exist")
             .masks
             .push(photo_engine::LayerMask {
                 id: uuid::Uuid::new_v4(),
@@ -258,7 +258,7 @@ mod tests {
         app.document
             .doc
             .pixel_layer_mut(id)
-            .unwrap()
+            .expect("layer should exist")
             .masks
             .push(photo_engine::LayerMask {
                 id: uuid::Uuid::new_v4(),

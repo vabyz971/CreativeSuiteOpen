@@ -69,17 +69,23 @@ pub fn handle_brush_end(
         // Ne capturer QUE des Arc (zéro copie) : sur un masque, la copie du
         // buffer se fait dans le worker (`commit_stroke`), pas sur le thread UI.
         let source = if is_mask {
-            let owner = mask_owner.unwrap();
-            let m = app
-                .document
-                .doc
-                .mask_of(owner, stroke_mask_id.unwrap())
-                .unwrap();
+            let owner = match mask_owner {
+                Some(id) => id,
+                None => return Task::none(),
+            };
+            let mask_id = match stroke_mask_id {
+                Some(id) => id,
+                None => return Task::none(),
+            };
+            let m = match app.document.doc.mask_of(owner, mask_id) {
+                Some(mask) => mask,
+                None => return Task::none(),
+            };
             let mask = Arc::clone(&m.image);
             // Espace du porteur : sous-calque → transform du calque parent.
             let carrier = app.document.doc.find_filter_parent(owner).unwrap_or(owner);
-            let transform = match app.document.doc.find(carrier).unwrap() {
-                photo_engine::LayerNode::Pixel(l) => l.transform,
+            let transform = match app.document.doc.find(carrier) {
+                Some(photo_engine::LayerNode::Pixel(l)) => l.transform,
                 _ => crate::layers::Transform2D::default(),
             };
             PaintSource::Mask(mask, transform)

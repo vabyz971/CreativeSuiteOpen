@@ -529,13 +529,11 @@ mod tests {
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "cso-{tag}-{}.csophoto",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("horloge")
-                .as_nanos()
-        ))
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+            .as_nanos();
+        std::env::temp_dir().join(format!("cso-{tag}-{}.csophoto", nanos))
     }
 
     #[test]
