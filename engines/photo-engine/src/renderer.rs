@@ -131,6 +131,27 @@ impl Renderer {
         }
     }
 
+    /// Lookup cache STRICT — aucune exécution, ni pool de rendu ni
+    /// `render_chain`. Retourne l'apparence seulement si l'entrée est
+    /// encore VALIDE (même signature de filtres, même source par identité
+    /// d'Arc), `None` sinon. Réservé à la synchronisation UI
+    /// (`PreviewCache::sync`) : pendant un geste (drag, slider…) où rien ne
+    /// change les pixels, chaque message re-valide ainsi tous les calques
+    /// sans jamais toucher au pool — le « rechargement de la vue » disparaît.
+    ///
+    /// Le `None` n'est pas une erreur : l'appelant doit alors basculer sur
+    /// [`Self::appearance`] (le seul chemin qui exécute la chaîne).
+    pub fn appearance_hit(&mut self, layer: &PixelLayer) -> Option<Appearance> {
+        let signature = filters_signature(&layer.filter_layers);
+        match self.entries.get(&layer.id) {
+            Some(e) if e.signature == signature && Arc::ptr_eq(&e.source, &layer.source_image) => {
+                self.hits += 1;
+                Some(e.appearance.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Préremplit ce cache avec les entrées ACTUELLEMENT chaudes d'un autre
     /// cache. Sert à réchauffer un `Document` clone (cache froid) à partir du
     /// document VIVANT (cache chaud) avant une tâche de fond : la composite

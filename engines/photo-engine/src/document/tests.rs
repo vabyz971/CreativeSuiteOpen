@@ -1062,3 +1062,62 @@ fn sample_color_preleve_la_composite() {
         "hors plan : None attendu"
     );
 }
+
+// --- Drag masqué d'un calque redimensionné (§8/drag) ---
+
+/// Reproduit `drag_layer_composite_task` côté engine : le calque SEUL avec
+/// son masque, AVEC son transform courant, composé via `composite_preview`
+/// sur plan infini. Le contenu opache du buffer doit couvrir la TAILLE
+/// REDIMENSIONNÉE du calque (scale ×2 sur 4×4 → contenu 8×8), PAS la taille
+/// d'origine du masque (4×4). Sinon, le ghost de drag d'un calque redimensionné
+/// « prend la taille du masque ».
+#[test]
+fn composite_masque_calque_redimensionne_conserve_l_echelle() {
+    let img = solid(4, 4, [200, 30, 30, 255]);
+    let mut node = masked_node(&img, [255, 255, 255, 255], true, false);
+    if let LayerNode::Pixel(l) = &mut node {
+        l.transform.scale_x = 2.0;
+        l.transform.scale_y = 2.0;
+        // Centré dans le doc 16×16 : 4×4 scale 2 → contenu monde [6,14].
+        l.transform.offset_x = 6.0;
+        l.transform.offset_y = 6.0;
+    }
+    let doc = doc_of(vec![node], 16, 16);
+    let out = doc.composite_preview().expect("composite");
+    let (w, h) = out.dimensions();
+    let opaque = |x: u32, y: u32| out.get_pixel(x, y)[3] > 0;
+    let min_x = (0..w).find(|x| opaque(*x, h / 2)).unwrap();
+    let max_x = (0..w).rev().find(|x| opaque(*x, h / 2)).unwrap();
+    let min_y = (0..h).find(|y| opaque(w / 2, *y)).unwrap();
+    let max_y = (0..h).rev().find(|y| opaque(w / 2, *y)).unwrap();
+    let w_content = max_x - min_x + 1;
+    let h_content = max_y - min_y + 1;
+    assert!(
+        (8..=9).contains(&w_content),
+        "contenu = size redimensionnée (scale 2 sur 4×4), obtenu {w_content}"
+    );
+    assert!(
+        (8..=9).contains(&h_content),
+        "contenu = size redimensionnée (scale 2 sur 4×4), obtenu {h_content}"
+    );
+    assert!(
+        w_content != 4 && h_content != 4,
+        "jamais la taille d'origine du masque (4×4)"
+    );
+
+    // Le masque est bien appliqué au buffer transformé : noir → rien.
+    let mut node_black = masked_node(&img, [0, 0, 0, 255], true, false);
+    if let LayerNode::Pixel(l) = &mut node_black {
+        l.transform.scale_x = 2.0;
+        l.transform.scale_y = 2.0;
+        l.transform.offset_x = 6.0;
+        l.transform.offset_y = 6.0;
+    }
+    let out_black = doc_of(vec![node_black], 16, 16)
+        .composite_preview()
+        .expect("composite masqué noir");
+    assert!(
+        out_black.pixels().all(|p| p.2[3] == 0),
+        "masque noir → rien de visible"
+    );
+}

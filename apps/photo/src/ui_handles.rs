@@ -90,8 +90,18 @@ impl PreviewCache {
         self.entries.retain(|id, _| ids.contains(id));
         for id in ids {
             // Fat pointer → pointeur brut : cast via `.cast::<u8>()`
-            let Some(appearance) = doc.appearance(id) else {
-                continue;
+            // D'abord un lookup STRICT (aucun pool, aucun render) : à chaud,
+            // chaque message re-valide tous les calques sans aucun coût de
+            // thread. En cas de vrai miss (source/filtres changés) on bascule
+            // sur le chemin lourd `appearance` — le seul qui exécute.
+            let appearance = match doc.appearance_hit(id) {
+                Some(a) => a,
+                None => {
+                    let Some(a) = doc.appearance(id) else {
+                        continue;
+                    };
+                    a
+                }
             };
             let kp = arc_addr(&appearance.preview.data);
             let kt = arc_addr(&appearance.thumb.data);

@@ -42,7 +42,9 @@ pub fn render<'a>(
     fallback_size: Option<Size>,
     // Calque en cours de déplacement (mode fallback)
     drag_layer: Option<Uuid>,
+    // Transform OFFSET au début du geste — pour replacer correctement le
     // composite masqué (bake du transform de départ) sur le déplacement live.
+    drag_start_offset: Option<(f32, f32)>,
     // Fond composite pré-calculé sans le calque déplacé
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
@@ -89,6 +91,7 @@ pub fn render<'a>(
                     },
                     if needs_fallback { fallback_size } else { None },
                     drag_layer,
+                    drag_start_offset,
                     drag_background.clone(),
                     drag_background_size,
                     drag_layer_composite.clone(),
@@ -176,6 +179,7 @@ fn render_canvas_preview<'a>(
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
     drag_layer: Option<Uuid>,
+    drag_start_offset: Option<(f32, f32)>,
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
     drag_layer_composite: Option<image::Handle>,
@@ -313,33 +317,72 @@ fn render_canvas_preview<'a>(
         // Fallback drag : on insère le calque par-dessus le fond pré-calculé.
         // 1) calque masqué + composite dispo → on utilise le composite (le
         //    masque est respecté, ZÉRO recomposite par frame)
-        // 2) sinon → preview brut (approximation, le blend réel est
-        //    recalculé au relâchement)
-        let (handle, w, h) = if let (Some(h), Some(sz)) =
+        // 2) sinon → preview brut à la TAILLE LIVE (scale du transform) :
+        //    approximation du blend final, recalculé au relâchement. Il ne
+        //    faut JAMAIS dessiner la preview non scalée (taille d'origine —
+        //    celle du masque) pour un calque redimensionné.
+        let (handle, w, h, off_x, off_y, scx, scy) = if let (Some(h), Some(sz)) =
             (drag_layer_composite.as_ref(), drag_layer_composite_size)
         {
-            (h.clone(), sz.width, sz.height)
+            // Composite masqué : le buffer est centré sur le document ET
+            // contient le transform de DÉPART déjà cuit (prepare_top +
+            // blend). Pour suivre le geste : offset = centrage + (live −
+            // start), et AUCUN scale/rotation réappliqué (sinon
+            // double-transformation du bake).
+            let (sx, sy) =
+                drag_start_offset.unwrap_or((l.transform.offset_x, l.transform.offset_y));
+            let (base_off_x, base_off_y) = (
+                doc_size.map(|d| (d.width - sz.width) / 2.0).unwrap_or(0.0),
+                doc_size
+                    .map(|d| (d.height - sz.height) / 2.0)
+                    .unwrap_or(0.0),
+            );
+            (
+                h.clone(),
+                sz.width,
+                sz.height,
+                base_off_x + (l.transform.offset_x - sx),
+                base_off_y + (l.transform.offset_y - sy),
+                1.0,
+                1.0,
+            )
         } else if let Some(handle) = preview_cache.preview(l.id).cloned() {
             let (lw, lh) = l.dimensions();
-            (handle, lw as f32, lh as f32)
+            (
+                handle,
+                lw as f32,
+                lh as f32,
+                l.transform.offset_x,
+                l.transform.offset_y,
+                l.transform.scale_x,
+                l.transform.scale_y,
+            )
         } else {
             // Pas de buffer disponible : on laisse l'UI afficher sans le
             // calque plutôt que de planter.
-            (image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]), 1.0, 1.0)
+            (
+                image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]),
+                1.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+            )
         };
         canvas_layers.push(ui_kit::image_canvas::CanvasLayer {
             id: Some(l.id),
             handle,
             width: w,
             height: h,
-            offset_x: l.transform.offset_x,
-            offset_y: l.transform.offset_y,
+            offset_x: off_x,
+            offset_y: off_y,
             opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
-            rotation_deg: l.transform.rotation_deg,
-            scale_x: l.transform.scale_x,
-            scale_y: l.transform.scale_y,
-            skew_x: l.transform.skew_x,
-            skew_y: l.transform.skew_y,
+            rotation_deg: 0.0,
+            scale_x: scx,
+            scale_y: scy,
+            skew_x: 0.0,
+            skew_y: 0.0,
         });
     }
 

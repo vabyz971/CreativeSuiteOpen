@@ -723,6 +723,15 @@ impl Document {
         Some(self.cache.borrow_mut().appearance(layer))
     }
 
+    /// Variante [`Self::appearance`] sans AUCUNE exécution : retourne
+    /// l'apparence si le cache la détient encore valide, `None` sinon.
+    /// Utilisée par la synchronisation UI à chaque message — à chaud, elle
+    /// ne touche ni au pool de rendu ni à la chaîne de filtres.
+    pub fn appearance_hit(&self, id: Uuid) -> Option<Appearance> {
+        let layer = self.pixel_layer(id)?;
+        self.cache.borrow_mut().appearance_hit(layer)
+    }
+
     /// Image seule (chemin compositing — évite de régénérer preview/thumb).
     pub fn appearance_image(&self, id: Uuid) -> Option<Arc<DynamicImage>> {
         self.appearance(id).map(|a| a.image)

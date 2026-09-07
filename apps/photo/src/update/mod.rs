@@ -137,4 +137,144 @@ mod tests {
         let _ = update(&mut app, Message::Undo);
         assert_eq!(app.doc.find(id).unwrap().opacity(), 100.0);
     }
+
+    /// Pendant un déplacement (outil Déplacer), AUCUN message ne doit
+    /// déclencher de recomposite : les pré-calculs drag (fond sans le calque
+    /// et composite masqué) ne sont lancés qu'au PREMIER mouvement réel
+    /// (`TransformCursor`). Un simple clic de sélection ne coûte rien.
+    #[test]
+    fn drag_masque_zero_recomposite_par_mouvement() {
+        let mut app = PhotoApp::default();
+        app.doc = photo_engine::Document::new(4, 4);
+        let id = seed_layer(&mut app, 2, 2);
+        // Masque actif → le rendu passe obligatoirement par le fallback.
+        let mask_img = image::ImageBuffer::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
+        app.doc
+            .pixel_layer_mut(id)
+            .unwrap()
+            .masks
+            .push(photo_engine::LayerMask {
+                id: uuid::Uuid::new_v4(),
+                image: std::sync::Arc::new(mask_img),
+                enabled: true,
+                inverted: false,
+                version: 0,
+            });
+        assert!(app.needs_fallback(), "masque actif → fallback");
+
+        let _ = update(&mut app, Message::SelectTool(crate::message::Tool::Move));
+
+        // Sélection seule (clic sans mouvement) : AUCUN pré-calcul lancé.
+        let _ = update(
+            &mut app,
+            Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformStart {
+                id: Some(id),
+                kind: ui_kit::image_canvas::TransformHandle::Move,
+                doc: (0.0, 0.0),
+            }),
+        );
+        assert!(app.move_anchor.is_some(), "geste actif");
+        assert!(
+            app.drag_bg_in_flight.is_none(),
+            "rien de lancé au clic seul"
+        );
+        assert!(!app.fallback_dirty, "clic seul : fallback intact");
+
+        // Premier mouvement réel → pré-calculs lancés, une seule fois.
+        let _ = update(
+            &mut app,
+            Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformCursor {
+                doc: (0.1, 0.0),
+                uniform: false,
+            }),
+        );
+        assert!(app.drag_bg_in_flight.is_some(), "fond de drag pré-calculé");
+        assert!(
+            app.drag_layer_composite_in_flight,
+            "composite masqué pré-calculé"
+        );
+
+        // Mouvements : le transform seul change — JAMAIS de recomposite.
+        for (i, (dx, dy)) in [(1.0, 0.0), (2.0, 0.5), (3.0, 0.75), (3.5, 1.25)]
+            .iter()
+            .enumerate()
+        {
+            let _ = update(
+                &mut app,
+                Message::ImageCanvasEvent(
+                    ui_kit::image_canvas::ImageCanvasEvent::TransformCursor {
+                        doc: (*dx, *dy),
+                        uniform: false,
+                    },
+                ),
+            );
+            assert!(!app.fallback_dirty, "move {i} : fallback non invalide");
+            assert!(
+                app.take_fallback_task().is_none(),
+                "move {i} : aucune recomposite pendant le geste"
+            );
+        }
+
+        // Fin du geste : UNE recomposite (le vrai blend), lancée par boucle.
+        let _ = update(
+            &mut app,
+            Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformEnd),
+        );
+        assert!(
+            app.fallback_in_flight,
+            "le relâchement lance exactement UNE recomposite"
+        );
+        assert!(
+            app.take_fallback_task().is_none(),
+            "aucune seconde recomposite lancée"
+        );
+    }
+
+    /// Clic simple dans une scène masquée : ni composite, ni invalidation,
+    /// ni entrée d'historique — la sélection ne doit rien coûter.
+    #[test]
+    fn clic_selection_sans_mouvement_ne_lance_aucune_composite() {
+        let mut app = PhotoApp::default();
+        app.doc = photo_engine::Document::new(4, 4);
+        let id = seed_layer(&mut app, 2, 2);
+        let mask_img = image::ImageBuffer::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
+        app.doc
+            .pixel_layer_mut(id)
+            .unwrap()
+            .masks
+            .push(photo_engine::LayerMask {
+                id: uuid::Uuid::new_v4(),
+                image: std::sync::Arc::new(mask_img),
+                enabled: true,
+                inverted: false,
+                version: 0,
+            });
+        assert!(app.needs_fallback(), "masque actif → fallback");
+
+        // Clic simple : Start (sélection) + End, AUCUN mouvement entre les
+        // deux. Doit être gratuit — ni pré-calcul drag, ni recomposite, ni
+        // entrée d'historique au-delà du seed initial.
+        let before = app.history.undo_len();
+        let _ = update(
+            &mut app,
+            Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformStart {
+                id: Some(id),
+                kind: ui_kit::image_canvas::TransformHandle::Move,
+                doc: (0.0, 0.0),
+            }),
+        );
+        let _ = update(
+            &mut app,
+            Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformEnd),
+        );
+        assert_eq!(app.move_anchor, None, "geste terminé");
+        assert!(app.drag_bg_in_flight.is_none(), "aucun pré-calcul lancé");
+        assert!(!app.fallback_dirty, "aucune recomposite au relâchement");
+        assert!(app.take_fallback_task().is_none(), "aucune tâche fallback");
+        assert_eq!(
+            app.history.undo_len(),
+            before,
+            "aucune entrée d'historique pour un clic immobile"
+        );
+    }
 }

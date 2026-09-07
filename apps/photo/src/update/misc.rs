@@ -228,24 +228,11 @@ fn handle_transform_start(
         base,
         cursor_doc: doc,
     });
-    // Fallback (blending inter-calques) : fond sans ce sous-arbre pré-calculé
-    // hors thread pendant que le geste affiche le calque seul — le vrai blend
-    // est recalculé UNE fois au relâchement.
-    if app.needs_fallback() {
-        let has_mask = app
-            .doc
-            .find(target)
-            .map(|n| n.masks().iter().any(|m| m.enabled))
-            .unwrap_or(false);
-        let mut task = app.drag_background_task(target);
-        if has_mask && let Some(t2) = app.drag_layer_composite_task(target) {
-            task = Some(match task {
-                Some(t1) => Task::batch([t1, t2]),
-                None => t2,
-            });
-        }
-        return task.unwrap_or_else(Task::none);
-    }
+    // Les pré-calculs drag (fond sans ce calque + composite masqué) sont
+    // DIFFÉRÉS au premier mouvement réel (TransformCursor) : un simple clic
+    // qui ne sert qu'à SÉLECTIONNER ne déclenche ainsi AUCUNE composite —
+    // sans masque actif nulle part, même pas de fallback. Le blend réel est
+    // recalculé UNE seule fois au relâchement, seulement si le calque a bougé.
     Task::none()
 }
 
@@ -253,9 +240,29 @@ fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -
     let Some(anchor) = app.transform_anchor else {
         return Task::none();
     };
+    // Premier mouvement RÉEL du geste : on lance ONE seule fois les
+    // pré-calculs drag (fond sans ce calque + composite masqué). Pas de
+    // mouvement → un simple clic de sélection ne déclenche AUCUNE composite.
+    let drag_task = if app.drag_bg_in_flight.is_none() && app.needs_fallback() {
+        let has_mask = app
+            .doc
+            .find(anchor.layer_id)
+            .map(|n| n.masks().iter().any(|m| m.enabled))
+            .unwrap_or(false);
+        let mut task = app.drag_background_task(anchor.layer_id);
+        if has_mask && let Some(t2) = app.drag_layer_composite_task(anchor.layer_id) {
+            task = Some(match task {
+                Some(t1) => Task::batch([t1, t2]),
+                None => t2,
+            });
+        }
+        task.unwrap_or_else(Task::none)
+    } else {
+        Task::none()
+    };
     let Some(LayerNode::Pixel(l)) = app.doc.find_mut(anchor.layer_id) else {
         app.transform_anchor = None;
-        return Task::none();
+        return drag_task;
     };
     let (w0, h0) = l.dimensions();
     let (w0, h0) = (w0 as f32, h0 as f32);
@@ -267,7 +274,7 @@ fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -
         app.fallback_handle = None;
         app.fallback_size = None;
     }
-    Task::none()
+    drag_task
 }
 
 fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
@@ -280,7 +287,8 @@ fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
     app.drag_layer_composite = None;
     app.drag_layer_composite_size = None;
     // Fin de geste : UNE commande ancre→finale (snapshot au début, aucune
-    // pendant le geste). Geste immobile = aucune entrée d'historique.
+    // pendant le geste). Geste immobile = aucune entrée d'historique et
+    // AUCUNE recomposite — un simple clic de sélection ne doit rien coûter.
     if let Some((id, anchor_t)) = app.move_anchor.take()
         && let Some(LayerNode::Pixel(l)) = app.doc.find(id)
         && l.transform != anchor_t
@@ -291,9 +299,9 @@ fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
             new: l.transform,
         };
         app.history.push_command_immediate(cmd);
-    }
-    if app.needs_fallback() {
-        app.invalidate_fallback();
+        if app.needs_fallback() {
+            app.invalidate_fallback();
+        }
     }
     Task::none()
 }

@@ -210,6 +210,14 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
+
+    /// Nombre d'entrées dans la pile UNDO (utile aux tests qui veulent
+    /// prouver l'ABSENCE d'entrée, là où `can_undo`/`can_redo` peuvent
+    /// déjà être `false` avant le test).
+    #[must_use]
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
 }
 
 #[cfg(test)]

@@ -96,6 +96,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             app.fallback_handle.clone(),
             app.fallback_size,
             app.move_anchor.map(|(id, _)| id),
+            app.move_anchor.map(|(_, t)| (t.offset_x, t.offset_y)),
             app.drag_background.clone(),
             app.drag_background_size,
             app.drag_layer_composite.clone(),
