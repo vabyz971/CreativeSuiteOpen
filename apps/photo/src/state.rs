@@ -124,6 +124,12 @@ pub struct ToolState {
     /// État du menu contextuel sur le calque (clic droit dans panneau calques).
     pub context_menu_open: Option<Uuid>, // calque ciblé, None = fermer
     pub context_menu_pos: (f32, f32), // position souris
+    /// Texture de LOUPE courante de la pipette (patch grossi au curseur).
+    pub pick_loupe: Option<ui_kit::image_canvas::LoupeTex>,
+    /// Un échantillonnage de patch est en vol (garde anti-empilement).
+    pub loupe_sample_pending: bool,
+    /// Identifiant du dernier patch demandé — filtre les arrivages périmés.
+    pub loupe_last_resp: Option<u64>,
 }
 
 impl Default for ToolState {
@@ -152,6 +158,9 @@ impl Default for ToolState {
             resize_h: String::new(),
             context_menu_open: None,
             context_menu_pos: (0.0, 0.0),
+            pick_loupe: None,
+            loupe_sample_pending: false,
+            loupe_last_resp: None,
         }
     }
 }

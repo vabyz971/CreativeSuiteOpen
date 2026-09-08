@@ -138,7 +138,8 @@ fn brush_section<'a>(
 
     let opacity_slider = row![
         field_label("Opacité"),
-        iced::widget::slider(0.05..=1.0, brush_opacity, Message::SetBrushOpacity)
+        iced::widget::slider(0.0..=1.0, brush_opacity, Message::SetBrushOpacity)
+            .step(0.01_f32)
             .width(Length::Fixed(90.0)),
         value_label(format!("{:.0}%", brush_opacity * 100.0)),
     ]
@@ -173,7 +174,8 @@ fn eraser_section<'a>(brush_size: f32, brush_opacity: f32) -> Element<'a, Messag
 
     let opacity_slider = row![
         field_label("Opacité"),
-        iced::widget::slider(0.05..=1.0, brush_opacity, Message::SetBrushOpacity)
+        iced::widget::slider(0.0..=1.0, brush_opacity, Message::SetBrushOpacity)
+            .step(0.01_f32)
             .width(Length::Fixed(90.0)),
         value_label(format!("{:.0}%", brush_opacity * 100.0)),
     ]

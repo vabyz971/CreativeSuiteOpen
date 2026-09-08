@@ -298,6 +298,13 @@ pub enum Message {
         task_id: u64,
         color: Option<iced::Color>,
     },
+    /// Survol pipette (loupe) : patch RGBA8 `side`×`side` échantillonné hors
+    /// thread UI, `None` = échec (scène indisponible). `resp` filtre les
+    /// arrivages périmés.
+    PickSampleReady {
+        resp: u64,
+        result: Option<Vec<u8>>,
+    },
 
     // ---- Écran d'accueil ----
     NewDocWidth(String),

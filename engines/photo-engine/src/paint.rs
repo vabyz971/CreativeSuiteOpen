@@ -36,7 +36,8 @@ pub enum StrokeMode {
 /// Réglages d'un outil à trait (pinceau ou gomme).
 #[derive(Clone, Copy, Debug)]
 pub struct BrushParams {
-    /// Rayon en pixels CALQUE
+    /// Rayon en pixels DOCUMENT (l'espace visuel du canvas). `commit_stroke`
+    /// le convertit en ellipse dans l'espace du calque via la transform.
     pub radius: f32,
     /// Couleur RGB (ignorée en mode Erase)
     pub color: [u8; 3],
@@ -46,18 +47,46 @@ pub struct BrushParams {
     pub mode: StrokeMode,
 }
 
-/// Rastérise un trait dans un tampon RGBA8 (w×h, espace CALQUE en pixels).
+/// Rastérise un trait circulaire dans un tampon RGBA8 (w×h, espace CALQUE).
 ///
 /// * `points` : polyligne en coordonnées calque (centre du pixel (0,0) = 0.0)
 pub fn paint_stroke_rgba(rgba: &mut [u8], w: u32, h: u32, points: &[(f32, f32)], b: &BrushParams) {
-    if points.is_empty() || w == 0 || h == 0 || b.radius <= 0.0 || b.opacity <= 0.0 {
+    paint_stroke_impl(rgba, w, h, points, b, b.radius, b.radius);
+}
+
+/// Variante elliptique (rayons X/Y indépendants) — permet au trait de suivre
+/// une échelle de calque NON-unitaire : un cercle doc devient une ellipse
+/// dans l'espace du calque. Les rayons sont en pixels CALQUE.
+pub fn paint_stroke_ellipse(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    points: &[(f32, f32)],
+    b: &BrushParams,
+    rx: f32,
+    ry: f32,
+) {
+    paint_stroke_impl(rgba, w, h, points, b, rx, ry);
+}
+
+fn paint_stroke_impl(
+    rgba: &mut [u8],
+    w: u32,
+    h: u32,
+    points: &[(f32, f32)],
+    b: &BrushParams,
+    rx: f32,
+    ry: f32,
+) {
+    if points.is_empty() || w == 0 || h == 0 || rx <= 0.0 || ry <= 0.0 || b.opacity <= 0.0 {
         return;
     }
     let opacity = b.opacity.clamp(0.0, 1.0);
-    let radius = b.radius.max(0.5);
+    let rx = rx.max(0.5);
+    let ry = ry.max(0.5);
 
     // --- Bounding box du trait (limité au calque) ---
-    let pad = radius.ceil() + 1.0;
+    let pad = rx.max(ry).ceil() + 1.0;
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
@@ -81,16 +110,16 @@ pub fn paint_stroke_rgba(rgba: &mut [u8], w: u32, h: u32, points: &[(f32, f32)],
     // --- Masque de couverture 0/255 ---
     let mut mask = vec![0u8; bw * bh];
     let stamp = |mask: &mut [u8], cx: f32, cy: f32| {
-        let r2 = radius * radius;
-        let x0 = (cx - radius).floor().max(bx0 as f32) as i64;
-        let x1 = (cx + radius).ceil().min(bx1 as f32) as i64;
-        let y0 = (cy - radius).floor().max(by0 as f32) as i64;
-        let y1 = (cy + radius).ceil().min(by1 as f32) as i64;
+        let x0 = (cx - rx).floor().max(bx0 as f32) as i64;
+        let x1 = (cx + rx).ceil().min(bx1 as f32) as i64;
+        let y0 = (cy - ry).floor().max(by0 as f32) as i64;
+        let y1 = (cy + ry).ceil().min(by1 as f32) as i64;
         for py in y0..y1 {
             for px in x0..x1 {
                 let dx = px as f32 + 0.5 - cx;
                 let dy = py as f32 + 0.5 - cy;
-                if dx * dx + dy * dy <= r2 {
+                // Ellipse d'axes rx/ry (cercle quand rx == ry)
+                if (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0 {
                     let mi = ((py - by0 as i64) as usize) * bw + ((px - bx0 as i64) as usize);
                     mask[mi] = 255;
                 }
@@ -98,8 +127,8 @@ pub fn paint_stroke_rgba(rgba: &mut [u8], w: u32, h: u32, points: &[(f32, f32)],
         }
     };
 
-    // Tampons espacés le long des segments (pas ~ rayon/3 → trait continu)
-    let step = (radius / 3.0).max(0.5);
+    // Tampons espacés le long des segments (pas ~ rayon max / 3 → trait continu)
+    let step = (rx.max(ry) / 3.0).max(0.5);
     let mut prev = points[0];
     stamp(&mut mask, prev.0, prev.1);
     for &p in &points[1..] {
@@ -263,11 +292,20 @@ fn commit_stroke_locked(
     };
 
     let mut rgba = base.to_rgba8().into_raw();
-    paint_stroke_rgba(&mut rgba, lw, lh, &pts, brush);
+    // LE RAYON vit en espace doc (celui du curseur) : on le ramène dans
+    // l'espace du calque par les échelles (min. 0.5 px). Cercle doc →
+    // ellipse calque dès que scale_x ≠ scale_y — à l'écran, la zone peinte
+    // épouse exactement le curseur, quelle que soit la taille du calque.
+    // (La rotation/cisaillement du calque ne change pas la forme vue depuis
+    // le doc quand sx == sy ; une ellipse droite est une bonne approximation
+    // sinon.)
+    let r_x = (brush.radius / sx).max(0.5);
+    let r_y = (brush.radius / sy).max(0.5);
+    paint_stroke_ellipse(&mut rgba, lw, lh, &pts, brush, r_x, r_y);
     // La longueur est garantie par construction : to_rgba8().into_raw() retourne w*h*4
     let painted = ::image::DynamicImage::ImageRgba8(
-            ::image::RgbaImage::from_raw(lw, lh, rgba.clone())
-                .unwrap_or_else(|| ::image::RgbaImage::new(lw, lh)),
+        ::image::RgbaImage::from_raw(lw, lh, rgba.clone())
+            .unwrap_or_else(|| ::image::RgbaImage::new(lw, lh)),
     );
 
     StrokeCommit {
@@ -395,5 +433,79 @@ mod tests {
         );
         // Rien ne peut devenir opaque ni coloré par une gomme
         assert!(rgba.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn ellipse_respecte_les_rayons_d_axes() {
+        let w = 40u32;
+        let h = 40u32;
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        paint_stroke_ellipse(
+            &mut rgba,
+            w,
+            h,
+            &[(20.0, 20.0)],
+            &BrushParams {
+                radius: 8.0,
+                color: [255, 0, 0],
+                opacity: 1.0,
+                mode: StrokeMode::Paint,
+            },
+            8.0, // rx
+            3.0, // ry
+        );
+        let px = |x: u32, y: u32| rgba[((y * w + x) * 4 + 3) as usize] > 0;
+        assert!(px(20, 20), "centre");
+        assert!(px(20 - 7, 20), "bord gauche (rx)");
+        assert!(px(20 + 7, 20), "bord droit (rx)");
+        assert!(px(20, 20 - 2), "bord haut (ry)");
+        assert!(px(20, 20 + 2), "bord bas (ry)");
+        // Hors ellipse (centre du pixel ≳ frontière) : transparent
+        assert!(!px(20 + 8, 20), "au-delà de rx");
+        assert!(!px(20, 20 + 3), "au-delà de ry");
+        assert!(!px(4, 4), "coin lointain");
+    }
+
+    #[test]
+    fn commit_stroke_sur_calque_redimensionne_adapte_le_rayon() {
+        use crate::document::Transform2D;
+        // Calque 64×64 affiché à 50 % : le rayon DOC (10 px) doit produire un
+        // disque de ~20 px LAYER (10 / 0.5) — à l'écran les deux coïncident.
+        let mut base = image::RgbaImage::new(64, 64); // transparent : seule la zone peinte compte
+        let transform = Transform2D {
+            offset_x: 100.0,
+            offset_y: 100.0,
+            scale_x: 0.5,
+            scale_y: 0.5,
+            ..Transform2D::default()
+        };
+        // Point doc au centre du calque (offset + demi-étendue scalée).
+        let centre_doc = (100.0 + 32.0 * 0.5, 100.0 + 32.0 * 0.5);
+        let commit = commit_stroke(
+            &image::DynamicImage::ImageRgba8(base.clone()),
+            &[centre_doc],
+            &transform,
+            &BrushParams {
+                radius: 10.0, // PIXELS DOC
+                color: [255, 0, 0],
+                opacity: 1.0,
+                mode: StrokeMode::Paint,
+            },
+        );
+        let rgba = commit.rgba;
+        // Largueur horizontale peinte mesurée en px calque (~ 2 × 20).
+        let mut min_x = 64i32;
+        let mut max_x = -1i32;
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                if rgba[((y * 64 + x) * 4 + 3) as usize] > 0 {
+                    min_x = min_x.min(x as i32);
+                    max_x = max_x.max(x as i32);
+                }
+            }
+        }
+        let painted = (max_x - min_x + 1).max(0);
+        assert!(painted >= 36, "disque ~40 px calque, mesuré {painted}");
+        assert!(painted <= 44, "disque ~40 px calque, mesuré {painted}");
     }
 }

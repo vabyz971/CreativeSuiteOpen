@@ -874,6 +874,42 @@ impl Document {
         Some([p[0], p[1], p[2], p[3]])
     }
 
+    /// Échantillonne un PATCH carré `side`×`side` (RGBA8, lignes majeures)
+    /// centré sur le point document `(dx, dy)` — pixels hors plan composite
+    /// transparents. Alimente la LOUPE de la pipette (grossissement façon
+    /// Photoshop). Même composite complète que [`Self::sample_color`] →
+    /// à appeler UNIQUEMENT dans `spawn_blocking`.
+    pub fn sample_region(&self, dx: f32, dy: f32, side: u32) -> Option<Vec<u8>> {
+        let resolver = |id: Uuid| self.appearance_image(id);
+        let (half_w, half_h) = scope_half_extents(&self.root, self.width, self.height, &resolver);
+        let origin_x = half_w - self.width as f32 / 2.0;
+        let origin_y = half_h - self.height as f32 / 2.0;
+        let px = (origin_x + dx).floor() as i64;
+        let py = (origin_y + dy).floor() as i64;
+        let img = self.composite_preview()?;
+        let (iw, ih) = img.dimensions();
+        let side = side.max(1);
+        let half = i64::from(side / 2);
+        let x0 = px - half;
+        let y0 = py - half;
+        let mut out = vec![0u8; (side * side * 4) as usize];
+        for ry in 0..i64::from(side) {
+            for rx in 0..i64::from(side) {
+                let gx = x0 + rx;
+                let gy = y0 + ry;
+                let sample = if gx >= 0 && gy >= 0 && gx < i64::from(iw) && gy < i64::from(ih) {
+                    let p = img.get_pixel(gx as u32, gy as u32);
+                    [p[0], p[1], p[2], p[3]]
+                } else {
+                    [0, 0, 0, 0]
+                };
+                let o = (ry as usize * side as usize + rx as usize) * 4;
+                out[o..o + 4].copy_from_slice(&sample);
+            }
+        }
+        Some(out)
+    }
+
     fn composite_scope(&self, nodes: &[LayerNode]) -> Option<DynamicImage> {
         let resolver = |id: Uuid| self.appearance_image(id);
         let (half_w, half_h) = scope_half_extents(nodes, self.width, self.height, &resolver);

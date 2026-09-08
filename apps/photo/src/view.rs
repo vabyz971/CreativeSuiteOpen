@@ -127,6 +127,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
                 erase: app.tools.selected_tool == crate::message::Tool::Eraser,
             },
             app.tools.pending_paint.as_ref().map(|p| p.tex.clone()),
+            app.tools.pick_loupe.clone(),
             &app.tools.new_doc_w,
             &app.tools.new_doc_h,
             app.tools.welcome_error.as_deref(),

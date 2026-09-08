@@ -146,6 +146,7 @@ fn handle_image_canvas_event(
             super::dispatch(app, Message::BrushEnd { points, tex, erase })
         }
         ui_kit::image_canvas::ImageCanvasEvent::ColorPick { x, y } => handle_pick_color(app, x, y),
+        ui_kit::image_canvas::ImageCanvasEvent::PickHover { x, y } => handle_pick_hover(app, x, y),
         ui_kit::image_canvas::ImageCanvasEvent::Viewport(size) => {
             app.canvas.canvas_viewport = size;
             Task::none()
@@ -367,65 +368,15 @@ fn transform_for_cursor(
         // Redimensionnement : le coin opposé reste PIVOTÉ (fixe), le coin
         // saisi suit le curseur. L'angle de rotation et les skew sont
         // conservés tels quels (les axes locaux du boîtier ne changent pas).
-        TransformHandle::Corner(corner) => {
-            let (dc, oc) = corner_pair(corner, w0, h0);
-            let o_doc = base.local_to_doc(w0, h0, oc.0, oc.1);
-            let kx = base.skew_x.to_radians().tan();
-            let ky = base.skew_y.to_radians().tan();
-            let rad = base.rotation_deg.to_radians();
-            let (cos, sin) = (rad.cos(), rad.sin());
-            // b = K^-1 * (R^-1 * (cur - o_doc))
-            let wx = cur.0 - o_doc.0;
-            let wy = cur.1 - o_doc.1;
-            let rx = wx * cos + wy * sin;
-            let ry = -wx * sin + wy * cos;
-            let det = 1.0 - kx * ky;
-            let (b1, b2) = if det.abs() > 1e-4 {
-                ((rx - kx * ry) / det, (-ky * rx + ry) / det)
-            } else {
-                (rx, ry)
-            };
-            let hx = dc.0 - cx;
-            let hy = dc.1 - cy;
-            let raw_x = b1 / (2.0 * hx);
-            let raw_y = b2 / (2.0 * hy);
-            // Ctrl enfoncé → échelle PROPORTIONNELLE : un seul facteur dérivé de
-            // l'axe dominant et appliqué aux 2 échelles (aspect conservé).
-            // Les clamps durs ne jouent qu'aux bornes extrêmes.
-            let (sx, sy) = if uniform {
-                let f = if raw_x.abs() >= raw_y.abs() {
-                    raw_x
-                } else {
-                    raw_y
-                };
-                let dom = if base.scale_x.abs() >= base.scale_y.abs() {
-                    base.scale_x.abs()
-                } else {
-                    base.scale_y.abs()
-                };
-                // « raw » est une échelle ABSOLUE (b = K·S'·(dc−oc)), pas un
-                // facteur : q = f/dom cale l'axe dominant sur le curseur et
-                // préserve l'aspect dessiné des 2 axes.
-                let q = f / dom.max(1.0e-3);
-                (base.scale_x * q, base.scale_y * q)
-            } else {
-                (raw_x, raw_y)
-            };
-            let sx = sx.clamp(0.05, 8.0);
-            let sy = sy.clamp(0.05, 8.0);
-            // C' = o_doc - R*K*(S'*(oc - c0)) puis offset = C' - c0*S'
-            let vx = (oc.0 - cx) * sx;
-            let vy = (oc.1 - cy) * sy;
-            let tx = vx + kx * vy;
-            let ty = ky * vx + vy;
-            let cxp = o_doc.0 - (tx * cos - ty * sin);
-            let cyp = o_doc.1 - (tx * sin + ty * cos);
-            let mut t = *base;
-            t.offset_x = cxp - cx * sx;
-            t.offset_y = cyp - cy * sy;
-            t.scale_x = sx;
-            t.scale_y = sy;
-            t
+        TransformHandle::Corner(corner) => resize_corner(base, w0, h0, corner, cur, uniform),
+        // Poignée d'ÉCHELLE : 0.2× au-delà du coin bas-droite. On exploite le
+        // redimensionnement uniforme du coin BR, mais avec un curseur EFFICACE
+        // décalé du vecteur handle→coin à la saisie — ainsi le coin réel suit
+        // le curseur 1:1 sans saut initial de +20%.
+        TransformHandle::Scale => {
+            let br_doc = base.local_to_doc(w0, h0, w0, h0);
+            let cur_eff = (cur.0 - (start.0 - br_doc.0), cur.1 - (start.1 - br_doc.1));
+            resize_corner(base, w0, h0, Corner::BottomRight, cur_eff, true)
         }
         // Inclinaison des poignées milieux : angle = atan(delta / hauteur résiduelle).
         TransformHandle::SkewX => {
@@ -456,6 +407,76 @@ fn corner_pair(corner: Corner, w0: f32, h0: f32) -> ((f32, f32), (f32, f32)) {
     };
     let opp = (idx + 2) % 4;
     (corners[idx], corners[opp])
+}
+
+/// Redimensionnement d'un coin PIVOTÉ (le coin opposé reste fixe). `cur` en
+/// coordonnées document, `uniform` = aspect conservé (Ctrl ou poignée Scale).
+fn resize_corner(
+    base: &crate::layers::Transform2D,
+    w0: f32,
+    h0: f32,
+    corner: Corner,
+    cur: (f32, f32),
+    uniform: bool,
+) -> crate::layers::Transform2D {
+    let cx = w0 / 2.0;
+    let cy = h0 / 2.0;
+    let (dc, oc) = corner_pair(corner, w0, h0);
+    let o_doc = base.local_to_doc(w0, h0, oc.0, oc.1);
+    let kx = base.skew_x.to_radians().tan();
+    let ky = base.skew_y.to_radians().tan();
+    let rad = base.rotation_deg.to_radians();
+    let (cos, sin) = (rad.cos(), rad.sin());
+    // b = K^-1 * (R^-1 * (cur - o_doc))
+    let wx = cur.0 - o_doc.0;
+    let wy = cur.1 - o_doc.1;
+    let rx = wx * cos + wy * sin;
+    let ry = -wx * sin + wy * cos;
+    let det = 1.0 - kx * ky;
+    let (b1, b2) = if det.abs() > 1e-4 {
+        ((rx - kx * ry) / det, (-ky * rx + ry) / det)
+    } else {
+        (rx, ry)
+    };
+    let hx = dc.0 - cx;
+    let hy = dc.1 - cy;
+    let raw_x = b1 / (2.0 * hx);
+    let raw_y = b2 / (2.0 * hy);
+    // Ctrl (ou poignée Scale) → échelle PROPORTIONNELLE : un seul facteur
+    // dérivé de l'axe dominant et appliqué aux 2 échelles aspect conservé.
+    let (sx, sy) = if uniform {
+        let f = if raw_x.abs() >= raw_y.abs() {
+            raw_x
+        } else {
+            raw_y
+        };
+        let dom = if base.scale_x.abs() >= base.scale_y.abs() {
+            base.scale_x.abs()
+        } else {
+            base.scale_y.abs()
+        };
+        // « raw » est une échelle ABSOLUE (b = K·S'·(dc−oc)), pas un facteur :
+        // q = f/dom cale l'axe dominant sur le curseur et préserve l'aspect.
+        let q = f / dom.max(1.0e-3);
+        (base.scale_x * q, base.scale_y * q)
+    } else {
+        (raw_x, raw_y)
+    };
+    let sx = sx.clamp(0.05, 8.0);
+    let sy = sy.clamp(0.05, 8.0);
+    // C' = o_doc - R*K*(S'*(oc - c0)) puis offset = C' - c0*S'
+    let vx = (oc.0 - cx) * sx;
+    let vy = (oc.1 - cy) * sy;
+    let tx = vx + kx * vy;
+    let ty = ky * vx + vy;
+    let cxp = o_doc.0 - (tx * cos - ty * sin);
+    let cyp = o_doc.1 - (tx * sin + ty * cos);
+    let mut t = *base;
+    t.offset_x = cxp - cx * sx;
+    t.offset_y = cyp - cy * sy;
+    t.scale_x = sx;
+    t.scale_y = sy;
+    t
 }
 
 fn handle_quit(_app: &mut PhotoApp) -> Task<Message> {
@@ -500,6 +521,53 @@ fn handle_color_picked(
         .previous_tool
         .unwrap_or(crate::message::Tool::Brush);
     app.tools.previous_tool = None;
+    Task::none()
+}
+
+/// Survol pipette : échantillonne un patch carré autour du curseur (LOUPE).
+/// Garde anti-empilement : si un patch tourne déjà, on ne relance pas — le
+/// suivant sera pris au prochain mouvement (le quanta de 4 px doc du canvas
+/// rend l'écart de position négligeable). Même pattern spawn_blocking que
+/// [`handle_pick_color`]. Pas d'entrée dans `background_tasks` (rafale
+/// trop rapide) — seul un drapeau dans `tools` synchronise.
+fn handle_pick_hover(app: &mut PhotoApp, x: f32, y: f32) -> Task<Message> {
+    if app.tools.loupe_sample_pending || app.tools.selected_tool != Tool::Eyedropper {
+        return Task::none();
+    }
+    app.tools.loupe_sample_pending = true;
+    let resp = app.tools.loupe_last_resp.unwrap_or(0) + 1;
+    app.tools.loupe_last_resp = Some(resp);
+    let side = ui_kit::image_canvas::LOUPE_PATCH_SIDE;
+    let mut doc_copy = photo_engine::Document::new(app.document.doc.width, app.document.doc.height);
+    doc_copy.restore_snapshot(app.document.doc.snapshot());
+    doc_copy.warm_cache_from(&app.document.doc);
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || doc_copy.sample_region(x, y, side))
+                .await
+                .unwrap_or(None)
+        },
+        move |result| Message::PickSampleReady { resp, result },
+    )
+}
+
+/// Réception d'un patch de loupe : construit la texture (Bytes de l'Arc → zéro
+/// copie, même prix que le cache de scène) et la met dans `tools.pick_loupe`.
+fn handle_pick_sample_ready(
+    app: &mut PhotoApp,
+    resp: u64,
+    result: Option<Vec<u8>>,
+) -> Task<Message> {
+    app.tools.loupe_sample_pending = false;
+    // Stale : un patch plus récent a été demandé — on ignore cet arrivage.
+    if app.tools.loupe_last_resp != Some(resp) {
+        return Task::none();
+    }
+    let side = ui_kit::image_canvas::LOUPE_PATCH_SIDE;
+    app.tools.pick_loupe = result.map(|rgba| {
+        let handle = iced::widget::image::Handle::from_rgba(side, side, rgba);
+        ui_kit::image_canvas::LoupeTex { handle, side }
+    });
     Task::none()
 }
 
@@ -683,6 +751,9 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::Redo => Some(handle_undo_redo(app, false)),
         Message::PickColor { x, y } => Some(handle_pick_color(app, x, y)),
         Message::ColorPicked { task_id, color } => Some(handle_color_picked(app, task_id, color)),
+        Message::PickSampleReady { resp, result } => {
+            Some(handle_pick_sample_ready(app, resp, result))
+        }
         Message::FallbackComputed {
             task_id,
             generation,

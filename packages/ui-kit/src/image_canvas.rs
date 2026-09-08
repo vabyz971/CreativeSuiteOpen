@@ -62,6 +62,9 @@ pub enum TransformHandle {
     SkewX,
     /// Côté bas → cisaille Y selon X (inclinaison verticale)
     SkewY,
+    /// Échelle proportionnelle — poignée carrée 0.2× au-delà du coin
+    /// bas-droite (déplace l'image dans son échelle, aspect conservé)
+    Scale,
 }
 
 /// Coin du rectangle sélectionné.
@@ -83,6 +86,7 @@ impl TransformHandle {
             Self::Rotate => "rotate",
             Self::SkewX => "skew_x",
             Self::SkewY => "skew_y",
+            Self::Scale => "scale",
         }
     }
 }
@@ -141,6 +145,12 @@ pub enum ImageCanvasEvent {
         x: f32,
         y: f32,
     },
+    /// Survol pipette (loupe active) — coordonnées document. Émis par
+    /// quanta de `PICK_HOVER_STEP` px pour éviter la rafale de messages.
+    PickHover {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// Brush/eraser style for live preview (document space).
@@ -153,6 +163,16 @@ pub struct BrushStyle {
     pub opacity: f32,
     /// true = eraser → preview is a RING (imprint) instead of disc
     pub erase: bool,
+}
+
+/// Texture prête à l'emploi de la LOUPE pipette : carré `side`×`side` extrait
+/// de la composite (pixels doc 1:1, RGBA8) — le canvas le grossit ×`LOUPE_SCALE`
+/// à l'écran. Générée côté app (worker) et repassée via [`view_with_tool`].
+#[derive(Clone, Debug)]
+pub struct LoupeTex {
+    pub handle: image::Handle,
+    /// Côté du carré en pixels DOCUMENT (3, 5, … impair)
+    pub side: u32,
 }
 
 /// Stroke preview — 512×512 TILES in document coordinates.
@@ -346,6 +366,8 @@ pub struct ImageCanvas {
     pub can_paint: bool,
     /// Frozen preview during async commit (after release)
     pub pending_preview: Option<StrokeTex>,
+    /// Loupe pipette (patches successifs suivis du curseur, façon Photoshop)
+    pub loupe: Option<LoupeTex>,
 }
 
 impl ImageCanvas {
@@ -368,6 +390,7 @@ impl ImageCanvas {
             },
             can_paint: true,
             pending_preview: None,
+            loupe: None,
         }
     }
     #[must_use]
@@ -384,6 +407,67 @@ impl ImageCanvas {
     pub fn with_pending_preview(mut self, preview: Option<StrokeTex>) -> Self {
         self.pending_preview = preview;
         self
+    }
+    #[must_use]
+    pub fn with_loupe(mut self, loupe: Option<LoupeTex>) -> Self {
+        self.loupe = loupe;
+        self
+    }
+
+    /// Loupe de la pipette façon Photoshop : carré grossi avec bordure et
+    /// réticule, calé en haut-gauche du curseur puis ramené dans la zone.
+    fn draw_loupe(
+        &self,
+        renderer: &iced::Renderer,
+        bounds: Rectangle,
+        state: &State,
+    ) -> Option<Geometry> {
+        let Some(loupe) = self.loupe.as_ref() else {
+            return None;
+        };
+        let Some(cursor) = state.cursor_pos else {
+            return None;
+        };
+        if !bounds.contains(cursor) {
+            return None;
+        }
+        let side = loupe.side.max(1) as f32 * LOUPE_SCALE;
+        let gap = 14.0;
+        // Position par défaut : au-dessus-gauche du curseur
+        let mut tl = Point::new(cursor.x - side - gap, cursor.y - side - gap);
+        // Repli dans le viewport (Photoshop inverse le côté quand on est au bord)
+        if tl.x < 0.0 {
+            tl.x = (cursor.x + gap).min(bounds.width - side);
+        }
+        if tl.y < 0.0 {
+            tl.y = (cursor.y + gap).min(bounds.height - side);
+        }
+        let rect = Rectangle::new(tl, Size::new(side, side));
+        let mut frame = Frame::new(renderer, bounds.size());
+        frame.draw_image(rect, iced_core::Image::new(loupe.handle.clone()));
+        let border = Path::rectangle(tl, rect.size());
+        frame.stroke(
+            &border,
+            Stroke::default()
+                .with_width(1.5)
+                .with_color(colors::SELECTION_STROKE),
+        );
+        // Réticule central : croix fine au centre de la loupe
+        let c = Point::new(tl.x + side / 2.0, tl.y + side / 2.0);
+        let tick = side * 0.06;
+        let cross = Path::new(|p| {
+            p.move_to(Point::new(c.x - tick, c.y));
+            p.line_to(Point::new(c.x + tick, c.y));
+            p.move_to(Point::new(c.x, c.y - tick));
+            p.line_to(Point::new(c.x, c.y + tick));
+        });
+        frame.stroke(
+            &cross,
+            Stroke::default()
+                .with_width(1.0)
+                .with_color(colors::TEXT_ON_ACCENT),
+        );
+        Some(frame.into_geometry())
     }
 
     /// Convert canvas screen position to DOCUMENT coordinates
@@ -482,10 +566,13 @@ impl ImageCanvas {
         let target = self.transform_target.as_ref()?;
         let corners = self.screen_corners(target, bounds);
         let ui = BoxUi::new(corners);
-        // Rotation d'abord (grande zone), puis coins, puis inclinaisons,
-        // puis intérieur
+        // Rotation d'abord (grande zone), puis ÉCHELLE (poignée extérieure),
+        // puis coins, puis inclinaisons, puis intérieur
         if ui.rot_pos.distance(p) <= HANDLE_HIT {
             return Some((TransformHandle::Rotate, ui));
+        }
+        if ui.scale_pos.distance(p) <= HANDLE_HIT {
+            return Some((TransformHandle::Scale, ui));
         }
         let corner_kinds = [
             (Corner::TopLeft, ui.corners[0]),
@@ -668,6 +755,28 @@ impl ImageCanvas {
                         .with_color(colors::SELECTION_STROKE),
                 );
             }
+
+            // Poignée d'ÉCHELLE : CARRÉ au-delà du coin bas-droite (0.2× la
+            // demi-diagonale) — distincte des cercles (coins) et des
+            // losanges (inclinaisons).
+            let s = ui.scale_pos;
+            let sq = HANDLE_HALF * 1.4;
+            let square = Path::rectangle(
+                Point::new(s.x - sq, s.y - sq),
+                Size::new(sq * 2.0, sq * 2.0),
+            );
+            let fill = if active == Some(TransformHandle::Scale) {
+                colors::ACCENT
+            } else {
+                colors::TEXT_ON_ACCENT
+            };
+            frame.fill(&square, Fill::from(fill));
+            frame.stroke(
+                &square,
+                Stroke::default()
+                    .with_width(1.0)
+                    .with_color(colors::SELECTION_STROKE),
+            );
         }
 
         Some(frame.into_geometry())
@@ -685,6 +794,9 @@ pub struct BoxUi {
     /// Milieu côté droit (inclinaison X) et côté bas (inclinaison Y)
     pub right_mid: Point,
     pub bottom_mid: Point,
+    /// Poignée d'ÉCHELLE : 0.2× au-delà du coin bas-droite, le long de la
+    /// diagonale centre → coin (façon « resize » Photoshop/Affinity).
+    pub scale_pos: Point,
 }
 
 impl BoxUi {
@@ -704,12 +816,25 @@ impl BoxUi {
             dir = Vector::new(0.0, -1.0);
         }
         let rot_pos = Point::new(top_mid.x + dir.x * ROT_STEM, top_mid.y + dir.y * ROT_STEM);
+        let br = corners[2];
+        let mut sdir = Vector::new(br.x - center.x, br.y - center.y);
+        let slen = (sdir.x * sdir.x + sdir.y * sdir.y).sqrt();
+        if slen > 1e-6 {
+            sdir /= slen;
+        } else {
+            sdir = Vector::new(0.707, 0.707);
+        }
+        let scale_pos = Point::new(
+            br.x + sdir.x * slen * SCALE_OFFSET,
+            br.y + sdir.y * slen * SCALE_OFFSET,
+        );
         Self {
             corners,
             center,
             rot_pos,
             right_mid: mid(corners[1], corners[2]),
             bottom_mid: mid(corners[3], corners[2]),
+            scale_pos,
         }
     }
 }
@@ -720,6 +845,14 @@ const HANDLE_HIT: f32 = 8.0;
 const ROT_STEM: f32 = 24.0;
 /// Demi-côté des poignées dessinées (écran)
 const HANDLE_HALF: f32 = 5.0;
+/// Distance de la poignée d'échelle : 0.2× la demi-diagonale, au-delà du coin
+const SCALE_OFFSET: f32 = 0.2;
+/// Quantum de mouvement doc avant de publier un `PickHover` (évite la rafale)
+const PICK_HOVER_STEP: f32 = 4.0;
+/// Grossissement écran d'un pixel doc dans la loupe pipette
+const LOUPE_SCALE: f32 = 4.0;
+/// Côté (px doc) du patch échantillonné par la loupe
+pub const LOUPE_PATCH_SIDE: u32 = 33;
 
 /// Point dans un quadrilatère convexe (test de signe des produits
 /// vectoriels, tolérant aux deux orientations).
@@ -759,6 +892,8 @@ pub struct State {
     pub space_held: bool,
     /// Last published viewport size (avoids event spam)
     pub prev_bounds: Option<Size>,
+    /// Dernière position doc publiée pour la loupe pipette (quanta de survol)
+    pub last_pick_doc: Option<(f32, f32)>,
 }
 
 /// Curseur correspondant à une poignée de transformation.
@@ -771,6 +906,7 @@ fn transform_cursor(kind: TransformHandle) -> mouse::Interaction {
         TransformHandle::Corner(Corner::TopRight) | TransformHandle::Corner(Corner::BottomLeft) => {
             mouse::Interaction::ResizingDiagonallyDown
         }
+        TransformHandle::Scale => mouse::Interaction::ResizingDiagonallyDown,
         TransformHandle::SkewX => mouse::Interaction::ResizingHorizontally,
         TransformHandle::SkewY => mouse::Interaction::ResizingVertically,
     }
@@ -1082,6 +1218,34 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                 if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) {
                     return Some(canvas::Action::request_redraw().and_capture());
                 }
+                // Pipette + loupe : public un patch par quantum de mouvement
+                // doc (~4 px) ; l'app échantillonne dans un worker et renvoie
+                // une texture. La garde future (`self.loupe.is_some()` interdit
+                // les mvt tôt) N'EST PAS posée ici : le premier patch doit
+                // pouvoir être demandé alors que la loupe est encore `None`.
+                if self.tool == CanvasTool::Eyedropper
+                    && !state.dragging.is_some()
+                    && state.selecting.is_none()
+                {
+                    let doc = self.screen_to_doc(cursor_pos, bounds);
+                    let far = state
+                        .last_pick_doc
+                        .map(|(lx, ly)| {
+                            (doc.x - lx).powi(2) + (doc.y - ly).powi(2) >= PICK_HOVER_STEP.powi(2)
+                        })
+                        .unwrap_or(true);
+                    if far {
+                        state.last_pick_doc = Some((doc.x, doc.y));
+                        return Some(
+                            canvas::Action::publish(ImageCanvasEvent::PickHover {
+                                x: doc.x,
+                                y: doc.y,
+                            })
+                            .and_capture(),
+                        );
+                    }
+                    return Some(canvas::Action::request_redraw().and_capture());
+                }
                 None
             }
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -1326,7 +1490,11 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
         // est rendue APRÈS les images de la 1re.
         let overlay = self.draw_overlay(renderer, bounds, state);
 
-        vec![Some(frame.into_geometry()), overlay]
+        // LOUPE pipette : DERNIÈRE géométrie (au-dessus de l'overlay aussi).
+        // Un pixel doc → LOUPE_SCALE px écran, suivi près du curseur.
+        let loupe = self.draw_loupe(renderer, bounds, state);
+
+        vec![Some(frame.into_geometry()), overlay, loupe]
             .into_iter()
             .flatten()
             .collect()
@@ -1398,6 +1566,7 @@ pub fn view_with_tool<'a>(
     brush: BrushStyle,
     can_paint: bool,
     pending_preview: Option<StrokeTex>,
+    loupe: Option<LoupeTex>,
 ) -> iced::Element<'a, ImageCanvasEvent> {
     let program = ImageCanvas::new(doc_size, pan, zoom)
         .with_layers(layers)
@@ -1407,7 +1576,8 @@ pub fn view_with_tool<'a>(
         .with_selection(selection)
         .with_brush(brush)
         .with_can_paint(can_paint)
-        .with_pending_preview(pending_preview);
+        .with_pending_preview(pending_preview)
+        .with_loupe(loupe);
     iced::widget::canvas(program)
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
@@ -1577,9 +1747,17 @@ mod tests {
             assert_eq!(t.rgba.len() as u32, TILE * TILE * 4);
         }
         // Start and end points well stamped
-        let first = &tex.tiles.iter().find(|t| t.tx == 0 && t.ty == 0).expect("tile (0,0) should exist");
+        let first = &tex
+            .tiles
+            .iter()
+            .find(|t| t.tx == 0 && t.ty == 0)
+            .expect("tile (0,0) should exist");
         assert!(alpha_at(first, 0, 0) > 0);
-        let last = &tex.tiles.iter().find(|t| t.tx == 5 && t.ty == 5).expect("tile (5,5) should exist");
+        let last = &tex
+            .tiles
+            .iter()
+            .find(|t| t.tx == 5 && t.ty == 5)
+            .expect("tile (5,5) should exist");
         // 3000 - 5*512 = 440 : le centre du disque final est en (440,440) local
         assert!(alpha_at(last, 440, 440) > 0);
     }

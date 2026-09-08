@@ -68,6 +68,8 @@ pub fn render<'a>(
     // Style du pinceau + aperçu figé du commit en cours (texture)
     brush: ui_kit::image_canvas::BrushStyle,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
+    // Loupe pipette (patch courant, suivi au curseur)
+    loupe: Option<ui_kit::image_canvas::LoupeTex>,
     // Écran d'accueil (aucun document ouvert)
     new_doc_w: &'a str,
     new_doc_h: &'a str,
@@ -113,6 +115,7 @@ pub fn render<'a>(
                     color_picker_open,
                     mask_brush_black,
                     pending_preview.clone(),
+                    loupe.clone(),
                     new_doc_w,
                     new_doc_h,
                     welcome_error,
@@ -202,6 +205,7 @@ fn render_canvas_preview<'a>(
     color_picker_open: bool,
     mask_brush_black: bool,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
+    loupe: Option<ui_kit::image_canvas::LoupeTex>,
     new_doc_w: &'a str,
     new_doc_h: &'a str,
     welcome_error: Option<&'a str>,
@@ -430,6 +434,7 @@ fn render_canvas_preview<'a>(
             brush,
             can_paint,
             None,
+            loupe,
         )
         .map(Message::ImageCanvasEvent);
         container(canvas)
@@ -454,6 +459,7 @@ fn render_canvas_preview<'a>(
             brush,
             can_paint,
             pending_preview,
+            loupe,
         )
         .map(Message::ImageCanvasEvent);
         if doc.root.is_empty() && doc_size.is_none() {
