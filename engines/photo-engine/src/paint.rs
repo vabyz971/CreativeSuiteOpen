@@ -471,7 +471,7 @@ mod tests {
         use crate::document::Transform2D;
         // Calque 64×64 affiché à 50 % : le rayon DOC (10 px) doit produire un
         // disque de ~20 px LAYER (10 / 0.5) — à l'écran les deux coïncident.
-        let mut base = image::RgbaImage::new(64, 64); // transparent : seule la zone peinte compte
+        let base = image::RgbaImage::new(64, 64); // transparent : seule la zone peinte compte
         let transform = Transform2D {
             offset_x: 100.0,
             offset_y: 100.0,

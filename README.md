@@ -16,15 +16,15 @@ CreativeSuiteOpen is a creative suite (Photo, Video, Audio) built in **Rust** wi
 
 | App | Status | Version |
 |-----|--------|---------|
-| **Photo** | Daily-usable — LayerTree, live filters, hybrid history, GPU rendering, projects, export | `0.5.0` |
+| **Photo** | Daily-usable — LayerTree, live filters, layer masks, hybrid history, GPU rendering, projects, export | `0.7.0` |
 | **Video** | Foundations (UI shell) | `0.1.0` |
 | **Audio** | Foundations (UI shell) | `0.1.0` |
 
-Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0` = complete technical base, `0.3.0` = first real feature set, `0.5.0` = professional editing model (layer tree, non-destructive filters).
+Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0` = complete technical base, `0.3.0` = first real feature set, `0.5.0` = professional editing model (layer tree, non-destructive filters), `0.7.0` = layer masks and refined tooling.
 
 ---
 
-## Features — Photo (`0.5.0`)
+## Features — Photo (`0.7.0`)
 
 ### Affinity-style layer tree
 - **Hierarchical layer tree**: pixel layers, **groups** (collapsible, with their own opacity/blend) and **adjustment layers** that process everything beneath them
@@ -34,13 +34,21 @@ Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0`
 - **Opacity and blend applied at draw time (GPU)** — sliders respond instantly: zero pixel regeneration, zero flicker
 - **Blend modes**: Normal, Multiply, Screen, Overlay, Darken, Lighten
 - **Per-layer real-time dragging** (60 fps, zero recomposite during the gesture)
+- **Affine transforms** (Affinity-style): move via the box interior, scale (corner handles, uniform with `Ctrl`), rotate, non-uniform scale, skew — each gesture re-applies at draw time with zero pixel regeneration
+
+### Layer masks (`0.7.0`)
+- **Multiple raster masks per layer** (pixel layers, groups and even filter sub-layers), each with its own id so they can be selected, edited, reordered and deleted independently
+- Paint masks directly with the **brush/eraser in black-or-white mode** (`X` toggles), or work on a mask via the layer panel
+- **Masks baked into the layer's appearance signature**: a mask in *Normal* blend no longer forces the CPU fallback — the fast per-layer GPU path is preserved; masks on a scale non-unitaire layer paint at the correct size thanks to the document-space radius → layer-space ellipse conversion
+- Rename, toggle, invert and reorder masks (dedicated context menu and panel FX stack) — settings done in a masked layer stay non-destructive
+- **FX stack merged**: masks and filter sub-layers share a single collapsible list under each layer, with a unified context menu
 
 ### Live filters (non-destructive)
 - Per-layer filter chains: brightness/contrast, blur, color correction… evaluated sequentially (each effect receives the previous one's output)
 - Filters never alter the source image — edit parameters anytime, disable without losing settings
 - **Per-layer appearance cache keyed by a signature of the filter chain + source identity**: editing layer N recomputes layer N only; neighbors keep their textures untouched
 
-### Hybrid history & native project (`0.5.0`)
+### Hybrid history & native project (`0.7.0`)
 - **Hybrid undo/redo** (Ctrl+Z / Ctrl+Y, 50 steps): full snapshots for destructive/structural operations (paint, crop, reordering), lightweight commands for micro-editions (opacity, transforms, blend, renames, filter parameters) — near-zero memory cost, precise render invalidation
 - Continuous gestures (sliders, renaming, drags) coalesced into a single restoration point within an 800 ms window; redo after a coalesced gesture restores the gesture's final value
 - **Native project format `.csophoto` (v2)**: hierarchical tree saved as versioned JSON, source pixels stored as PNG so filters stay alive across sessions — Save (`Ctrl+S`), Save As (`Ctrl+Shift+S`); open projects or plain images from the same dialog (legacy `.csphoto` files are still detected)
@@ -61,7 +69,11 @@ Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0`
 - Every effect (blur, color adjustments…) is also usable as a non-destructive live filter on any layer (work in progress: generated textures applied to layers)
 
 ### Tools
-Hand, Zoom, Rectangle selection, Move, **Brush**, **Eraser** (destination-out, ring preview), Eyedropper — floating toolbar hideable with `Tab` (shortcuts `B` / `E`)
+Hand, Zoom, Rectangle selection, Move, **Brush**, **Eraser** (destination-out, ring preview), **Eyedropper** — floating toolbar hideable with `Tab` (shortcuts `B` / `E`)
+- **Brush/eraser opacity** adjustable from 0 to 100% in 1% steps, live size preview in document pixels
+- Brush size is interpreted in **document space**: painting on a scaled or out-of-bounds layer matches the on-screen cursor exactly (stroke radius converted to a layer-space ellipse)
+- **Pipette with loupe**: hovering with the eyedropper shows a ×4 magnifier patch under the cursor (Photoshop-style), sampled asynchronously from the full composite; click picks the color and returns to the previous tool
+- Transform box now includes a dedicated **Scale handle** (square, 0.2× outside the bottom-right corner) for uniform resizing without holding `Ctrl`
 
 ### Interface
 - Resizable panel layout (Layers, Properties, Generator)
@@ -159,7 +171,8 @@ Quick summary:
 - [x] Photo: real-time layer system (`0.3.0`)
 - [x] Photo: brush + eraser, undo/redo, `.csophoto` project (`0.4.0`)
 - [x] Photo: LayerTree (groups, adjustment layers), live filters, hybrid history, PNG/JPEG export (`0.5.0`)
-- [ ] Photo: layer masks, vector shapes
+- [x] Photo: layer masks, affine transforms, pipette loupe, refined tooling (`0.7.0`)
+- [ ] Photo: vector shapes & text layers
 - [ ] Photo: zero-readback GPU pipeline integrated with the UI renderer
 - [ ] Nodal generator: generated textures applied to layers
 - [ ] Video: timeline, editing, preview (`0.2.0` → `0.3.0`)

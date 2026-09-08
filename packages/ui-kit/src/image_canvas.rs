@@ -422,12 +422,8 @@ impl ImageCanvas {
         bounds: Rectangle,
         state: &State,
     ) -> Option<Geometry> {
-        let Some(loupe) = self.loupe.as_ref() else {
-            return None;
-        };
-        let Some(cursor) = state.cursor_pos else {
-            return None;
-        };
+        let loupe = self.loupe.as_ref()?;
+        let cursor = state.cursor_pos?;
         if !bounds.contains(cursor) {
             return None;
         }
