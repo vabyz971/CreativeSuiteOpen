@@ -271,6 +271,8 @@ pub struct LayerMask {
     /// Identifiant stable, utilisé par l'app pour sélectionner / éditer /
     /// supprimer CE masque parmi les N masques d'un calque.
     pub id: Uuid,
+    /// Nom d'affichage (défaut « Masque N », renommable façon calque).
+    pub name: String,
     /// Buffer de couverture RGBA8 (R = couverture, A = 255 constant).
     pub image: Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>,
     pub enabled: bool,
@@ -285,6 +287,7 @@ impl LayerMask {
         let buf = ImageBuffer::from_pixel(width, height, Rgba([255, 255, 255, 255]));
         Self {
             id: Uuid::new_v4(),
+            name: String::from("Masque"),
             image: Arc::new(buf),
             enabled: true,
             inverted: false,

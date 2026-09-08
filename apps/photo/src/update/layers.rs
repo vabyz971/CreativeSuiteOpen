@@ -48,6 +48,26 @@ fn resolve_target(app: &PhotoApp, id: Uuid) -> Option<Uuid> {
     })
 }
 
+fn create_default_mask(
+    doc: &photo_engine::Document,
+    target: Uuid,
+) -> Option<photo_engine::LayerMask> {
+    // Utilise la taille du calque porteur.
+    let (w, h) = match doc.find(target) {
+        Some(photo_engine::LayerNode::Pixel(l)) => l.dimensions(),
+        _ => (doc.width.max(1), doc.height.max(1)),
+    };
+    Some(photo_engine::LayerMask::full(w, h))
+}
+
+fn resolve_context_target(app: &PhotoApp, id: Uuid) -> Uuid {
+    if id == Uuid::nil() {
+        app.document.selected_layer.unwrap_or(id)
+    } else {
+        id
+    }
+}
+
 fn rename_duplicate_suffix(doc: &mut photo_engine::Document, new_id: Uuid) {
     if let Some(node) = doc.find_mut(new_id) {
         let base = node.name().to_string();
@@ -211,7 +231,8 @@ pub fn handle_rename(app: &mut PhotoApp, id: Uuid, name: String) -> Task<Message
                 .doc
                 .find_filter_layer(id)
                 .map(|f| f.name.clone())
-        });
+        })
+        .or_else(|| app.document.doc.mask_name(id));
     if let Some(old) = old {
         let cmd = Command::RenameLayer {
             node_id: id,
@@ -753,6 +774,20 @@ pub fn handle_move_down(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     }
     Task::none()
 }
+/// Déplace un masque dans la liste de son porteur (up = vers le haut).
+pub fn handle_move_mask(
+    app: &mut PhotoApp,
+    owner_id: Uuid,
+    mask_id: Uuid,
+    up: bool,
+) -> Task<Message> {
+    let pre = app.snapshot();
+    if app.document.doc.move_mask(owner_id, mask_id, up) {
+        app.document.history.push_snapshot(pre);
+        app.invalidate_fallback();
+    }
+    Task::none()
+}
 pub fn handle_group(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     let pre = app.snapshot();
     if let Some(gid) = app.document.doc.group(&[id]) {
@@ -778,11 +813,11 @@ pub fn handle_toggle_collapsed(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     Task::none()
 }
 
-pub fn handle_toggle_filter_list(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
-    if app.tools.expanded_filters.contains(&id) {
-        app.tools.expanded_filters.remove(&id);
+pub fn handle_toggle_fx_stack(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    if app.tools.expanded_fx_stack.contains(&id) {
+        app.tools.expanded_fx_stack.remove(&id);
     } else {
-        app.tools.expanded_filters.insert(id);
+        app.tools.expanded_fx_stack.insert(id);
     }
     Task::none()
 }
@@ -800,7 +835,7 @@ pub fn handle_add_live_filter(app: &mut PhotoApp, id: Uuid, type_id: String) -> 
             // sélectionné (édition directe dans Propriétés). Ajustements :
             // la sélection reste (liste classique dans Propriétés).
             if app.document.doc.pixel_layer(id).is_some() {
-                app.tools.expanded_filters.insert(id);
+                app.tools.expanded_fx_stack.insert(id);
                 app.document.selected_layer = Some(fid);
                 app.tools.active_mask = None;
             }
@@ -993,7 +1028,7 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::GroupLayers(id) => Some(handle_group(app, id)),
         Message::UngroupLayers(id) => Some(handle_ungroup(app, id)),
         Message::ToggleGroupCollapsed(id) => Some(handle_toggle_collapsed(app, id)),
-        Message::ToggleFilterList(id) => Some(handle_toggle_filter_list(app, id)),
+        Message::ToggleFxStack(id) => Some(handle_toggle_fx_stack(app, id)),
         Message::ToggleFilterMenu => Some(handle_toggle_filter_menu(app)),
         Message::AddLiveFilter { id, type_id } => Some(handle_add_live_filter(app, id, type_id)),
         Message::RemoveLiveFilter {
@@ -1012,12 +1047,89 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
             layer_id,
             filter_id,
         } => Some(handle_toggle_filter_enabled(app, layer_id, filter_id)),
+        Message::MoveMask {
+            owner_id,
+            mask_id,
+            up,
+        } => Some(handle_move_mask(app, owner_id, mask_id, up)),
+        Message::OpenContextMenu { layer_id, .. } => {
+            app.tools.context_menu_open = Some(layer_id);
+            Some(Task::none())
+        }
+        Message::CloseContextMenu => {
+            app.tools.context_menu_open = None;
+            Some(Task::none())
+        }
+        Message::ContextAddMask => {
+            if let Some(id) = app.tools.context_menu_open {
+                let target = resolve_context_target(app, id);
+                let _ = app.snapshot();
+                let _ = target;
+                // Trigger the async mask creation flow (same as the
+                // toolbar mask button) — the mask is created by a paint
+                // stroke; the user can confirm/undo later.
+                let task_id = app.rendering.background_tasks.start("Ajout du masque...");
+                // We delegate to the existing AddLayerMask handler path
+                // by posting the computed result manually.
+                let pre = app.snapshot();
+                if let Some(mask) = create_default_mask(&app.document.doc, target) {
+                    if let Some(masks) = app.document.doc.masks_of_mut(target) {
+                        masks.push(mask);
+                    }
+                    app.tools.expanded_fx_stack.insert(target);
+                    app.document.history.push_snapshot(pre);
+                    app.invalidate_fallback();
+                }
+                app.rendering.background_tasks.finish(task_id);
+            }
+            app.tools.context_menu_open = None;
+            Some(Task::none())
+        }
+        Message::ContextAddFilter => {
+            if let Some(id) = app.tools.context_menu_open {
+                let target = resolve_context_target(app, id);
+                if app.document.doc.pixel_layer(target).is_some() {
+                    app.tools.filter_menu_open = true;
+                }
+            }
+            app.tools.context_menu_open = None;
+            Some(Task::none())
+        }
+        Message::ContextMoveUp => {
+            if let Some(id) = app.tools.context_menu_open {
+                let pre = app.snapshot();
+                if app.document.doc.move_up(id) {
+                    app.document.history.push_snapshot(pre);
+                    app.invalidate_fallback();
+                }
+            }
+            app.tools.context_menu_open = None;
+            Some(Task::none())
+        }
+        Message::ContextMoveDown => {
+            if let Some(id) = app.tools.context_menu_open {
+                let pre = app.snapshot();
+                if app.document.doc.move_down(id) {
+                    app.document.history.push_snapshot(pre);
+                    app.invalidate_fallback();
+                }
+            }
+            app.tools.context_menu_open = None;
+            Some(Task::none())
+        }
+        Message::ContextToggleVisible => {
+            let task = if let Some(id) = app.tools.context_menu_open {
+                handle_toggle_visible(app, id)
+            } else {
+                Task::none()
+            };
+            app.tools.context_menu_open = None;
+            Some(task)
+        }
         _ => None,
     }
 }
 
-/// Pré-dispatch sans clonage : ne regarde QUE le discriminant du message
-/// (utilisé dans `mod.rs` pour router le message par déplacement).
 pub fn handles(msg: &Message) -> bool {
     matches!(
         msg,
@@ -1048,11 +1160,19 @@ pub fn handles(msg: &Message) -> bool {
             | Message::GroupLayers(_)
             | Message::UngroupLayers(_)
             | Message::ToggleGroupCollapsed(_)
-            | Message::ToggleFilterList(_)
+            | Message::ToggleFxStack(_)
             | Message::ToggleFilterMenu
             | Message::AddLiveFilter { .. }
             | Message::RemoveLiveFilter { .. }
             | Message::SetFilterParam { .. }
             | Message::ToggleFilterEnabled { .. }
+            | Message::MoveMask { .. }
+            | Message::OpenContextMenu { .. }
+            | Message::CloseContextMenu
+            | Message::ContextAddMask
+            | Message::ContextAddFilter
+            | Message::ContextMoveUp
+            | Message::ContextMoveDown
+            | Message::ContextToggleVisible
     )
 }

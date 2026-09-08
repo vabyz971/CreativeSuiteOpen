@@ -259,6 +259,11 @@ pub fn handle_set_active_mask(
     target: Option<crate::message::MaskTarget>,
 ) -> Task<Message> {
     app.tools.active_mask = target;
+    // Un masque actif = édition DU calque porteur : la sélection revient au
+    // porteur pour que le sous-calque de filtre arrête d'apparaître sélectionné.
+    if let Some(t) = &target {
+        app.document.selected_layer = Some(t.layer_id);
+    }
     Task::none()
 }
 pub fn handle_add_mask(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
@@ -312,15 +317,16 @@ pub fn handle_add_mask_computed(
     app: &mut PhotoApp,
     task_id: u64,
     id: Uuid,
-    mask: photo_engine::LayerMask,
+    mut mask: photo_engine::LayerMask,
 ) -> Task<Message> {
     app.rendering.background_tasks.finish(task_id);
     let pre = app.snapshot();
     let mask_id = mask.id;
     if let Some(masks) = app.document.doc.masks_of_mut(id) {
+        mask.name = format!("Masque {}", masks.len() + 1);
         masks.push(mask);
     }
-    app.tools.expanded_masks.insert(id);
+    app.tools.expanded_fx_stack.insert(id);
     app.tools.active_mask = Some(crate::message::MaskTarget {
         layer_id: id,
         mask_id,
@@ -383,14 +389,6 @@ pub fn handle_invert_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> 
     }
     Task::none()
 }
-pub fn handle_toggle_mask_list(app: &mut PhotoApp, layer_id: Uuid) -> Task<Message> {
-    if app.tools.expanded_masks.contains(&layer_id) {
-        app.tools.expanded_masks.remove(&layer_id);
-    } else {
-        app.tools.expanded_masks.insert(layer_id);
-    }
-    Task::none()
-}
 pub fn handle_toggle_mask_color(app: &mut PhotoApp) -> Task<Message> {
     app.tools.mask_brush_black = !app.tools.mask_brush_black;
     Task::none()
@@ -436,7 +434,6 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::InvertLayerMask(layer_id, mask_id) => {
             Some(handle_invert_mask(app, layer_id, mask_id))
         }
-        Message::ToggleMaskList(layer_id) => Some(handle_toggle_mask_list(app, layer_id)),
         Message::ToggleMaskColor => Some(handle_toggle_mask_color(app)),
         _ => None,
     }
@@ -463,7 +460,6 @@ pub fn handles(msg: &Message) -> bool {
             | Message::RemoveLayerMask(..)
             | Message::ToggleLayerMaskEnabled(..)
             | Message::InvertLayerMask(..)
-            | Message::ToggleMaskList(_)
             | Message::ToggleMaskColor
     )
 }

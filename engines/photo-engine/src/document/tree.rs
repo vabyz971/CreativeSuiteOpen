@@ -560,19 +560,69 @@ impl Document {
         false
     }
 
-    /// Renomme un nœud ou un sous-calque de filtre.
+    /// Renomme un nœud, un sous-calque de filtre ou un masque.
     pub fn set_name_any(&mut self, id: Uuid, name: String) -> bool {
         if let Some(node) = self.find_mut(id) {
             node.set_name(name);
             return true;
         }
-        let parent = self.find_filter_parent(id);
-        if let (Some(pid), Some(f)) = (parent, self.find_filter_layer_mut(id)) {
+        if let Some(pid) = self.find_filter_parent(id)
+            && let Some(f) = self.find_filter_layer_mut(id)
+        {
             f.name = name;
             self.touch_pixel(pid);
             return true;
         }
+        let Some(owner) = self.mask_owner_of(id) else {
+            return false;
+        };
+        let Some(masks) = self.masks_of_mut(owner) else {
+            return false;
+        };
+        if let Some(slot) = masks.iter_mut().find(|m| m.id == id) {
+            slot.name = name;
+            return true;
+        }
         false
+    }
+
+    /// Porteur d'un masque (nœud ou sous-calque de filtre) — `None` sinon.
+    pub fn mask_owner_of(&self, mask_id: Uuid) -> Option<Uuid> {
+        mask_owner_in(&self.root, mask_id)
+    }
+
+    /// Nom d'affichage d'un masque par son id.
+    pub fn mask_name(&self, mask_id: Uuid) -> Option<String> {
+        let owner = self.mask_owner_of(mask_id)?;
+        self.masks_of(owner)?
+            .iter()
+            .find(|m| m.id == mask_id)
+            .map(|m| m.name.clone())
+    }
+
+    /// Déplace un masque dans la liste de son porteur. `up = true` → vers
+    /// le HALT de pile affiché (index décroissant, liste des masques = ordre
+    /// d'affichage). Retourne `false` si aux limites ou introuvable.
+    pub fn move_mask(&mut self, owner_id: Uuid, mask_id: Uuid, up: bool) -> bool {
+        let Some(masks) = self.masks_of_mut(owner_id) else {
+            return false;
+        };
+        let Some(idx) = masks.iter().position(|m| m.id == mask_id) else {
+            return false;
+        };
+        let other = if up {
+            idx.checked_sub(1)
+        } else {
+            idx.checked_add(1)
+        };
+        let Some(other) = other else {
+            return false;
+        };
+        if other >= masks.len() {
+            return false;
+        }
+        masks.swap(idx, other);
+        true
     }
 
     // -- Masques (nœuds ET sous-calques de filtre) ----------------------------
@@ -1015,6 +1065,35 @@ fn find_filter_parent_in(nodes: &[LayerNode], filter_id: Uuid) -> Option<Uuid> {
                 }
             }
             LayerNode::Adjustment(_) => {}
+        }
+    }
+    None
+}
+
+/// Porteur d'un masque par son id — un nœud (pixel/groupe) dont la liste
+/// `masks` le contient, OU le sous-calque de filtre qui le porte.
+fn mask_owner_in(nodes: &[LayerNode], mask_id: Uuid) -> Option<Uuid> {
+    for n in nodes {
+        match n {
+            LayerNode::Pixel(l) => {
+                if l.masks.iter().any(|m| m.id == mask_id) {
+                    return Some(l.id);
+                }
+                for f in &l.filter_layers {
+                    if f.masks.iter().any(|m| m.id == mask_id) {
+                        return Some(f.id);
+                    }
+                }
+            }
+            LayerNode::Adjustment(_) => {}
+            LayerNode::Group(g) => {
+                if g.masks.iter().any(|m| m.id == mask_id) {
+                    return Some(g.id);
+                }
+                if let Some(found) = mask_owner_in(&g.children, mask_id) {
+                    return Some(found);
+                }
+            }
         }
     }
     None

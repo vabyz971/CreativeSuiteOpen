@@ -91,9 +91,10 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             app.document.selected_layer,
             app.tools.dragged_layer,
             app.tools.active_mask,
-            &app.tools.expanded_masks,
-            &app.tools.expanded_filters,
+            &app.tools.expanded_fx_stack,
             app.tools.filter_menu_open,
+            app.tools.context_menu_open,
+            app.windows.preferences.general.layer_item_radius,
             app.tools.mask_brush_black,
             doc_size,
             app.rendering.fallback_handle.clone(),
@@ -131,25 +132,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             app.tools.welcome_error.as_deref(),
         )
     ];
-    // Taille du document — titre du panel principal
-    let doc_size_label: iced::Element<'_, Message> = if let Some((w, h)) = app.doc_dims() {
-        iced::widget::container(
-            iced::widget::text(format!("Document {}×{} px", w, h))
-                .size(11)
-                .color(ui_kit::theme::colors::TEXT_MUTED),
-        )
-        .padding(iced::Padding::new(3.0).left(8.0))
-        .style(|_| iced::widget::container::Style {
-            background: Some(ui_kit::theme::colors::SURFACE_CONTAINER_LOW.into()),
-            ..Default::default()
-        })
-        .into()
-    } else {
-        iced::widget::Space::new()
-            .height(iced::Length::Fixed(0.0))
-            .into()
-    };
-    let central_with_title = iced::widget::column![doc_size_label, central];
+    let central_with_title = iced::widget::column![central];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
     let base_layout = ui_kit::shell::minimalist_layout_menus_only(
         "Creative Suite Open Photo",
@@ -240,7 +223,7 @@ pub fn subscription(app: &PhotoApp) -> Subscription<Message> {
     Subscription::batch([tick, keyboard, closes])
 }
 
-/// Filtre d'abonnement : uniquement les PRESSIONS de touches non consommées.
+/// Filtre d'abonnement : PRESSIONS et RELEASES non consommées.
 fn keyboard_filter(
     event: iced::Event,
     status: iced::event::Status,
@@ -248,7 +231,10 @@ fn keyboard_filter(
 ) -> Option<Message> {
     match (&event, status) {
         (
-            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. }),
+            iced::Event::Keyboard(
+                iced::keyboard::Event::KeyPressed { .. }
+                | iced::keyboard::Event::KeyReleased { .. },
+            ),
             iced::event::Status::Ignored,
         ) => Some(Message::Event { event, window }),
         _ => None,

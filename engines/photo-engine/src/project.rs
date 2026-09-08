@@ -84,9 +84,16 @@ enum LayerNodeDto {
 #[derive(Serialize, Deserialize)]
 struct MaskDto {
     id: Uuid,
+    /// Renommable dans le panneau Calques (défaut « Masque »).
+    #[serde(default = "default_mask_name")]
+    name: String,
     png_base64: String,
     enabled: bool,
     inverted: bool,
+}
+
+fn default_mask_name() -> String {
+    String::from("Masque")
 }
 
 #[derive(Serialize, Deserialize)]
@@ -243,6 +250,7 @@ fn mask_to_dto(mask: &crate::document::LayerMask, name: &str) -> Result<MaskDto,
     let dyn_img = image::DynamicImage::ImageRgba8((*mask.image).clone());
     Ok(MaskDto {
         id: mask.id,
+        name: mask.name.clone(),
         png_base64: base64::engine::general_purpose::STANDARD.encode(png_encode(&dyn_img, name)?),
         enabled: mask.enabled,
         inverted: mask.inverted,
@@ -260,6 +268,7 @@ fn mask_from_dto(dto: MaskDto, name: &str) -> Result<crate::document::LayerMask,
     let img = png_decode(&dto.png_base64, name)?;
     Ok(crate::document::LayerMask {
         id: dto.id,
+        name: dto.name,
         image: std::sync::Arc::new(img.to_rgba8()),
         enabled: dto.enabled,
         inverted: dto.inverted,

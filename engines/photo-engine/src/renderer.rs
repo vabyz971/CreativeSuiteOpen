@@ -44,7 +44,7 @@ use std::sync::Arc;
 use image::DynamicImage;
 use uuid::Uuid;
 
-use crate::document::{Appearance, Document, FilterLayer, PixelLayer};
+use crate::document::{Appearance, Document, FilterLayer, LayerMask, PixelLayer};
 
 /// Entrée de cache : apparence dérivée + preuves de validité.
 struct CacheEntry {
@@ -85,7 +85,7 @@ impl Renderer {
 
     /// Corps de [`Renderer::appearance`] — jamais appelé directement.
     fn appearance_locked(&mut self, layer: &PixelLayer) -> Appearance {
-        let signature = filters_signature(&layer.filter_layers);
+        let signature = pixel_layer_signature(&layer.filter_layers, &layer.masks);
         // perf-entry-api: use Entry to avoid double hashing on miss path
         use std::collections::hash_map::Entry;
         match self.entries.entry(layer.id) {
@@ -98,8 +98,7 @@ impl Renderer {
             }
             Entry::Occupied(mut entry) => {
                 self.misses += 1;
-                let rendered =
-                    crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
+                let rendered = render_appearance(layer);
                 let appearance = Appearance {
                     preview: crate::document::preview_buf(&rendered),
                     thumb: crate::document::thumb_buf(&rendered),
@@ -114,8 +113,7 @@ impl Renderer {
             }
             Entry::Vacant(slot) => {
                 self.misses += 1;
-                let rendered =
-                    crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
+                let rendered = render_appearance(layer);
                 let appearance = Appearance {
                     preview: crate::document::preview_buf(&rendered),
                     thumb: crate::document::thumb_buf(&rendered),
@@ -142,7 +140,7 @@ impl Renderer {
     /// Le `None` n'est pas une erreur : l'appelant doit alors basculer sur
     /// [`Self::appearance`] (le seul chemin qui exécute la chaîne).
     pub fn appearance_hit(&mut self, layer: &PixelLayer) -> Option<Appearance> {
-        let signature = filters_signature(&layer.filter_layers);
+        let signature = pixel_layer_signature(&layer.filter_layers, &layer.masks);
         match self.entries.get(&layer.id) {
             Some(e) if e.signature == signature && Arc::ptr_eq(&e.source, &layer.source_image) => {
                 self.hits += 1;
@@ -215,16 +213,25 @@ impl Renderer {
     }
 }
 
+/// Source × filtres × masques de calque — l'apparence complète, prête pour
+/// preview/thumb/composite. Masques inactifs → retour annule `render_chain`
+/// sans coût supplémentaire (`apply_layer_masks` rend le même Arc).
+fn render_appearance(layer: &PixelLayer) -> Arc<DynamicImage> {
+    let rendered = crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
+    crate::document::compositing::apply_layer_masks(rendered, &layer.masks)
+}
+
 /// Signature ORDONNÉE d'une chaîne de sous-calques de filtres : deux chaînes
 /// ont la même signature ssi mêmes sous-calques (id, type, état actif,
 /// opacité, fusion, transform, masques) avec mêmes paramètres dans le même
 /// ordre. L'ordre est significatif — c'est une CHAÎNE de traitement, pas
 /// un ensemble.
 ///
-/// Les masques des sous-calques EN FONT PARTIE (contrairement aux masques
-/// des calques pixels) : ils sont bakés dans l'apparence par
-/// `composite_filter_layer`, donc toute édition (peinture, toggle,
-/// inversion) doit invalider le cache — la version du masque l'assure.
+/// Les masques des sous-calques EN FONT PARTIE (comme ceux des calques
+/// pixels, vus par [`pixel_layer_signature`]) : ils sont bakés dans
+/// l'apparence par `composite_filter_layer` / `apply_layer_masks`, donc
+/// toute édition (peinture, toggle, inversion) doit invalider le cache —
+/// la version du masque l'assure.
 ///
 /// Déterministe entre processus (`DefaultHasher::new()` = clés fixes),
 /// indépendant de l'itération désordonnée de `HashMap` (clés triées).
@@ -270,6 +277,25 @@ pub fn filters_signature(filters: &[FilterLayer]) -> u64 {
             h.write(key.as_bytes());
             hash_param_value(&mut h, &f.params[key]);
         }
+    }
+    h.finish()
+}
+
+/// Signature COMBINÉE d'un calque pixels : chaîne de sous-calques + ses
+/// propres masques. Les masques de calque sont bakés dans l'apparence par
+/// `apply_layer_masks` — leur version (peinture), état et inversion doivent
+/// donc invalider le cache, exactement comme pour les masques de sous-calques.
+/// Le nom d'un masque en est EXCLU (renommer ne change pas les pixels).
+fn pixel_layer_signature(filters: &[FilterLayer], masks: &[LayerMask]) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write_u64(filters_signature(filters));
+    h.write_usize(masks.len());
+    for m in masks {
+        h.write(m.id.as_bytes());
+        h.write_u8(u8::from(m.enabled));
+        h.write_u8(u8::from(m.inverted));
+        h.write_u64(m.version);
     }
     h.finish()
 }

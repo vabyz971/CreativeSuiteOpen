@@ -25,7 +25,8 @@
 use crate::Message;
 use crate::layers::{BlendMode, FilterLayer, LayerNode};
 use iced::widget::{
-    Space, button, column, container, image, pick_list, row, scrollable, slider, text, text_input,
+    Space, button, column, container, image, mouse_area, pick_list, row, scrollable, slider, text,
+    text_input,
 };
 use iced::{Alignment, Element, Length, Padding};
 use photo_engine::Document;
@@ -41,7 +42,7 @@ const ICON_DOWN: &str = "\u{e313}"; // keyboard_arrow_down
 const ICON_VISIBLE: &str = "\u{e8f4}"; // visibility
 const ICON_HIDDEN: &str = "\u{e8f5}"; // visibility_off
 const ICON_FOLDER: &str = "\u{e2c8}"; // folder_open
-const ICON_GROUP: &str = "\u{e2cc}"; // create_new_folder
+const ICON_UNGROUP: &str = "\u{e2c7}"; // folder → dégrouper
 const ICON_ADJUST: &str = "\u{e39e}"; // filter_b_and_w → ajustement
 const ICON_PALETTE: &str = "\u{e40a}"; // palette → couleur uni
 const ICON_MASK: &str = "\u{e3b0}"; // mask
@@ -55,9 +56,10 @@ pub fn render<'a>(
     selected: Option<Uuid>,
     dragged: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
-    expanded_masks: &'a std::collections::HashSet<Uuid>,
-    expanded_filters: &'a std::collections::HashSet<Uuid>,
+    expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
     filter_menu_open: bool,
+    context_menu_open: Option<Uuid>,
+    layer_item_radius: f32,
 ) -> Element<'a, Message> {
     let sel_node = selected.and_then(|id| doc.find(id));
     let sel_filter = selected.and_then(|id| doc.find_filter_layer(id));
@@ -122,13 +124,15 @@ pub fn render<'a>(
 
     // --- Arbre des calques (haut de la pile affiché en premier) ---
     let list = tree_column(
+        doc,
         &doc.root,
         preview_cache,
         selected,
         dragged,
         active_mask,
-        expanded_masks,
-        expanded_filters,
+        expanded_fx_stack,
+        context_menu_open,
+        layer_item_radius,
         0,
     )
     .padding(6);
@@ -147,7 +151,7 @@ pub fn render<'a>(
             .into()
     };
 
-    // --- Barre d'actions ---
+    // --- Barre d'actions (mini toolbar en bas) ---
     let material = ui_kit::icon_button::MATERIAL_ICONS;
     let action_btn = |codepoint: &'a str, _tip: &'a str, msg: Message, enabled: bool| {
         let b = button(text(codepoint).font(material).size(16).color(if enabled {
@@ -158,14 +162,17 @@ pub fn render<'a>(
         .padding(4);
 
         if enabled {
-            b.on_press(msg).style(move |_t, s| ui_kit::style::ghost(s))
+            b.on_press(msg).style(move |_t, s| {
+                let mut st = ui_kit::style::ghost(s);
+                st.border.radius = layer_item_radius.into();
+                st
+            })
         } else {
             b.style(|_t, _s| button::Style::default())
         }
     };
 
     // Le nœud sélectionné est-il déjà un groupe ? (grouper/dégrouper)
-    let sel_is_group = matches!(sel_node, Some(LayerNode::Group(_)));
     let sel_filter_parent = selected.and_then(|sid| doc.find_filter_parent(sid));
     let sel_is_filter = sel_filter_parent.is_some();
     // Cible d'ajout de filtre : pixels et ajustements (un sous-calque
@@ -193,24 +200,13 @@ pub fn render<'a>(
         (Some(sid), None) => (Message::DeleteLayer(sid), has_sel && doc.pixel_count() > 1),
         _ => (Message::DeleteLayer(nil), false),
     };
-    let actions = container(
+    let mini_bar = container(
         row![
+            action_btn(ICON_IMAGE, "Ouvrir une image", Message::OpenImage, true),
             action_btn(
                 ICON_ADD,
                 "Nouveau calque vide",
                 Message::AddEmptyLayer,
-                true
-            ),
-            action_btn(
-                ICON_PALETTE,
-                "Calque couleur uni",
-                Message::AddSolidColorLayer,
-                true
-            ),
-            action_btn(
-                ICON_IMAGE,
-                "Calque depuis une image",
-                Message::OpenImage,
                 true
             ),
             action_btn(
@@ -220,29 +216,12 @@ pub fn render<'a>(
                 has_sel
             ),
             action_btn(
-                ICON_GROUP,
-                "Grouper la sélection",
-                Message::GroupLayers(selected.unwrap_or(nil)),
-                has_sel && !sel_is_group && !sel_is_filter
+                ICON_PALETTE,
+                "Nouveau calque uni",
+                Message::AddSolidColorLayer,
+                true
             ),
-            action_btn(
-                ICON_FOLDER,
-                "Dissoudre le groupe",
-                Message::UngroupLayers(selected.unwrap_or(nil)),
-                sel_is_group
-            ),
-            action_btn(
-                ICON_UP,
-                "Monter",
-                Message::MoveLayerUp(selected.unwrap_or(nil)),
-                has_sel
-            ),
-            action_btn(
-                ICON_DOWN,
-                "Descendre",
-                Message::MoveLayerDown(selected.unwrap_or(nil)),
-                has_sel
-            ),
+            Space::new().width(Length::Fill),
             action_btn(
                 ICON_MASK,
                 "Ajouter un masque",
@@ -250,27 +229,37 @@ pub fn render<'a>(
                 can_have_mask
             ),
             filter_add_button(filter_target.is_some()),
-            Space::new().width(Length::Fill),
             action_btn(ICON_DELETE, "Supprimer", delete_msg, delete_enabled),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
     )
     .padding(Padding::new(6.0).left(8.0).right(8.0))
-    .style(|_| container::Style {
+    .style(move |_| container::Style {
         background: Some(colors::BG_TRANSPARENT.into()),
+        border: iced::Border {
+            width: 1.0,
+            color: colors::BORDER_PANEL,
+            radius: layer_item_radius.into(),
+        },
         ..Default::default()
     });
 
-    column![
+    // Le MouseArea englobe tout le panneau : clic n'importe où (hors menu
+    // ouvert via capture interne) → ferme le menu contextuel et le menu
+    // filtre. Les boutons du menu contextuel court-circuitent via leur
+    // propre `.on_press` qui consomme l'événement avant qu'il ne remonte.
+    let content = column![
         header,
         list_view,
-        actions,
+        mini_bar,
         filter_add_menu(filter_target, filter_menu_open)
     ]
     .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    .height(Length::Fill);
+    mouse_area(content)
+        .on_press(Message::CloseContextMenu)
+        .into()
 }
 
 /// Bouton d'ajout de filtre (ouvre le menu ci-dessous).
@@ -333,38 +322,44 @@ fn filter_add_menu(target: Option<Uuid>, open: bool) -> Element<'static, Message
 /// dépliés imbriquent récursivement leurs enfants avec indentation.
 #[allow(clippy::too_many_arguments)]
 fn tree_column<'a>(
+    doc: &'a Document,
     nodes: &'a [LayerNode],
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
     dragged: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
-    expanded_masks: &'a std::collections::HashSet<Uuid>,
-    expanded_filters: &'a std::collections::HashSet<Uuid>,
+    expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
+    context_menu_open: Option<Uuid>,
+    layer_item_radius: f32,
     depth: usize,
 ) -> iced::widget::Column<'a, Message> {
     let mut list = iced::widget::Column::new().spacing(2);
     for node in nodes.iter().rev() {
         list = list.push(node_row(
+            doc,
             node,
             preview_cache,
             selected,
             dragged,
             active_mask,
-            expanded_masks,
-            expanded_filters,
+            expanded_fx_stack,
+            context_menu_open,
+            layer_item_radius,
             depth,
         ));
         if let LayerNode::Group(g) = node
             && !g.collapsed
         {
             list = list.push(tree_column(
+                doc,
                 &g.children,
                 preview_cache,
                 selected,
                 dragged,
                 active_mask,
-                expanded_masks,
-                expanded_filters,
+                expanded_fx_stack,
+                context_menu_open,
+                layer_item_radius,
                 depth + 1,
             ));
         }
@@ -374,18 +369,22 @@ fn tree_column<'a>(
 
 #[allow(clippy::too_many_arguments)]
 fn node_row<'a>(
+    doc: &'a Document,
     node: &'a LayerNode,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
     dragged: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
-    expanded_masks: &'a std::collections::HashSet<Uuid>,
-    expanded_filters: &'a std::collections::HashSet<Uuid>,
+    expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
+    context_menu_open: Option<Uuid>,
+    layer_item_radius: f32,
     depth: usize,
 ) -> Element<'a, Message> {
     let _ = dragged;
     let material = ui_kit::icon_button::MATERIAL_ICONS;
     let id = node.id();
+    let _ = layer_item_radius;
+    let is_context = context_menu_open == Some(id);
 
     // Œil de visibilité (commun à tous les types)
     let eye = button(
@@ -518,6 +517,33 @@ fn node_row<'a>(
         None
     };
 
+    // Bouton de suppression (tout à droite)
+    let delete_btn = {
+        let can_delete = match node {
+            LayerNode::Pixel(_) => doc.pixel_count() > 1,
+            LayerNode::Group(_) => true,
+            LayerNode::Adjustment(_) => true,
+        };
+        let msg = match node {
+            LayerNode::Pixel(_) => Message::DeleteLayer(id),
+            LayerNode::Group(_) => Message::DeleteLayer(id),
+            LayerNode::Adjustment(_) => Message::DeleteLayer(id),
+        };
+        button(
+            text(ICON_DELETE)
+                .font(material)
+                .size(14)
+                .color(if can_delete {
+                    colors::ERROR
+                } else {
+                    colors::TEXT_MUTED
+                }),
+        )
+        .padding(2)
+        .style(|_t, s| ui_kit::style::ghost(s))
+        .on_press_maybe(can_delete.then_some(msg))
+    };
+
     let mut row_btn = button(
         row![
             drag_handle,
@@ -528,6 +554,8 @@ fn node_row<'a>(
                 text(subtitle).size(10).color(colors::TEXT_MUTED)
             ]
             .spacing(1),
+            Space::new().width(Length::Fill),
+            delete_btn,
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -535,115 +563,226 @@ fn node_row<'a>(
     .padding(Padding::new(4.0).left(4.0).right(6.0))
     .width(Length::Fill)
     .style(move |_t, s| {
-        if is_dragged {
+        let mut st = if is_dragged {
             ui_kit::style::ghost_selected(true, s)
         } else if !is_visible {
             ui_kit::style::ghost(s)
         } else {
             ui_kit::style::ghost_selected(is_selected, s)
-        }
+        };
+        // Rayon configuré par préférence (override du radius du style)
+        st.border.radius = layer_item_radius.into();
+        st
     });
     if let Some(msg) = row_action {
         row_btn = row_btn.on_press(msg);
     }
 
+    // Clic droit sur la ligne → menu contextuel. Les boutons enfants ne
+    // consomment que le clic gauche (`on_press`), donc l'événement remonte
+    // au `mouse_area` parent.
+    let row_with_right_click = mouse_area(row_btn).on_right_press(Message::OpenContextMenu {
+        layer_id: id,
+        mouse_pos: (0.0, 0.0),
+    });
+
     // Indentation hiérarchique — scope drag & drop au panel calque
     let indent = 4.0 + (depth as f32) * 14.0;
     let mut stack = iced::widget::Column::new().spacing(2).push(
-        container(row_btn)
+        container(row_with_right_click)
             .width(Length::Fill)
             .padding(Padding::new(0.0).left(indent)),
     );
 
-    // Badge masque dépliable : un calque masquable affiche un badge avec le
-    // nombre de masques ; cliquer déplie la liste (miniature + actions).
-    let can_mask = matches!(node, LayerNode::Pixel(_) | LayerNode::Group(_));
-    if can_mask {
-        stack = stack.push(mask_section(
-            id,
-            node.masks(),
-            preview_cache,
-            active_mask,
-            expanded_masks,
-            indent,
-        ));
-    }
+    // Pile FX unifiée : un seul badge (avec compteurs masques + filtres) qui
+    // déplie/replie une liste commune sous le calque — Affinity/Photoshop
+    // style, plus besoin de deux sections distinctes.
+    stack = stack.push(fx_stack_section(
+        id,
+        node,
+        preview_cache,
+        selected,
+        active_mask,
+        expanded_fx_stack,
+        indent,
+    ));
 
-    // Sous-calques de filtres (pixels uniquement) : badge fx + lignes
-    // imbriquées façon dossier Affinity.
-    if let LayerNode::Pixel(l) = node
-        && !l.filter_layers.is_empty()
-    {
-        let fx_expanded = expanded_filters.contains(&id);
-        let fx_badge = row![
-            button(
-                row![
-                    text(ICON_FX).font(material).size(13).color(colors::ACCENT),
-                    text(if fx_expanded { ICON_UP } else { ICON_DOWN })
-                        .font(material)
-                        .size(11)
-                        .color(colors::TEXT_MUTED),
-                ]
-                .align_y(Alignment::Center)
-                .spacing(2),
-            )
-            .padding(2)
-            .style(|_t, s| ui_kit::style::ghost_selected(true, s))
-            .on_press(Message::ToggleFilterList(id)),
-            text(format!("{} filtre(s)", l.filter_layers.len()))
-                .size(10)
-                .color(colors::TEXT_MUTED),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
-        stack = stack.push(
-            container(fx_badge)
-                .width(Length::Fill)
-                .padding(Padding::new(2.0).left(indent + 4.0)),
-        );
-
-        if fx_expanded {
-            // Haut de pile d'abord (dernier appliqué en premier à l'écran).
-            for f in l.filter_layers.iter().rev() {
-                stack = stack.push(filter_row(
-                    id,
-                    f,
-                    preview_cache,
-                    selected,
-                    dragged,
-                    active_mask,
-                    expanded_masks,
-                    depth + 1,
-                ));
-            }
-        }
+    // Menu contextuel déroulant (clic droit sur la ligne)
+    if is_context {
+        stack = stack.push(context_menu_dropdown(id, node, depth, layer_item_radius));
     }
 
     stack.into()
 }
 
-/// Badge + liste dépliable des masques d'un porteur (nœud ou sous-calque
-/// de filtre — `owner_id` est l'id du porteur).
+/// Menu contextuel déroulant — visible sous la ligne quand
+/// `context_menu_open == Some(id)`. Style « dropdown Affinity » avec icônes
+/// Material et séparateurs entre familles d'actions.
+fn context_menu_dropdown<'a>(
+    id: Uuid,
+    node: &'a LayerNode,
+    depth: usize,
+    layer_item_radius: f32,
+) -> Element<'a, Message> {
+    let indent = 4.0 + (depth as f32) * 14.0 + 8.0;
+    let mut col = iced::widget::Column::new().spacing(2);
+
+    // Section 1 : masques / filtres / groupe
+    let can_mask = matches!(node, LayerNode::Pixel(_) | LayerNode::Group(_));
+    let can_filter = matches!(node, LayerNode::Pixel(_) | LayerNode::Adjustment(_));
+    let is_group = matches!(node, LayerNode::Group(_));
+
+    if can_mask {
+        col = col.push(menu_row(
+            ICON_MASK,
+            "Ajouter un masque",
+            Message::ContextAddMask,
+        ));
+    }
+    if can_filter {
+        col = col.push(menu_row(
+            ICON_FX,
+            "Ajouter un filtre",
+            Message::ContextAddFilter,
+        ));
+    }
+    col = col.push(menu_row(
+        ICON_DUPLICATE,
+        "Dupliquer le calque",
+        Message::DuplicateLayer(id),
+    ));
+
+    // Séparateur
+    if can_mask || can_filter {
+        col = col.push(separator());
+    }
+
+    // Section 2 : ordre
+    col = col.push(menu_row(ICON_UP, "Monter", Message::ContextMoveUp));
+    col = col.push(menu_row(ICON_DOWN, "Descendre", Message::ContextMoveDown));
+
+    // Section 3 : visibilité + groupe
+    col = col.push(separator());
+    let visibility_label = if node.visible() {
+        "Masquer"
+    } else {
+        "Afficher"
+    };
+    col = col.push(menu_row(
+        if node.visible() {
+            ICON_VISIBLE
+        } else {
+            ICON_HIDDEN
+        },
+        visibility_label,
+        Message::ContextToggleVisible,
+    ));
+    if is_group {
+        col = col.push(menu_row(
+            ICON_UNGROUP,
+            "Dégrouper",
+            Message::UngroupLayers(id),
+        ));
+    } else if !matches!(node, LayerNode::Adjustment(_)) {
+        col = col.push(menu_row(
+            ICON_FOLDER,
+            "Grouper la sélection",
+            Message::GroupLayers(id),
+        ));
+    }
+
+    // Section 4 : suppression
+    col = col.push(separator());
+    col = col.push(menu_row(ICON_DELETE, "Supprimer", Message::DeleteLayer(id)));
+
+    container(col)
+        .padding(Padding::new(4.0).left(indent).right(4.0))
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(colors::SURFACE_CONTAINER_HIGH.into()),
+            border: iced::Border {
+                radius: layer_item_radius.into(),
+                width: 1.0,
+                color: colors::BORDER_PANEL,
+            },
+            shadow: iced::Shadow {
+                color: colors::BG_APP,
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 6.0,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Petite ligne du menu contextuel (icône + libellé).
+fn menu_row<'a>(icon: &'a str, label: &'a str, msg: Message) -> Element<'a, Message> {
+    let material = ui_kit::icon_button::MATERIAL_ICONS;
+    button(
+        row![
+            text(icon)
+                .font(material)
+                .size(13)
+                .color(colors::TEXT_SECONDARY),
+            text(label).size(11).color(colors::TEXT_PRIMARY),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::new(4.0).left(8.0).right(8.0))
+    .width(Length::Fill)
+    .style(|_t, s| ui_kit::style::menu_item(s))
+    .on_press(msg)
+    .into()
+}
+
+/// Trait horizontal fin pour séparer les sections du menu.
+fn separator<'a>() -> Element<'a, Message> {
+    Space::new()
+        .height(Length::Fixed(1.0))
+        .width(Length::Fill)
+        .into()
+}
+
+/// Pile FX unifiée (masques + filtres) — un seul badge par calque, une
+/// seule liste commune en dessous. Affinity/Photoshop style.
 #[allow(clippy::too_many_arguments)]
-fn mask_section<'a>(
+fn fx_stack_section<'a>(
     owner_id: Uuid,
-    masks: &'a [photo_engine::LayerMask],
+    node: &'a LayerNode,
     preview_cache: &'a crate::ui_handles::PreviewCache,
+    selected: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
-    expanded_masks: &'a std::collections::HashSet<Uuid>,
+    expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
     indent: f32,
 ) -> Element<'a, Message> {
     let material = ui_kit::icon_button::MATERIAL_ICONS;
-    let count = masks.len();
-    let is_expanded = expanded_masks.contains(&owner_id);
+    let masks = node.masks();
+    let filters: &[FilterLayer] = match node {
+        LayerNode::Pixel(l) => &l.filter_layers,
+        _ => &[],
+    };
+    let mask_count = masks.len();
+    let filter_count = filters.len();
+    if mask_count == 0 && filter_count == 0 {
+        // Rien à montrer : pas de badge vide (UX).
+        return Space::new().height(Length::Fixed(0.0)).into();
+    }
+    let is_expanded = expanded_fx_stack.contains(&owner_id);
     let mut stack = iced::widget::Column::new().spacing(2);
+
+    // Badge unifié : compteurs masques + filtres, chevron, ToggleFxStack.
+    let count_text = if filter_count > 0 && mask_count > 0 {
+        format!("{mask_count} masque(s) • {filter_count} filtre(s)")
+    } else if filter_count > 0 {
+        format!("{filter_count} filtre(s)")
+    } else {
+        format!("{mask_count} masque(s)")
+    };
     let badge = row![
         button(
             row![
-                text(ICON_MASK)
-                    .font(material)
-                    .size(13)
-                    .color(colors::TEXT_MUTED),
+                text(ICON_FX).font(material).size(13).color(colors::ACCENT),
                 text(if is_expanded { ICON_UP } else { ICON_DOWN })
                     .font(material)
                     .size(11)
@@ -654,16 +793,14 @@ fn mask_section<'a>(
         )
         .padding(2)
         .style(move |_t, s| {
-            if count > 0 {
+            if mask_count + filter_count > 0 {
                 ui_kit::style::ghost_selected(true, s)
             } else {
                 ui_kit::style::ghost(s)
             }
         })
-        .on_press(Message::ToggleMaskList(owner_id)),
-        text(format!("{count} masque(s)"))
-            .size(10)
-            .color(colors::TEXT_MUTED),
+        .on_press(Message::ToggleFxStack(owner_id)),
+        text(count_text).size(10).color(colors::TEXT_MUTED),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
@@ -674,98 +811,117 @@ fn mask_section<'a>(
     );
 
     if is_expanded {
-        for (idx, m) in masks.iter().enumerate() {
+        // Enfants (masques puis filtres) : MÊME interface que les calques,
+        // à 0,8× (vignette 38×26, texte 10/8), décalés d'un cran à droite.
+        let child_indent = indent + 14.0;
+        // Masques d'abord (Affinity) — toujours dans l'ordre affiché.
+        for m in masks.iter() {
             let target = crate::message::MaskTarget {
                 layer_id: owner_id,
                 mask_id: m.id,
             };
             let is_active = active_mask.map(|t| (t.layer_id, t.mask_id)) == Some((owner_id, m.id));
             let thumb = preview_cache.mask_thumb(m.id).cloned().unwrap_or_else(|| {
-                iced::widget::image::Handle::from_rgba(36, 24, vec![60, 60, 60, 255])
+                iced::widget::image::Handle::from_rgba(38, 26, vec![60, 60, 60, 255])
             });
-            let mask_row = row![
-                image(thumb)
-                    .width(Length::Fixed(36.0))
-                    .height(Length::Fixed(24.0)),
-                button(
-                    text(format!("Masque {}", idx + 1))
-                        .size(11)
-                        .color(colors::TEXT_SECONDARY),
-                )
-                .padding(2)
-                .style(move |_t, s| {
-                    if is_active {
-                        ui_kit::style::ghost_selected(true, s)
-                    } else {
-                        ui_kit::style::ghost(s)
-                    }
-                })
-                .on_press(Message::SetActiveMask(Some(target))),
-                button(
-                    text(if m.enabled { ICON_VISIBLE } else { ICON_HIDDEN })
-                        .font(material)
-                        .size(13)
-                        .color(colors::TEXT_SECONDARY),
-                )
-                .padding(2)
-                .style(|_t, s| ui_kit::style::ghost(s))
-                .on_press(Message::ToggleLayerMaskEnabled(owner_id, m.id)),
-                button(
-                    text(ICON_DELETE)
-                        .font(material)
-                        .size(13)
-                        .color(colors::ERROR),
-                )
-                .padding(2)
-                .style(|_t, s| ui_kit::style::ghost(s))
-                .on_press(Message::RemoveLayerMask(owner_id, m.id)),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center);
-            stack = stack.push(
-                container(mask_row)
-                    .width(Length::Fill)
-                    .padding(Padding::new(2.0).left(indent + 14.0)),
-            );
+            stack = stack.push(fx_child_row(
+                m.id,
+                ICON_MASK,
+                Some(thumb),
+                &m.name,
+                if m.enabled {
+                    "Actif".to_string()
+                } else {
+                    "Désactivé".to_string()
+                },
+                m.enabled,
+                is_active,
+                Message::ToggleLayerMaskEnabled(owner_id, m.id),
+                Some(Message::SetActiveMask(Some(target))),
+                Message::MoveMask {
+                    owner_id,
+                    mask_id: m.id,
+                    up: true,
+                },
+                Message::MoveMask {
+                    owner_id,
+                    mask_id: m.id,
+                    up: false,
+                },
+                Message::RemoveLayerMask(owner_id, m.id),
+                child_indent,
+            ));
         }
-        let add_btn = button(
-            text("+ Ajouter un masque")
-                .size(10)
-                .color(colors::TEXT_SECONDARY),
-        )
-        .padding(2)
-        .style(|_t, s| ui_kit::style::ghost(s))
-        .on_press(Message::AddLayerMask(owner_id));
-        stack = stack.push(
-            container(add_btn)
-                .width(Length::Fill)
-                .padding(Padding::new(2.0).left(indent + 14.0)),
-        );
+        // Filtres (pixels uniquement) — haut de pile en premier.
+        for f in filters.iter().rev() {
+            let subtitle = format!(
+                "{} % • {}{}",
+                f.opacity as u32,
+                f.blend_mode.label(),
+                if f.masks.is_empty() {
+                    String::new()
+                } else {
+                    format!(" • {} masque(s)", f.masks.len())
+                }
+            );
+            stack = stack.push(fx_child_row(
+                f.id,
+                ICON_FX,
+                None,
+                &f.name,
+                subtitle,
+                f.enabled,
+                Some(f.id) == selected,
+                Message::ToggleFilterEnabled {
+                    layer_id: owner_id,
+                    filter_id: f.id,
+                },
+                if f.enabled {
+                    Some(Message::SelectLayer(f.id))
+                } else {
+                    None
+                },
+                Message::MoveLayerUp(f.id),
+                Message::MoveLayerDown(f.id),
+                Message::RemoveLiveFilter {
+                    layer_id: owner_id,
+                    filter_id: f.id,
+                },
+                child_indent,
+            ));
+        }
     }
+
     stack.into()
 }
 
-/// Ligne d'un sous-calque de filtre : icône fx, nom, œil, suppression —
-/// pas de poignée de drag (réordre via Monter/Descendre), pas de drop.
+/// Ligne enfant (masque ou filtre) — même interface que les calques mais à
+/// 0,8× : œil, vignette/glyphe (38×26 = 0,8× du 48×32 parent), nom
+/// renommable, sous-titre (10/8 vs 12/10), monter, descendre, supprimer.
+/// Toute la ligne est cliquable = sélection (masque actif ou filtre).
 #[allow(clippy::too_many_arguments)]
-fn filter_row<'a>(
-    parent_id: Uuid,
-    f: &'a FilterLayer,
-    preview_cache: &'a crate::ui_handles::PreviewCache,
-    selected: Option<Uuid>,
-    dragged: Option<Uuid>,
-    active_mask: Option<crate::message::MaskTarget>,
-    expanded_masks: &'a std::collections::HashSet<Uuid>,
-    depth: usize,
+fn fx_child_row<'a>(
+    child_id: Uuid,
+    glyph: &'static str,
+    thumb: Option<iced::widget::image::Handle>,
+    name: &'a str,
+    subtitle: String,
+    enabled: bool,
+    highlighted: bool,
+    eye_msg: Message,
+    select_msg: Option<Message>,
+    up_msg: Message,
+    down_msg: Message,
+    delete_msg: Message,
+    indent: f32,
 ) -> Element<'a, Message> {
     let material = ui_kit::icon_button::MATERIAL_ICONS;
-    let fid = f.id;
 
     let eye = button(
-        text(if f.enabled { ICON_VISIBLE } else { ICON_HIDDEN })
+        text(if enabled { ICON_VISIBLE } else { ICON_HIDDEN })
             .font(material)
-            .size(14)
-            .color(if f.enabled {
+            .size(12)
+            .color(if enabled {
                 colors::TEXT_SECONDARY
             } else {
                 colors::TEXT_MUTED
@@ -773,96 +929,72 @@ fn filter_row<'a>(
     )
     .padding(2)
     .style(|_t, s| ui_kit::style::ghost(s))
-    .on_press(Message::ToggleFilterEnabled {
-        layer_id: parent_id,
-        filter_id: fid,
-    });
+    .on_press(eye_msg);
 
-    let leading = container(text(ICON_FX).font(material).size(18).color(colors::ACCENT))
-        .width(Length::Fixed(40.0))
-        .center_x(Length::Shrink);
+    // Vignette 0,8× (38×26) pour les masques, glyphe centré sinon.
+    let leading: iced::Element<'a, Message> = match thumb {
+        Some(thumb) => container(
+            image(thumb)
+                .width(Length::Fixed(38.0))
+                .height(Length::Fixed(26.0)),
+        )
+        .style(|_| {
+            ui_kit::style::inset_card(
+                colors::SURFACE_CONTAINER_LOWEST,
+                ui_kit::theme::metrics::RADIUS_SM,
+            )
+        })
+        .into(),
+        None => container(text(glyph).font(material).size(16).color(colors::ACCENT))
+            .width(Length::Fixed(38.0))
+            .center_x(Length::Shrink)
+            .into(),
+    };
 
-    let name_field = text_input("Filtre", &f.name)
-        .size(11)
+    let name_field = text_input("…", name)
+        .size(10)
         .padding(Padding::new(4.0).top(2.0).bottom(2.0))
         .style(|_t, s| ui_kit::style::inline_name_input(s))
-        .on_input(move |s| Message::RenameLayer { id: fid, name: s });
+        .on_input(move |s| Message::RenameLayer {
+            id: child_id,
+            name: s,
+        });
 
-    let subtitle = format!(
-        "{} % • {}{}",
-        f.opacity as u32,
-        f.blend_mode.label(),
-        if f.masks.is_empty() {
-            String::new()
-        } else {
-            format!(" • {} masque(s)", f.masks.len())
-        }
-    );
-
-    let is_selected = Some(fid) == selected;
-    let remove = button(
-        text(ICON_DELETE)
-            .font(material)
-            .size(13)
-            .color(colors::TEXT_MUTED),
-    )
-    .padding(2)
-    .style(|_t, s| ui_kit::style::ghost(s))
-    .on_press(Message::RemoveLiveFilter {
-        layer_id: parent_id,
-        filter_id: fid,
-    });
-
-    // Pas de drop sur un sous-calque ; clic = sélection (si actif).
-    let row_action = if dragged.is_some() {
-        None
-    } else if f.enabled {
-        Some(Message::SelectLayer(fid))
-    } else {
-        None
+    let small_btn = |codepoint: &'static str, msg: Message, color: iced::Color| {
+        button(text(codepoint).font(material).size(11).color(color))
+            .padding(2)
+            .style(|_t, s| ui_kit::style::ghost(s))
+            .on_press(msg)
     };
 
     let mut row_btn = button(
         row![
             eye,
             leading,
-            column![
-                name_field,
-                text(subtitle).size(10).color(colors::TEXT_MUTED)
-            ]
-            .spacing(1),
-            remove,
+            column![name_field, text(subtitle).size(8).color(colors::TEXT_MUTED)].spacing(1),
+            Space::new().width(Length::Fill),
+            small_btn(ICON_UP, up_msg, colors::TEXT_MUTED),
+            small_btn(ICON_DOWN, down_msg, colors::TEXT_MUTED),
+            small_btn(ICON_DELETE, delete_msg, colors::ERROR),
         ]
-        .spacing(6)
+        .spacing(4)
         .align_y(Alignment::Center),
     )
-    .padding(Padding::new(4.0).left(4.0).right(6.0))
+    .padding(Padding::new(2.0).left(4.0).right(4.0))
     .width(Length::Fill)
     .style(move |_t, s| {
-        if !f.enabled {
+        if !enabled {
             ui_kit::style::ghost(s)
         } else {
-            ui_kit::style::ghost_selected(is_selected, s)
+            ui_kit::style::ghost_selected(highlighted, s)
         }
     });
-    if let Some(msg) = row_action {
+    if let Some(msg) = select_msg {
         row_btn = row_btn.on_press(msg);
     }
 
-    let indent = 4.0 + (depth as f32) * 14.0;
-    let mut stack = iced::widget::Column::new().spacing(2).push(
-        container(row_btn)
-            .width(Length::Fill)
-            .padding(Padding::new(0.0).left(indent)),
-    );
-    // Masques propres du sous-calque (même badge que les nœuds).
-    stack = stack.push(mask_section(
-        fid,
-        &f.masks,
-        preview_cache,
-        active_mask,
-        expanded_masks,
-        indent,
-    ));
-    stack.into()
+    container(row_btn)
+        .width(Length::Fill)
+        .padding(Padding::new(0.0).left(indent))
+        .into()
 }

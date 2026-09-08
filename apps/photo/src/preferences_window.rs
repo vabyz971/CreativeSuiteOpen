@@ -63,6 +63,7 @@ pub enum Message {
     SetRenderQuality(RenderQuality),
     SetVsync(bool),
     SetGpuCacheLimit(u32),
+    SetLayerItemRadius(f32),
     /// Démarre la capture d'une nouvelle combinaison pour l'action donnée
     StartCapture(String),
     /// Touche pressée pendant une capture (routée depuis l'abonnement global)
@@ -114,6 +115,7 @@ impl PreferencesWindow {
             Message::SetRenderQuality(q) => self.draft.render.quality = q,
             Message::SetVsync(b) => self.draft.render.vsync = b,
             Message::SetGpuCacheLimit(v) => self.draft.render.gpu_cache_limit_mb = v,
+            Message::SetLayerItemRadius(v) => self.draft.general.layer_item_radius = v,
 
             Message::StartCapture(action_id) => {
                 self.capturing = Some(action_id);
@@ -346,6 +348,17 @@ impl PreferencesWindow {
             )
             .width(Length::Fixed(160.0)),
             text("Seul le thème sombre est rendu aujourd'hui ; les autres sont mémorisés.")
+                .size(11)
+                .color(colors::TEXT_MUTED),
+            hspace(),
+            Self::field_label("Rayon des éléments de calque (px)"),
+            slider(
+                2.0..=20.0,
+                self.draft.general.layer_item_radius,
+                Message::SetLayerItemRadius,
+            )
+            .step(0.5_f32),
+            text(format!("{} px", self.draft.general.layer_item_radius))
                 .size(11)
                 .color(colors::TEXT_MUTED),
         ]

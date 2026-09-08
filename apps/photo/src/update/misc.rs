@@ -36,6 +36,25 @@ fn handle_event(app: &mut PhotoApp, event: iced::Event, window: iced::window::Id
         }
         return Task::none();
     }
+    // Spacebar hold → outil Main temporaire (Photoshop/Affinity style).
+    // On l'intercepte AVANT le resolver pour ne pas être écrasé par un binding
+    // éventuel de Space (Space seul = pan ; toute combinaison modifieur laisse
+    // passer le resolver). Le drag souris sur le canvas fait le pan via
+    // `CanvasTool::Hand` côté image_canvas.
+    let space_key = iced::keyboard::Key::Named(iced::keyboard::key::Named::Space);
+    match &event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. })
+            if *key == space_key =>
+        {
+            return super::dispatch(app, Message::SpaceHeldDown);
+        }
+        iced::Event::Keyboard(iced::keyboard::Event::KeyReleased { key, .. })
+            if *key == space_key =>
+        {
+            return super::dispatch(app, Message::SpaceHeldUp);
+        }
+        _ => {}
+    }
     // Global resolution: the subscription only delivers keys NOT consumed by
     // a widget (text fields are therefore safe).
     if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event
@@ -180,8 +199,7 @@ fn handle_image_canvas_event(
         ui_kit::image_canvas::ImageCanvasEvent::ClearSelection => {
             app.document.selected_layer = None;
             app.canvas.canvas_selection = None;
-            app.tools.expanded_masks.clear();
-            app.tools.expanded_filters.clear();
+            app.tools.expanded_fx_stack.clear();
             app.tools.transform_anchor = None;
             Task::none()
         }
@@ -606,6 +624,37 @@ fn handle_zoom_out(app: &mut PhotoApp) -> Task<Message> {
     Task::none()
 }
 
+/// Spacebar enfoncée → outil Main temporaire. Mémorise l'outil précédent
+/// dans `previous_tool` (réutilise le slot déjà présent pour l'eyedropper
+/// afin de garder la pile minimale).
+fn handle_space_hold_down(app: &mut PhotoApp) -> Task<Message> {
+    // Ne pas écraser si l'utilisateur a déjà un outil temporaire mémorisé
+    // (ex. eyedropper en cours) : on ne capture que Main direct.
+    if app.tools.selected_tool != Tool::Hand {
+        // previous_tool sert déjà pour l'eyedropper — on n'écrase que si
+        // aucun outil temporaire n'est en attente (logique identique aux
+        // autres gestions temporaires).
+        if app.tools.previous_tool.is_none() {
+            app.tools.previous_tool = Some(app.tools.selected_tool);
+        }
+        app.tools.selected_tool = Tool::Hand;
+    }
+    Task::none()
+}
+
+/// Spacebar relâchée → restaure l'outil précédent si on est toujours sur
+/// Main « temporaire ». Si l'utilisateur a explicitement choisi Main entre
+/// temps, on ne touche pas à previous_tool pour ne pas effacer son choix.
+fn handle_space_hold_up(app: &mut PhotoApp) -> Task<Message> {
+    if app.tools.selected_tool == Tool::Hand
+        && let Some(prev) = app.tools.previous_tool
+    {
+        app.tools.selected_tool = prev;
+        app.tools.previous_tool = None;
+    }
+    Task::none()
+}
+
 fn handle_detect_gpu(app: &mut PhotoApp) -> Task<Message> {
     let task_id = app.rendering.background_tasks.start("Détection du GPU...");
     Task::perform(
@@ -658,6 +707,8 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::MockAction => Some(Task::none()),
         Message::DetectGpu => Some(handle_detect_gpu(app)),
         Message::GpuDetected { task_id, info } => Some(handle_gpu_detected(app, task_id, info)),
+        Message::SpaceHeldDown => Some(handle_space_hold_down(app)),
+        Message::SpaceHeldUp => Some(handle_space_hold_up(app)),
         _ => None,
     }
 }
@@ -685,5 +736,7 @@ pub fn handles(msg: &Message) -> bool {
             | Message::MockAction
             | Message::DetectGpu
             | Message::GpuDetected { .. }
+            | Message::SpaceHeldDown
+            | Message::SpaceHeldUp
     )
 }

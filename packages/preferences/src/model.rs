@@ -150,6 +150,13 @@ pub struct GeneralPreferences {
     pub theme: Theme,
     pub auto_save: bool,
     pub auto_save_interval_secs: u32,
+    /// Rayon des éléments du panneau Calques (en pixels).
+    #[serde(default = "default_layer_item_radius")]
+    pub layer_item_radius: f32,
+}
+
+fn default_layer_item_radius() -> f32 {
+    6.0
 }
 
 /// Section Rendu.

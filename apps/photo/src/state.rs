@@ -105,8 +105,10 @@ pub struct ToolState {
     pub active_mask: Option<crate::message::MaskTarget>,
     /// `true` = noir (masque), `false` = blanc (révèle).
     pub mask_brush_black: bool,
-    pub expanded_masks: std::collections::HashSet<Uuid>,
-    pub expanded_filters: std::collections::HashSet<Uuid>,
+    /// Pile FX dépliée par porteur (calque) — masques + sous-calques de
+    /// filtres partagent désormais une seule liste commune sous chaque
+    /// calque, d'où un seul `HashSet` pour la mémoisation du dépliage.
+    pub expanded_fx_stack: std::collections::HashSet<Uuid>,
     pub filter_menu_open: bool,
     pub stroke_layer: Option<Uuid>,
     pub pending_paint: Option<PendingPaint>,
@@ -119,6 +121,9 @@ pub struct ToolState {
     pub resize_dialog_open: bool,
     pub resize_w: String,
     pub resize_h: String,
+    /// État du menu contextuel sur le calque (clic droit dans panneau calques).
+    pub context_menu_open: Option<Uuid>, // calque ciblé, None = fermer
+    pub context_menu_pos: (f32, f32), // position souris
 }
 
 impl Default for ToolState {
@@ -134,8 +139,7 @@ impl Default for ToolState {
             color_picker_open: false,
             active_mask: None,
             mask_brush_black: true,
-            expanded_masks: std::collections::HashSet::new(),
-            expanded_filters: std::collections::HashSet::new(),
+            expanded_fx_stack: std::collections::HashSet::new(),
             filter_menu_open: false,
             stroke_layer: None,
             pending_paint: None,
@@ -146,6 +150,8 @@ impl Default for ToolState {
             resize_dialog_open: false,
             resize_w: String::new(),
             resize_h: String::new(),
+            context_menu_open: None,
+            context_menu_pos: (0.0, 0.0),
         }
     }
 }
@@ -258,6 +264,28 @@ impl BackgroundTasks {
     }
 }
 
+/// Résolution de vue des buffers de scène (fallback / fond de drag) — alignée
+/// sur la preview 2048 des calques du chemin rapide. Une composite pleine
+/// scène peut dépasser largement (bornes du plan infini, clamp 16384 du
+/// moteur) : l'afficher sans downscale change la résolution perçue et charge
+/// la VRAM. L'export et `sample_color` restent sur la résolution pleine.
+const SCENE_DISPLAY_MAX: u32 = 2048;
+
+/// Plafonne un buffer RGBA d'affichage à [`SCENE_DISPLAY_MAX`] de côté
+/// (échantillonnage Triangle, centré). Buffer déjà dans les limites → 1:1.
+fn fit_scene_display(rgba: Vec<u8>, w: u32, h: u32) -> (Vec<u8>, u32, u32) {
+    if w.max(h) <= SCENE_DISPLAY_MAX {
+        return (rgba, w, h);
+    }
+    let Some(img) = image::RgbaImage::from_vec(w, h, rgba) else {
+        return (Vec::new(), 0, 0);
+    };
+    let nw = ((w as f32 * (SCENE_DISPLAY_MAX as f32 / w.max(h) as f32)).round() as u32).max(1);
+    let nh = ((h as f32 * (SCENE_DISPLAY_MAX as f32 / w.max(h) as f32)).round() as u32).max(1);
+    let resized = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle);
+    (resized.into_raw(), nw, nh)
+}
+
 pub struct PhotoApp {
     pub document: DocumentState,
     pub canvas: CanvasState,
@@ -355,7 +383,12 @@ impl PhotoApp {
         Some(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || match doc_copy.composite_preview() {
-                    Some(img) => Ok(Some((img.to_rgba8().into_raw(), img.width(), img.height()))),
+                    Some(img) => {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let (data, w2, h2) = fit_scene_display(rgba.into_raw(), w, h);
+                        Ok(Some((data, w2, h2)))
+                    }
                     None => Ok(None),
                 })
                 .await
@@ -389,9 +422,12 @@ impl PhotoApp {
         Some(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    doc_copy
-                        .composite_preview_without(exclude_id)
-                        .map(|img| (img.to_rgba8().into_raw(), img.width(), img.height()))
+                    doc_copy.composite_preview_without(exclude_id).map(|img| {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let (data, w2, h2) = fit_scene_display(rgba.into_raw(), w, h);
+                        (data, w2, h2)
+                    })
                 })
                 .await
                 .unwrap_or(None)

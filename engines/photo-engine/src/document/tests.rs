@@ -711,16 +711,45 @@ fn masque_desactive_est_noop() {
 }
 
 #[test]
-fn needs_fallback_avec_masque_actif() {
+fn un_masque_de_calque_en_normal_n_impose_plus_le_fallback() {
+    // Baké dans l'apparence (source × filtres × masques) : un calque masqué
+    // (Normal, pas de skew) reste sur le chemin rapide GPU.
     let img = solid(1, 1, [0, 0, 0, 255]);
     let mut doc = Document::new(1, 1);
     doc.push_layer(masked_node(&img, [255, 255, 255, 255], true, false));
-    assert!(doc.needs_fallback());
-    // désactivé → pas de fallback
+    assert!(!doc.needs_fallback(), "masque baké → chemin rapide");
+    // Un calque masqué en mode non-Normal reste en fallback (le blend l'exige).
     if let Some(LayerNode::Pixel(l)) = doc.find_mut(doc.root[0].id()) {
-        l.masks.first_mut().unwrap().enabled = false;
+        l.blend_mode = BlendMode::Multiply;
     }
-    assert!(!doc.needs_fallback());
+    assert!(doc.needs_fallback());
+}
+
+#[test]
+fn masques_de_calque_bakes_dans_l_apparence() {
+    let img = solid(2, 2, [255, 0, 0, 255]);
+    let mut doc = Document::new(2, 2);
+    doc.push_layer(masked_node(&img, [128, 128, 128, 255], true, false));
+    let id = doc.root[0].id();
+    let ap = doc.appearance(id).expect("apparence");
+    // alpha 0.5 appliqué au buffer de l'apparence (masque baké)
+    assert_close(px(&ap.image, 0, 0), [255, 0, 0, 128]);
+
+    // Désactivé → nouvelle signature → apparence non atténuée
+    if let Some(LayerNode::Pixel(l)) = doc.find_mut(id) {
+        l.masks[0].enabled = false;
+    }
+    let ap_off = doc.appearance(id).expect("apparence");
+    assert_close(px(&ap_off.image, 0, 0), [255, 0, 0, 255]);
+
+    // Peinture (version bump) → signature → cache invalidé à nouveau
+    if let Some(LayerNode::Pixel(l)) = doc.find_mut(id) {
+        l.masks[0].image = Arc::new(ImageBuffer::from_pixel(2, 2, Rgba([0, 0, 0, 255])));
+        l.masks[0].enabled = true;
+        l.masks[0].touch();
+    }
+    let ap_black = doc.appearance(id).expect("apparence après peinture");
+    assert_close(px(&ap_black.image, 0, 0), [255, 0, 0, 0]);
 }
 
 fn masked_group(mask_color: [u8; 4], enabled: bool, inverted: bool) -> LayerNode {

@@ -98,11 +98,32 @@ mod tests {
         app.document.doc = photo_engine::Document::new(4, 4);
         let id = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: 42.0 });
-        assert_eq!(app.document.doc.find(id).expect("layer should exist after SetLayerOpacity").opacity(), 42.0);
+        assert_eq!(
+            app.document
+                .doc
+                .find(id)
+                .expect("layer should exist after SetLayerOpacity")
+                .opacity(),
+            42.0
+        );
         let _ = update(&mut app, Message::Undo);
-        assert_eq!(app.document.doc.find(id).expect("layer should exist after Undo").opacity(), 100.0);
+        assert_eq!(
+            app.document
+                .doc
+                .find(id)
+                .expect("layer should exist after Undo")
+                .opacity(),
+            100.0
+        );
         let _ = update(&mut app, Message::Redo);
-        assert_eq!(app.document.doc.find(id).expect("layer should exist after Redo").opacity(), 42.0);
+        assert_eq!(
+            app.document
+                .doc
+                .find(id)
+                .expect("layer should exist after Redo")
+                .opacity(),
+            42.0
+        );
     }
 
     #[test]
@@ -112,7 +133,10 @@ mod tests {
         let id = seed_layer(&mut app, 2, 2);
         let id2 = seed_layer(&mut app, 2, 2);
         let _ = update(&mut app, Message::DuplicateLayer(id2));
-        let dup = app.document.selected_layer.expect("selected layer should exist");
+        let dup = app
+            .document
+            .selected_layer
+            .expect("selected layer should exist");
         assert_ne!(dup, id2);
         assert_ne!(dup, id);
         assert_eq!(app.document.doc.pixel_count(), 3);
@@ -141,7 +165,14 @@ mod tests {
             let _ = update(&mut app, Message::SetLayerOpacity { id, opacity: v });
         }
         let _ = update(&mut app, Message::Undo);
-        assert_eq!(app.document.doc.find(id).expect("layer should exist after coalesced undo").opacity(), 100.0);
+        assert_eq!(
+            app.document
+                .doc
+                .find(id)
+                .expect("layer should exist after coalesced undo")
+                .opacity(),
+            100.0
+        );
     }
 
     /// Pendant un déplacement (outil Déplacer), AUCUN message ne doit
@@ -153,7 +184,8 @@ mod tests {
         let mut app = PhotoApp::default();
         app.document.doc = photo_engine::Document::new(4, 4);
         let id = seed_layer(&mut app, 2, 2);
-        // Masque actif → le rendu passe obligatoirement par le fallback.
+        // Masque baké + fusion MULTIPLY → le blend force le fallback CPU
+        // (le masque seul, en Normal, n'impose plus le repli).
         let mask_img = image::ImageBuffer::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
         app.document
             .doc
@@ -162,12 +194,15 @@ mod tests {
             .masks
             .push(photo_engine::LayerMask {
                 id: uuid::Uuid::new_v4(),
+                name: String::from("Masque"),
                 image: std::sync::Arc::new(mask_img),
                 enabled: true,
                 inverted: false,
                 version: 0,
             });
-        assert!(app.needs_fallback(), "masque actif → fallback");
+        app.document.doc.pixel_layer_mut(id).unwrap().blend_mode =
+            photo_engine::BlendMode::Multiply;
+        assert!(app.needs_fallback(), "blend non-Normal → fallback");
 
         let _ = update(&mut app, Message::SelectTool(crate::message::Tool::Move));
 
@@ -262,12 +297,15 @@ mod tests {
             .masks
             .push(photo_engine::LayerMask {
                 id: uuid::Uuid::new_v4(),
+                name: String::from("Masque"),
                 image: std::sync::Arc::new(mask_img),
                 enabled: true,
                 inverted: false,
                 version: 0,
             });
-        assert!(app.needs_fallback(), "masque actif → fallback");
+        app.document.doc.pixel_layer_mut(id).unwrap().blend_mode =
+            photo_engine::BlendMode::Multiply;
+        assert!(app.needs_fallback(), "blend non-Normal → fallback");
 
         // Clic simple : Start (sélection) + End, AUCUN mouvement entre les
         // deux. Doit être gratuit — ni pré-calcul drag, ni recomposite, ni

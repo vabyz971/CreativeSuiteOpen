@@ -136,8 +136,9 @@ pub enum Message {
     UngroupLayers(Uuid),
     /// Replie/déplie un groupe dans le panneau Calques
     ToggleGroupCollapsed(Uuid),
-    /// Replie/déplie les sous-calques de filtres d'un calque pixels
-    ToggleFilterList(Uuid),
+    /// Replie/déplie la pile FX (masques + filtres) d'un calque dans le
+    /// panneau Calques — liste commune après fusion des deux affichages.
+    ToggleFxStack(Uuid),
     /// Ouvre/ferme le menu d'ajout de filtre du panneau Calques
     ToggleFilterMenu,
 
@@ -350,8 +351,30 @@ pub enum Message {
     RemoveLayerMask(Uuid, Uuid),
     ToggleLayerMaskEnabled(Uuid, Uuid),
     InvertLayerMask(Uuid, Uuid),
-    /// Déplie/replie la liste des masques d'un calque dans le panneau Calques.
-    ToggleMaskList(Uuid),
+    /// Déplace un masque dans la liste de son porteur (up = vers le haut).
+    MoveMask {
+        owner_id: Uuid,
+        mask_id: Uuid,
+        up: bool,
+    },
     /// Bascule la couleur du pinceau masque entre noir et blanc.
     ToggleMaskColor,
+    // ---- Contexte calque (clic droit dans le panneau calques) ----
+    /// Ouvre le menu contextuel sur le calque sélectionné.
+    OpenContextMenu {
+        layer_id: Uuid,
+        mouse_pos: (f32, f32),
+    },
+    /// Ferme le menu contextuel.
+    CloseContextMenu,
+    /// Actions du menu contextuel.
+    ContextAddMask,
+    ContextAddFilter,
+    ContextMoveUp,
+    ContextMoveDown,
+    ContextToggleVisible,
+    /// Espace enfoncée → bascule temporaire sur l'outil Main (pan).
+    SpaceHeldDown,
+    /// Espace relâchée → restaure l'outil précédent.
+    SpaceHeldUp,
 }

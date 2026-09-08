@@ -21,9 +21,6 @@ pub fn needs_fallback_in(nodes: &[LayerNode]) -> bool {
                     // ne sait pas déformer — repli CPU requis.
                     return true;
                 }
-                if l.masks.iter().any(|m| m.enabled) {
-                    return true;
-                }
             }
             LayerNode::Group(g) => {
                 if g.opacity < 99.9
@@ -404,41 +401,6 @@ fn prepare_top_affine(
     (out, min_x, min_y)
 }
 
-/// Transforme le masque avec la même géométrie que l'image couleur.
-/// `inverted` appliqué en amont pour éviter une branche par pixel.
-pub fn prepare_mask(mask: &LayerMask, transform: Transform2D) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-    let dyn_img = DynamicImage::ImageRgba8((*mask.image).clone());
-    let item = DrawItem {
-        image: &dyn_img,
-        transform,
-    };
-    let (mut buf, _, _) = prepare_top(&item);
-    if mask.inverted {
-        for px in buf.pixels_mut() {
-            let v = 255 - px[0];
-            *px = Rgba([v, v, v, 255]);
-        }
-    }
-    // garde-fou dimensions : masque doit matcher source, sinon on ignore (déjà loggé si besoin)
-    buf
-}
-
-/// Fusionne multiplicativement les couvertures de tous les masques ACTIFS d'un
-/// calque (ou sous-calque de filtre), après les avoir transformés avec la
-/// même géométrie que l'image.
-/// Retourne `None` si aucun masque actif (aucune opacité supplémentaire).
-pub(crate) fn combine_masks(
-    masks: &[LayerMask],
-    transform: Transform2D,
-) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-    let mut it = masks
-        .iter()
-        .filter(|m| m.enabled)
-        .map(|m| prepare_mask(m, transform));
-    let first = it.next()?;
-    Some(it.fold(first, |acc, m| multiply_coverage(&acc, &m)))
-}
-
 /// Fusionne multiplicativement les masques de groupe (espace canvas, dims de
 /// `sub`, inversion incluse) — même rôle que `combine_masks` pour un groupe.
 fn combine_group_masks(
@@ -587,13 +549,12 @@ pub fn fold_scope(
                     transform: l.transform,
                 };
                 let (top, ox, oy) = prepare_top(&item);
-                // Multi-masques : chaque masque actif est transformé, puis leurs
-                // couvertures fusionnées multiplicativement en un seul buffer.
-                let mask_buf = combine_masks(&l.masks, l.transform);
+                // Masques de calque bakés dans l'apparence (source × filtres ×
+                // masques) : plus rien à atténuer ici — blend direct.
                 blend_into(
                     acc,
                     &top,
-                    mask_buf.as_ref(),
+                    None,
                     l.opacity,
                     l.blend_mode,
                     ox + origin_x,
@@ -715,6 +676,46 @@ fn mask_coverage(mask: &LayerMask) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
         *px = Rgba([v, v, v, 255]);
     }
     buf
+}
+
+/// Bake l'apparence d'un calque pixels : atténue `image` par la couverture
+/// combinée de ses masques ACTIFS, dans l'ESPACE SOURCE (identité — le
+/// canvas applique la transform du calque derrière). Aucun masque actif →
+/// `image` est retourné tel quel (même Arc, zéro copie).
+///
+/// Rend les masques de calque homogènes aux masques de sous-calques de
+/// filtre : ils font partie de l'apparence cacheable, plus du repli CPU.
+pub fn apply_layer_masks(image: Arc<DynamicImage>, masks: &[LayerMask]) -> Arc<DynamicImage> {
+    let mut it = masks.iter().filter(|m| m.enabled);
+    let Some(first) = it.next() else {
+        return image;
+    };
+    let mut cover = mask_coverage(first);
+    for m in it {
+        cover = multiply_coverage(&cover, &mask_coverage(m));
+    }
+    let (iw, ih) = image.dimensions();
+    if cover.dimensions() != (iw, ih) {
+        // Garde-fou : masque de dimensions différentes → rééchantillonné
+        // aux dimensions de l'apparence plutôt qu'une atténuation erronée.
+        cover = image::imageops::resize(
+            &cover,
+            iw.max(1),
+            ih.max(1),
+            ::image::imageops::FilterType::Triangle,
+        );
+    }
+    let mut buf = image.to_rgba8();
+    let raw = cover.as_raw();
+    buf.as_flat_samples_mut()
+        .samples
+        .par_chunks_exact_mut(4)
+        .enumerate()
+        .for_each(|(i, px)| {
+            let cov = raw[i * 4] as f32 / 255.0;
+            px[3] = (px[3] as f32 * cov).round() as u8;
+        });
+    Arc::new(DynamicImage::ImageRgba8(buf))
 }
 
 /// Applique une chaîne d'ajustements à l'accumulateur, pondérée par
