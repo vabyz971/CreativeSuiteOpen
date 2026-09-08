@@ -14,15 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Écran d'accueil (aucun document ouvert) : créer un document aux
-//! dimensions choisies ou ouvrir une image existante.
+//! Écran d'accueil (aucun document ouvert).
 
 use crate::Message;
 use iced::widget::{Space, button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use ui_kit::theme::{colors, fonts, metrics};
 
-/// Presets de documents : (libellé, largeur, hauteur en px)
 const PRESETS: &[(&str, u32, u32)] = &[
     ("HD 1920 × 1080", 1920, 1080),
     ("Carré 2048", 2048, 2048),
@@ -43,7 +41,6 @@ pub fn render<'a>(
         .size(12)
         .color(colors::TEXT_SECONDARY);
 
-    // Dimensions : deux champs px + presets
     let dim_input = |placeholder: &'a str, value: &'a str, on_input: fn(String) -> Message| {
         text_input(placeholder, value)
             .on_input(on_input)
@@ -103,7 +100,6 @@ pub fn render<'a>(
         r
     };
 
-    // Boutons d'action
     let create_btn = button(
         text("Créer le document")
             .size(13)
@@ -161,7 +157,7 @@ pub fn render<'a>(
         border: iced::Border {
             width: 1.0,
             color: colors::BORDER_PANEL,
-            radius: 12.0.into(),
+            radius: metrics::RADIUS_PANEL.into(),
         },
         shadow: iced::Shadow {
             color: colors::CABLE_SHADOW,

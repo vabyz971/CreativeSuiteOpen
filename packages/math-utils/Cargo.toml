@@ -7,3 +7,4 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 datatypes = { path = "../../core/datatypes" }
+serde = { workspace = true }

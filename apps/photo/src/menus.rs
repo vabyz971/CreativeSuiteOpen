@@ -40,7 +40,6 @@ pub fn app_menus(
                     checked: false,
                     message: Message::OpenProject,
                 },
-                ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
                     label: "Enregistrer".into(),
                     shortcut: "Ctrl+S".to_string(),
@@ -53,14 +52,12 @@ pub fn app_menus(
                     checked: false,
                     message: Message::SaveProjectAs,
                 },
-                ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
                     label: "Exporter l'image...".into(),
                     shortcut: "Ctrl+Maj+E".to_string(),
                     checked: false,
                     message: Message::ExportImage,
                 },
-                ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
                     label: "Quitter".into(),
                     shortcut: "Ctrl+Q".to_string(),
@@ -84,7 +81,12 @@ pub fn app_menus(
                     checked: false,
                     message: Message::Redo,
                 },
-                ui_kit::menu::Item::Separator,
+                ui_kit::menu::Item::Action {
+                    label: "Taille du document...".into(),
+                    shortcut: "Ctrl+Alt+I".to_string(),
+                    checked: false,
+                    message: Message::ShowResizeDialog,
+                },
                 ui_kit::menu::Item::Action {
                     label: "Préférences...".into(),
                     shortcut: "".to_string(),
@@ -114,14 +116,12 @@ pub fn app_menus(
                     checked: false,
                     message: Message::DuplicateLayer(selected_layer.unwrap_or_else(Uuid::nil)),
                 },
-                ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
                     label: "Supprimer le calque".into(),
                     shortcut: "".to_string(),
                     checked: false,
                     message: Message::DeleteLayer(selected_layer.unwrap_or_else(Uuid::nil)),
                 },
-                ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::SubMenu {
                     label: "Transformation".into(),
                     items: vec![
@@ -161,7 +161,6 @@ pub fn app_menus(
                                 delta: -180.0,
                             },
                         },
-                        ui_kit::menu::Item::Separator,
                         ui_kit::menu::Item::Action {
                             label: "Réinitialiser transformation".into(),
                             shortcut: "".to_string(),
@@ -190,18 +189,11 @@ pub fn app_menus(
                     message: Message::TogglePanel(PanelType::Layers),
                 },
                 ui_kit::menu::Item::Action {
-                    label: "Générateur de textures".into(),
-                    shortcut: "".to_string(),
-                    checked: false,
-                    message: Message::TogglePanel(PanelType::Generator),
-                },
-                ui_kit::menu::Item::Action {
                     label: "Barre d'outils".into(),
                     shortcut: "Tab".to_string(),
                     checked: tools_visible,
                     message: Message::ToggleToolsPanel,
                 },
-                ui_kit::menu::Item::Separator,
                 ui_kit::menu::Item::Action {
                     label: "Réinitialiser l'interface".into(),
                     shortcut: "".to_string(),

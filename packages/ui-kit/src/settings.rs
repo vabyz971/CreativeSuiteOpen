@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Options applicatives persistées — structure JSON unique partagée par
-//! toutes les apps. Fichier : `~/.config/creativesuite-open/settings.json`
+//! Persisted app options — single JSON structure shared by
+//! all apps. File: `~/.config/creativesuite-open/settings.json`
 //!
 //! ```json
 //! {
@@ -23,18 +23,18 @@
 //! }
 //! ```
 //!
-//! Ajouter une option = ajouter un champ ici + une section dans le fichier.
+//! Add an option = add a field here + a section in file.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AppSettings {
-    /// Raccourcis clavier : nom d'action → combinaison
+    /// Keyboard shortcuts: action name → combo
     #[serde(default)]
     pub shortcuts: HashMap<String, ShortcutJson>,
-    /// Options générales (extensible — nouvelles sections = nouveaux champs
-    /// avec `#[serde(default)]` pour la rétrocompatibilité)
+    /// General options (extensible — new sections = new fields
+    /// with `#[serde(default)]` for backward compatibility)
     #[serde(default)]
     pub general: GeneralSettings,
 }
@@ -52,7 +52,7 @@ pub struct ShortcutJson {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeneralSettings {
-    /// Afficher la barre d'outils flottante
+    /// Show floating toolbar
     #[serde(default = "default_true")]
     pub show_tools: bool,
 }
@@ -79,7 +79,8 @@ impl AppSettings {
         )
     }
 
-    /// Charge les options utilisateur (fichier absent/corrompu → défauts)
+    /// Load user options (missing/corrupt file → defaults)
+    #[must_use]
     pub fn load() -> Self {
         let Some(path) = Self::path() else {
             return Self::default();
@@ -90,7 +91,7 @@ impl AppSettings {
             .unwrap_or_default()
     }
 
-    /// Sauvegarde (silencieux en cas d'échec disque)
+    /// Save (silent on disk failure)
     pub fn save(&self) {
         let Some(path) = Self::path() else {
             return;

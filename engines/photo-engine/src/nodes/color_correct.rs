@@ -17,7 +17,7 @@
 //! Effet Correction Couleur (saturation HSL simplifiée)
 
 use super::{Effect, NodeCtx, to_rgba8};
-use datatypes::{NodeCategory, NodeDefinition, NodeId, ParamValue, SocketDef, SocketType};
+use datatypes::{NodeCategory, NodeDefinition, ParamValue, SocketDef, SocketType};
 use image::DynamicImage;
 use rayon::prelude::*;
 
@@ -55,9 +55,9 @@ pub fn apply_effect(img: &DynamicImage, saturation: f32) -> DynamicImage {
     DynamicImage::ImageRgba8(out)
 }
 
-fn apply(ctx: &NodeCtx, id: NodeId) -> Option<DynamicImage> {
-    let input = ctx.input(id, "image")?;
-    let s = ctx.param(id, "saturation", 1.0);
+fn apply(ctx: &NodeCtx) -> Option<DynamicImage> {
+    let input = ctx.input()?;
+    let s = ctx.param("saturation", 1.0);
     Some(apply_effect(input, s))
 }
 

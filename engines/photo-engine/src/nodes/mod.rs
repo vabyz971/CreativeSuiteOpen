@@ -17,7 +17,9 @@
 //! Nœuds d'effets Photo — un fichier par effet.
 //! Chaque effet expose :
 //!  - `definition()` : sa définition (sockets + params) pour le registre UI
-//!  - `apply(ctx, id)` : son évaluation image -> image
+//!  - `apply(ctx)` : son évaluation image -> image dans une chaîne linéaire
+//!    (voir [`crate::filters`]).
+//!
 //! Ajouter un nouvel effet = créer un fichier ici + l'enregistrer dans `all()`.
 
 pub mod blur;
@@ -29,50 +31,33 @@ pub mod mix;
 pub mod output;
 
 use crate::gpu;
-use datatypes::{NodeDefinition, NodeId};
+use datatypes::{NodeDefinition, ParamValue};
 use image::DynamicImage;
 use std::collections::HashMap;
-use std::sync::Arc;
-use suite_core::Graph;
 
-/// Contexte passé à chaque effet lors de l'évaluation du graphe
+/// Contexte passé à chaque effet lors de l'évaluation d'une chaîne linéaire
+/// de filtres : les paramètres du nœud courant + l'image produite par
+/// l'étape précédente. Aucune structure de graphe — `filters.rs` plie la
+/// chaîne séquentiellement.
 pub struct NodeCtx<'a> {
-    pub graph: &'a Graph,
-    /// Cache des sorties déjà calculées (topologique : les inputs sont prêts)
-    pub cache: &'a HashMap<NodeId, DynamicImage>,
-    /// Image source (entrée du graphe) — fallback si pas de source dédiée
+    /// Paramètres du nœud courant (ex. `{"brightness": Float(50.0)}`)
+    pub params: &'a HashMap<String, ParamValue>,
+    /// Image produite par l'étape précédente de la chaîne
+    pub input_image: Option<&'a DynamicImage>,
+    /// Image source d'origine (fallback si pas d'entrée)
     pub original: &'a DynamicImage,
-    /// Images PAR NŒUD d'entrée (multi-calques : chaque input_image/empty_layer
-    /// a sa propre image, Arc = partage bon marché avec le worker)
-    pub sources: &'a HashMap<NodeId, Arc<DynamicImage>>,
 }
 
 impl NodeCtx<'_> {
-    /// Image arrivant sur un socket d'entrée donné
-    pub fn input(&self, node: NodeId, socket: &str) -> Option<&DynamicImage> {
-        let conn = self
-            .graph
-            .connections
-            .iter()
-            .find(|c| c.to_node == node && c.to_socket == socket)?;
-        self.cache.get(&conn.from_node)
-    }
-
-    /// Première image trouvée sur n'importe quel socket (utilisé pour le bypass)
-    pub fn any_input(&self, node: NodeId) -> Option<&DynamicImage> {
-        for conn in self.graph.connections.iter().filter(|c| c.to_node == node) {
-            if let Some(img) = self.cache.get(&conn.from_node) {
-                return Some(img);
-            }
-        }
-        None
+    /// Image arrivant de l'étape précédente de la chaîne
+    pub fn input(&self) -> Option<&DynamicImage> {
+        self.input_image
     }
 
     /// Valeur float d'un paramètre avec défaut
-    pub fn param(&self, node_id: NodeId, key: &str, default: f32) -> f32 {
-        self.graph
-            .get(node_id)
-            .and_then(|n| n.params.get(key))
+    pub fn param(&self, key: &str, default: f32) -> f32 {
+        self.params
+            .get(key)
             .and_then(|v| v.as_float())
             .unwrap_or(default)
     }
@@ -81,7 +66,7 @@ impl NodeCtx<'_> {
 /// Un effet enregistré : définition UI + fonction d'évaluation
 pub struct Effect {
     pub definition: NodeDefinition,
-    pub apply: fn(&NodeCtx, NodeId) -> Option<DynamicImage>,
+    pub apply: fn(&NodeCtx) -> Option<DynamicImage>,
 }
 
 /// Tous les effets du moteur — point d'entrée unique pour registre et processeur.

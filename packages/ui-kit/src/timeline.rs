@@ -14,14 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Timeline Final Cut-like — widget minimaliste pour l'app Vidéo
-//! Réutilise le même shell et le même moteur de graphe que Photo.
+//! Timeline Final Cut-like — minimal widget for Video app
+//! Reuses same shell and same graph engine as Photo.
 
 use crate::theme::colors;
 use iced::widget::{Space, column, container, row, text};
 use iced::{Alignment, Color, Element, Length};
 
-/// Barre de timeline horizontale (pistes + clips)
+/// Horizontal timeline bar (tracks + clips)
+#[must_use]
 pub fn view<'a, Message>() -> Element<'a, Message>
 where
     Message: 'a,

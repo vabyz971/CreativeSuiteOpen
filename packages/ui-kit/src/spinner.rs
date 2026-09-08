@@ -14,16 +14,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Indicateurs d'activité : spinner circulaire (points en rotation avec
-//! traînée) et barre de progression indéterminée. L'animation est pilotée
-//! par l'app via un angle mis à jour par abonnement (`time::every`).
+//! Activity indicators: circular spinner (rotating dots with
+//! trail) and indeterminate progress bar. Animation is driven
+//! by app via angle updated by subscription (`time::every`).
+
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 
 use crate::theme::colors;
 use iced::widget::canvas::{self, Frame, Geometry, Path};
 use iced::{Element, Length, Point};
 
-/// Spinner circulaire — 8 points autour d'un cercle, opacité décroissante
-/// derrière l'angle courant (traînée façon Material).
+/// Circular spinner — 8 dots around a circle, decreasing opacity
+/// behind current angle (Material-style trail).
 struct Spinner {
     angle_deg: f32,
     size: f32,
@@ -48,7 +54,7 @@ impl<Message> canvas::Program<Message> for Spinner {
         for i in 0..self.dot_count {
             let a = (self.angle_deg + i as f32 * 360.0 / n).to_radians();
             let p = Point::new(c.x + r * a.cos(), c.y + r * a.sin());
-            // Le point à l'angle courant est le plus opaque, traînée derrière
+            // The point at current angle is most opaque, trail behind
             let alpha = (i as f32 + 1.0) / n;
             let color = iced::Color {
                 a: alpha.clamp(0.15, 1.0),
@@ -60,7 +66,8 @@ impl<Message> canvas::Program<Message> for Spinner {
     }
 }
 
-/// Spinner circulaire animé — `angle_deg` piloté par l'app (tick ~30 fps).
+/// Animated circular spinner — `angle_deg` driven by app (tick ~30 fps).
+#[must_use]
 pub fn circle<Message: 'static>(angle_deg: f32, size: f32) -> Element<'static, Message> {
     iced::widget::canvas(Spinner {
         angle_deg,
@@ -72,7 +79,7 @@ pub fn circle<Message: 'static>(angle_deg: f32, size: f32) -> Element<'static, M
     .into()
 }
 
-/// Barre de progression indéterminée — segment en va-et-vient sur une piste.
+/// Indeterminate progress bar — segment bouncing on a track.
 struct IndeterminateBar {
     angle_deg: f32,
 }
@@ -89,9 +96,9 @@ impl<Message> canvas::Program<Message> for IndeterminateBar {
         _cursor: iced::mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        // Piste
+        // Track
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), colors::SURFACE_CONTAINER_HIGH);
-        // Segment mobile : position sinusoïdale (va-et-vient fluide)
+        // Moving segment: sinusoidal position (smooth bounce)
         let t = (self.angle_deg.to_radians().sin() * 0.5 + 0.5).clamp(0.0, 1.0);
         let seg_w = (bounds.width * 0.35).max(24.0);
         let max_x = (bounds.width - seg_w).max(0.0);
@@ -105,7 +112,8 @@ impl<Message> canvas::Program<Message> for IndeterminateBar {
     }
 }
 
-/// Barre de progression indéterminée animée.
+/// Animated indeterminate progress bar.
+#[must_use]
 pub fn progress_bar<Message: 'static>(
     angle_deg: f32,
     width: f32,

@@ -16,14 +16,11 @@
 
 use crate::components::{layers_panel, properties, toolpanel};
 use crate::{Message, PanelType, Tool};
-use datatypes::NodeId;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{Space, column, container, image, text};
+use iced::widget::{Space, container, image};
 use iced::{Element, Length, Size, Vector};
 use photo_engine::Document;
-use suite_core::Graph;
 use ui_kit::base_panel;
-use ui_kit::dropdown::{dropdown_box, menu_item, menu_separator};
 use ui_kit::theme::colors;
 use uuid::Uuid;
 
@@ -34,32 +31,45 @@ pub fn render<'a>(
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected_layer: Option<Uuid>,
+    dragged_layer: Option<Uuid>,
+    active_mask: Option<crate::message::MaskTarget>,
+    expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
+    filter_menu_open: bool,
+    context_menu_open: Option<Uuid>,
+    layer_item_radius: f32,
+    mask_brush_black: bool,
     doc_size: Option<Size>,
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
     // Calque en cours de déplacement (mode fallback)
     drag_layer: Option<Uuid>,
+    // Transform OFFSET au début du geste — pour replacer correctement le
+    // composite masqué (bake du transform de départ) sur le déplacement live.
+    drag_start_offset: Option<(f32, f32)>,
     // Fond composite pré-calculé sans le calque déplacé
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
+    // Composite court du calque seul AVEC son masque — affiché en
+    // surimpression pendant le drag en mode fallback pour préserver le
+    // rendu du masque. `None` tant que le worker n'a pas répondu.
+    drag_layer_composite: Option<image::Handle>,
+    drag_layer_composite_size: Option<Size>,
     image_path: Option<String>,
     image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
+    brush_color: iced::Color,
+    color_picker_open: bool,
     tools_visible: bool,
     canvas_pan: Vector,
     zoom_level: u32,
     canvas_selection: Option<iced::Rectangle>,
     color_profile: String,
     canvas_viewport: Size,
-    // Générateur de textures (graphe nodal, futur usage filtres/génération)
-    gen_graph: &'a Graph,
-    gen_selected: Option<NodeId>,
-    gen_previews: &std::collections::HashMap<NodeId, image::Handle>,
-    node_context_menu: Option<iced::Point>,
-    node_context_world: Option<datatypes::Vec2>,
     // Style du pinceau + aperçu figé du commit en cours (texture)
     brush: ui_kit::image_canvas::BrushStyle,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
+    // Loupe pipette (patch courant, suivi au curseur)
+    loupe: Option<ui_kit::image_canvas::LoupeTex>,
     // Écran d'accueil (aucun document ouvert)
     new_doc_w: &'a str,
     new_doc_h: &'a str,
@@ -84,8 +94,11 @@ pub fn render<'a>(
                     },
                     if needs_fallback { fallback_size } else { None },
                     drag_layer,
+                    drag_start_offset,
                     drag_background.clone(),
                     drag_background_size,
+                    drag_layer_composite.clone(),
+                    drag_layer_composite_size,
                     doc,
                     preview_cache,
                     doc_size,
@@ -98,7 +111,11 @@ pub fn render<'a>(
                     canvas_selection,
                     canvas_viewport,
                     brush,
+                    brush_color,
+                    color_picker_open,
+                    mask_brush_black,
                     pending_preview.clone(),
+                    loupe.clone(),
                     new_doc_w,
                     new_doc_h,
                     welcome_error,
@@ -116,53 +133,22 @@ pub fn render<'a>(
             }
             PanelType::Properties => (
                 "Propriétés".to_string(),
-                properties::render(doc, selected_layer),
+                properties::render(doc, selected_layer, active_mask),
             ),
             PanelType::Layers => (
                 "Calques".to_string(),
-                layers_panel::render(doc, preview_cache, selected_layer),
+                layers_panel::render(
+                    doc,
+                    preview_cache,
+                    selected_layer,
+                    dragged_layer,
+                    active_mask,
+                    expanded_fx_stack,
+                    filter_menu_open,
+                    context_menu_open,
+                    layer_item_radius,
+                ),
             ),
-            PanelType::Generator => {
-                let g_clone = gen_graph.clone();
-                let previews = gen_previews.clone();
-                let busy_empty: std::collections::HashSet<NodeId> = Default::default();
-                let canvas = ui_kit::node_graph::view(
-                    g_clone,
-                    gen_selected,
-                    Vector::new(0.0, 0.0),
-                    1.0,
-                    previews,
-                    &busy_empty,
-                )
-                .map(Message::NodeGraphEvent);
-
-                // Menu contextuel ancré dans les coordonnées LOCALES du canvas
-                let content: Element<'_, Message> = if let Some(local) = node_context_menu {
-                    let world = node_context_world.unwrap_or(datatypes::Vec2::new(0.0, 0.0));
-                    let node_menu = build_node_context_menu(local, world);
-                    let outside = iced::widget::mouse_area(
-                        iced::widget::Space::new()
-                            .width(Length::Fill)
-                            .height(Length::Fill),
-                    )
-                    .on_press(Message::CloseNodeContextMenu);
-                    let menu_pos = container(node_menu)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(iced::Padding::default().top(local.y).left(local.x))
-                        .align_x(iced::alignment::Horizontal::Left)
-                        .align_y(iced::alignment::Vertical::Top);
-                    iced::widget::stack![
-                        container(canvas).width(Length::Fill).height(Length::Fill),
-                        outside,
-                        menu_pos
-                    ]
-                    .into()
-                } else {
-                    container(canvas).padding(0).clip(true).into()
-                };
-                ("Générateur de textures".to_string(), content)
-            }
         };
 
         // ContextMenu native sur le titre (clic droit → fermer le panneau)
@@ -193,60 +179,16 @@ pub fn render<'a>(
     grid_container.into()
 }
 
-fn build_node_context_menu<'a>(
-    click_pos: iced::Point,
-    world: datatypes::Vec2,
-) -> Element<'a, Message> {
-    let categories: Vec<(&str, Vec<(&str, &str)>)> = vec![
-        (
-            "Couleur",
-            vec![
-                ("Luminosité / Contraste", "brightness_contrast"),
-                ("Correction Couleur", "color_correct"),
-            ],
-        ),
-        ("Filtre", vec![("Flou", "blur")]),
-        ("Compositing", vec![("Mélange", "mix")]),
-        ("Sortie", vec![("Sortie", "output")]),
-    ];
-
-    let mut col = column![
-        container(
-            text("Ajouter un nœud générateur")
-                .size(13)
-                .color(colors::TEXT_PRIMARY)
-        )
-        .padding(iced::Padding::new(4.0).left(8.0))
-    ]
-    .spacing(2);
-    for (cat_label, nodes) in categories {
-        col = col.push(
-            container(text(cat_label).size(11).color(colors::TEXT_MUTED))
-                .padding(iced::Padding::new(2.0).left(8.0)),
-        );
-        for (label, type_id) in nodes {
-            col = col.push(menu_item(
-                label,
-                "",
-                Message::AddNodeAt {
-                    type_id: type_id.to_string(),
-                    world_pos: world,
-                },
-            ));
-        }
-        col = col.push(menu_separator());
-    }
-    let _ = click_pos;
-    dropdown_box(col, 220.0)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_canvas_preview<'a>(
     fallback_handle: Option<image::Handle>,
     fallback_size: Option<Size>,
     drag_layer: Option<Uuid>,
+    drag_start_offset: Option<(f32, f32)>,
     drag_background: Option<image::Handle>,
     drag_background_size: Option<Size>,
+    drag_layer_composite: Option<image::Handle>,
+    drag_layer_composite_size: Option<Size>,
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     doc_size: Option<Size>,
@@ -259,37 +201,38 @@ fn render_canvas_preview<'a>(
     canvas_selection: Option<iced::Rectangle>,
     _viewport: Size,
     brush: ui_kit::image_canvas::BrushStyle,
+    brush_color: iced::Color,
+    color_picker_open: bool,
+    mask_brush_black: bool,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
+    loupe: Option<ui_kit::image_canvas::LoupeTex>,
     new_doc_w: &'a str,
     new_doc_h: &'a str,
     welcome_error: Option<&'a str>,
 ) -> Element<'a, Message> {
-    let _ = selected_layer; // conservé pour futurs réglages contextuels
     let zoom = zoom_level as f32 / 100.0;
     let canvas_tool = match selected_tool {
         Tool::Hand => ui_kit::image_canvas::CanvasTool::Hand,
         Tool::Move => ui_kit::image_canvas::CanvasTool::Move,
         Tool::Zoom => ui_kit::image_canvas::CanvasTool::Zoom,
         Tool::Select => ui_kit::image_canvas::CanvasTool::Select,
-        Tool::Eyedropper => ui_kit::image_canvas::CanvasTool::Select,
+        Tool::Eyedropper => ui_kit::image_canvas::CanvasTool::Eyedropper,
         Tool::Brush => ui_kit::image_canvas::CanvasTool::Brush,
         Tool::Eraser => ui_kit::image_canvas::CanvasTool::Eraser,
     };
     // Calques canvas : texture d'APPARENCE + transform + opacité appliqués
     // AU DRAW (GPU) → slider d'opacité = zéro régénération de pixels
     let dragging = drag_layer.is_some();
-    let mut canvas_layers: Vec<ui_kit::image_canvas::CanvasLayer> = doc
+    let all_layers: Vec<ui_kit::image_canvas::CanvasLayer> = doc
         .iter_pixels()
         .into_iter()
         .filter(|l| l.visible && l.opacity > 0.01)
-        // En drag fallback : le calque déplacé est exclu du fond (il est
-        // dessiné par-dessus le fond pré-calculé, voir plus bas)
-        .filter(|l| !(dragging && drag_background.is_some() && Some(l.id) == drag_layer))
         // Handle issu du cache (identité stable → cache de textures GPU)
         .filter_map(|l| {
             let handle = preview_cache.preview(l.id)?.clone();
             let (w, h) = l.dimensions();
             Some(ui_kit::image_canvas::CanvasLayer {
+                id: Some(l.id),
                 handle,
                 width: w as f32,
                 height: h as f32,
@@ -297,10 +240,50 @@ fn render_canvas_preview<'a>(
                 offset_y: l.transform.offset_y,
                 opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
                 rotation_deg: l.transform.rotation_deg,
-                scale: l.transform.scale,
+                scale_x: l.transform.scale_x,
+                scale_y: l.transform.scale_y,
+                skew_x: l.transform.skew_x,
+                skew_y: l.transform.skew_y,
             })
         })
         .collect();
+    // Chemin de draw : en drag fallback, le calque déplacé est exclu du fond
+    // (il est dessiné par-dessus le fond pré-calculé, voir plus bas).
+    let mut canvas_layers = all_layers.clone();
+    if dragging
+        && drag_background.is_some()
+        && let Some(dl) = drag_layer
+    {
+        canvas_layers.retain(|c| c.id != Some(dl));
+    }
+    // Chemin de pick : TOUJOURS tous les calques (même le déplacé), pour que
+    // la sélection fonctionne aussi en fallback où `layers` = composite seul.
+    let hit_layers = all_layers.clone();
+    // Visualiseur de transformation : le calque sélectionné (overlay dessiné
+    // par-dessus les couches, indépendant du chemin de rendu). Un sous-calque
+    // de filtre résout vers son calque porteur.
+    let canvas_target = selected_layer.and_then(|id| doc.find_filter_parent(id).or(Some(id)));
+    let transform_target = canvas_target
+        .and_then(|id| doc.pixel_layer(id))
+        .filter(|l| l.visible)
+        .and_then(|l| {
+            let handle = preview_cache.preview(l.id)?.clone();
+            let (w, h) = l.dimensions();
+            Some(ui_kit::image_canvas::CanvasLayer {
+                id: Some(l.id),
+                handle,
+                width: w as f32,
+                height: h as f32,
+                offset_x: l.transform.offset_x,
+                offset_y: l.transform.offset_y,
+                opacity: 1.0,
+                rotation_deg: l.transform.rotation_deg,
+                scale_x: l.transform.scale_x,
+                scale_y: l.transform.scale_y,
+                skew_x: l.transform.skew_x,
+                skew_y: l.transform.skew_y,
+            })
+        });
 
     // Drag en fallback : fond pré-calculé (sans le calque déplacé) inséré
     // en bas de pile, puis le calque déplacé dessiné par-dessus à sa
@@ -317,6 +300,7 @@ fn render_canvas_preview<'a>(
         canvas_layers.insert(
             0,
             ui_kit::image_canvas::CanvasLayer {
+                id: None, // fond de drag : jamais sélectionnable
                 handle: bg,
                 width: bgsz.width,
                 height: bgsz.height,
@@ -324,7 +308,10 @@ fn render_canvas_preview<'a>(
                 offset_y: bg_off_y,
                 opacity: 1.0,
                 rotation_deg: 0.0,
-                scale: 1.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                skew_x: 0.0,
+                skew_y: 0.0,
             },
         );
     }
@@ -332,21 +319,76 @@ fn render_canvas_preview<'a>(
         && has_drag_bg
         && let Some(l) = drag_layer.and_then(|id| doc.pixel_layer(id))
         && l.visible
-        && let Some(handle) = preview_cache.preview(l.id).cloned()
     {
-        // Uniquement en fallback : le fond pré-calculé exclut ce sous-arbre,
-        // on dessine ce calque par-dessus. En chemin rapide il est DÉJÀ dans
-        // canvas_layers — le push ici le dessinerait deux fois.
-        let (w, h) = l.dimensions();
+        // Fallback drag : on insère le calque par-dessus le fond pré-calculé.
+        // 1) calque masqué + composite dispo → on utilise le composite (le
+        //    masque est respecté, ZÉRO recomposite par frame)
+        // 2) sinon → preview brut à la TAILLE LIVE (scale du transform) :
+        //    approximation du blend final, recalculé au relâchement. Il ne
+        //    faut JAMAIS dessiner la preview non scalée (taille d'origine —
+        //    celle du masque) pour un calque redimensionné.
+        let (handle, w, h, off_x, off_y, scx, scy) = if let (Some(h), Some(sz)) =
+            (drag_layer_composite.as_ref(), drag_layer_composite_size)
+        {
+            // Composite masqué : le buffer est centré sur le document ET
+            // contient le transform de DÉPART déjà cuit (prepare_top +
+            // blend). Pour suivre le geste : offset = centrage + (live −
+            // start), et AUCUN scale/rotation réappliqué (sinon
+            // double-transformation du bake).
+            let (sx, sy) =
+                drag_start_offset.unwrap_or((l.transform.offset_x, l.transform.offset_y));
+            let (base_off_x, base_off_y) = (
+                doc_size.map(|d| (d.width - sz.width) / 2.0).unwrap_or(0.0),
+                doc_size
+                    .map(|d| (d.height - sz.height) / 2.0)
+                    .unwrap_or(0.0),
+            );
+            (
+                h.clone(),
+                sz.width,
+                sz.height,
+                base_off_x + (l.transform.offset_x - sx),
+                base_off_y + (l.transform.offset_y - sy),
+                1.0,
+                1.0,
+            )
+        } else if let Some(handle) = preview_cache.preview(l.id).cloned() {
+            let (lw, lh) = l.dimensions();
+            (
+                handle,
+                lw as f32,
+                lh as f32,
+                l.transform.offset_x,
+                l.transform.offset_y,
+                l.transform.scale_x,
+                l.transform.scale_y,
+            )
+        } else {
+            // Pas de buffer disponible : on laisse l'UI afficher sans le
+            // calque plutôt que de planter.
+            (
+                image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]),
+                1.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+            )
+        };
         canvas_layers.push(ui_kit::image_canvas::CanvasLayer {
+            id: Some(l.id),
             handle,
-            width: w as f32,
-            height: h as f32,
-            offset_x: l.transform.offset_x,
-            offset_y: l.transform.offset_y,
+            width: w,
+            height: h,
+            offset_x: off_x,
+            offset_y: off_y,
             opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
-            rotation_deg: l.transform.rotation_deg,
-            scale: l.transform.scale,
+            rotation_deg: 0.0,
+            scale_x: scx,
+            scale_y: scy,
+            skew_x: 0.0,
+            skew_y: 0.0,
         });
     }
 
@@ -363,6 +405,7 @@ fn render_canvas_preview<'a>(
             .map(|d| ((d.width - sz.width) / 2.0, (d.height - sz.height) / 2.0))
             .unwrap_or((0.0, 0.0));
         let ls = vec![ui_kit::image_canvas::CanvasLayer {
+            id: None, // composite : jamais sélectionnable individuellement
             handle,
             width: sz.width,
             height: sz.height,
@@ -370,8 +413,15 @@ fn render_canvas_preview<'a>(
             offset_y: fb_off_y,
             opacity: 1.0, // opacité déjà appliquée dans le composite
             rotation_deg: 0.0,
-            scale: 1.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            skew_x: 0.0,
+            skew_y: 0.0,
         }];
+        let can_paint = canvas_target
+            .and_then(|id| doc.find(id))
+            .map(|n| n.visible())
+            .unwrap_or(false);
         let canvas = ui_kit::image_canvas::view_with_tool(
             doc_size,
             canvas_pan,
@@ -379,8 +429,12 @@ fn render_canvas_preview<'a>(
             canvas_tool,
             canvas_selection,
             ls,
+            hit_layers,
+            transform_target,
             brush,
+            can_paint,
             None,
+            loupe,
         )
         .map(Message::ImageCanvasEvent);
         container(canvas)
@@ -389,6 +443,10 @@ fn render_canvas_preview<'a>(
             .clip(true)
             .into()
     } else {
+        let can_paint = canvas_target
+            .and_then(|id| doc.find(id))
+            .map(|n| n.visible())
+            .unwrap_or(false);
         let canvas = ui_kit::image_canvas::view_with_tool(
             doc_size,
             canvas_pan,
@@ -396,8 +454,12 @@ fn render_canvas_preview<'a>(
             canvas_tool,
             canvas_selection,
             canvas_layers,
+            hit_layers,
+            transform_target,
             brush,
+            can_paint,
             pending_preview,
+            loupe,
         )
         .map(Message::ImageCanvasEvent);
         if doc.root.is_empty() && doc_size.is_none() {
@@ -405,11 +467,7 @@ fn render_canvas_preview<'a>(
             let welcome = crate::components::welcome::render(new_doc_w, new_doc_h, welcome_error);
             iced::widget::stack![
                 container(canvas).width(Length::Fill).height(Length::Fill),
-                container(welcome)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
+                iced::widget::center(welcome),
             ]
             .into()
         } else {
@@ -423,16 +481,21 @@ fn render_canvas_preview<'a>(
 
     // Barre d'outils FLOTTANTE verticale en HAUT à gauche du canvas
     let floating_tools: Element<'_, Message> = if tools_visible {
-        let tools_pill = container(toolpanel::render(selected_tool))
-            .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
-            .style(|_| {
-                // Palette flottante façon macOS : fond discret, ombre portée
-                ui_kit::style::floating_card(
-                    colors::SURFACE_CONTAINER_LOW,
-                    ui_kit::theme::metrics::RADIUS_NODE,
-                    ui_kit::theme::shadows::panel(),
-                )
-            });
+        let tools_pill = container(toolpanel::render(
+            selected_tool,
+            brush_color,
+            color_picker_open,
+            mask_brush_black,
+        ))
+        .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
+        .style(|_| {
+            // Palette flottante façon macOS : fond discret, ombre portée
+            ui_kit::style::floating_card(
+                colors::SURFACE_CONTAINER_LOW,
+                ui_kit::theme::metrics::RADIUS_NODE,
+                ui_kit::theme::shadows::panel(),
+            )
+        });
         container(tools_pill.width(Length::Shrink))
             .width(Length::Fill)
             .height(Length::Fill)

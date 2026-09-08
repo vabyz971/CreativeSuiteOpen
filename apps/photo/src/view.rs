@@ -16,202 +16,228 @@
 
 //! Rendu de l'interface + abonnements (spinner, raccourcis clavier).
 
-use iced::{Alignment, Element, Length, Subscription};
+use iced::widget::container;
+use iced::{Element, Length, Subscription};
 
 use crate::components;
 use crate::menus::app_menus;
 use crate::message::Message;
 use crate::state::PhotoApp;
 
-pub fn view(app: &PhotoApp, _window: iced::window::Id) -> Element<'_, Message> {
+pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
+    // Fenêtre OS des préférences : contenu dédié plein cadre
+    if app.is_preferences_window(window) {
+        if let Some(prefs) = &app.windows.preferences_window {
+            return container(prefs.view().map(Message::PreferencesMsg))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_| iced::widget::container::Style {
+                    background: Some(ui_kit::theme::colors::BG_APP.into()),
+                    ..Default::default()
+                })
+                .into();
+        }
+        return iced::widget::container(iced::widget::Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
+
     let doc_size = app
         .doc_dims()
         .map(|(w, h)| iced::Size::new(w as f32, h as f32));
     // Contenu central : barre contextuelle (projet/zoom/export) + workspace
-    let menus = app_menus(app.tools_visible, app.selected_layer);
+    let menus = app_menus(app.canvas.tools_visible, app.document.selected_layer);
     let menu_buttons = ui_kit::menu::bar(&menus);
 
     // Bouton spinner façon Final Cut Pro : toujours visible, tourne pendant
-    // un traitement en arrière-plan, clic → menu des tâches en cours
-    let spinning = !app.background_tasks.is_empty();
-    let spinner_btn = iced::widget::button(
-        // Canvas 20 px centré dans un bouton 30 px sans padding → pas de crop
-        iced::widget::container(ui_kit::spinner::circle(
-            if spinning { app.spinner_angle } else { 0.0 },
-            20.0,
-        ))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill),
-    )
-    .width(Length::Fixed(30.0))
-    .height(Length::Fixed(30.0))
-    .padding(0)
-    .style(|_, s| ui_kit::style::ghost(s))
-    .on_press(Message::ToggleTaskMenu);
+    // un traitement en arrière-plan, clic → menu des tâches en cours.
+    // La primitive vit dans ui_kit::shell (réutilisable par vidéo/audio).
+    let spinning = !app.rendering.background_tasks.is_empty();
+    let spinner = Some(ui_kit::shell::task_indicator(
+        spinning,
+        app.rendering.spinner_angle,
+        app.rendering.background_tasks.labels(),
+        app.rendering.task_menu_open,
+        Message::ToggleTaskMenu,
+        Message::ToggleTaskMenu,
+    ));
 
-    let task_menu = {
-        let items: Vec<iced::Element<'_, Message>> = if app.background_tasks.is_empty() {
-            vec![
-                iced::widget::container(
-                    iced::widget::text("Aucun traitement en cours")
-                        .size(12)
-                        .color(ui_kit::theme::colors::TEXT_MUTED),
-                )
-                .padding(iced::Padding::new(8.0).left(10.0).right(10.0))
-                .into(),
-            ]
-        } else {
-            app.background_tasks
-                .iter()
-                .map(|label| {
-                    iced::widget::row![
-                        iced::widget::text(label)
-                            .size(12)
-                            .color(ui_kit::theme::colors::TEXT_PRIMARY),
-                        iced::widget::Space::new().width(Length::Fill),
-                        ui_kit::spinner::circle(app.spinner_angle, 12.0),
-                    ]
-                    .align_y(Alignment::Center)
-                    .into()
-                })
-                .collect()
-        };
-        iced::widget::container(iced::widget::column(items).spacing(2).padding(4))
-            .width(Length::Fixed(240.0))
-            .style(|_| {
-                ui_kit::style::floating_card(
-                    ui_kit::theme::colors::BG_DROPDOWN,
-                    ui_kit::theme::metrics::RADIUS_DROPDOWN,
-                    ui_kit::theme::shadows::dropdown(),
-                )
-            })
-    };
-
-    let spinner = Some(
-        iced_aw::DropDown::new(spinner_btn, task_menu, app.task_menu_open)
-            .width(Length::Fixed(240.0))
-            .alignment(iced_aw::drop_down::Alignment::BottomEnd)
-            .on_dismiss(Message::ToggleTaskMenu)
-            .into(),
-    );
-
-    // Barre d'options contextuelle : contenu selon l'outil sélectionné
-    let selected_scale_percent = app
-        .selected_layer
-        .and_then(|id| app.doc.pixel_layer(id).map(|l| l.transform.scale * 100.0));
-    let options_bar = components::options_bar::render(
-        app.selected_tool,
-        app.selected_layer,
+    // Barre haute : Export + menu du tool à sa droite, sans fond
+    let selected_scale_percent = app.document.selected_layer.and_then(|id| {
+        app.document
+            .doc
+            .pixel_layer(id)
+            .map(|l| l.transform.scale_x * 100.0)
+    });
+    let context_bar = components::toolbar::context_bar(
+        app.tools.selected_tool,
+        app.document.selected_layer,
         selected_scale_percent,
-        app.canvas_selection.is_some(),
-        app.brush_color,
-        app.brush_size,
-        app.brush_opacity,
-        app.color_picker_open,
+        app.canvas.canvas_selection.is_some(),
+        app.tools.brush_color,
+        app.tools.brush_size,
+        app.tools.brush_opacity,
+        app.tools.color_picker_open,
     );
 
     let central = iced::widget::column![
-        components::toolbar::context_bar(),
-        options_bar,
+        context_bar,
         components::workspace::render(
-            &app.panes,
-            app.focus,
-            &app.doc,
-            &app.preview_cache,
-            app.selected_layer,
+            &app.workspace.panes,
+            app.workspace.focus,
+            &app.document.doc,
+            &app.rendering.preview_cache,
+            app.document.selected_layer,
+            app.tools.dragged_layer,
+            app.tools.active_mask,
+            &app.tools.expanded_fx_stack,
+            app.tools.filter_menu_open,
+            app.tools.context_menu_open,
+            app.windows.preferences.general.layer_item_radius,
+            app.tools.mask_brush_black,
             doc_size,
-            app.fallback_handle.clone(),
-            app.fallback_size,
-            app.move_anchor.map(|(id, _)| id),
-            app.drag_background.clone(),
-            app.drag_background_size,
-            app.image_path.clone(),
-            app.image_error.clone(),
-            app.selected_tool,
-            app.tools_visible,
-            app.canvas_pan,
-            app.zoom_level,
-            app.canvas_selection,
-            app.color_profile.clone(),
-            app.canvas_viewport,
-            &app.gen_graph,
-            app.gen_selected_node,
-            &app.gen_previews,
-            app.node_context_menu,
-            app.node_context_world,
+            app.rendering.fallback_handle.clone(),
+            app.rendering.fallback_size,
+            app.tools.move_anchor.map(|(id, _)| id),
+            app.tools.move_anchor.map(|(_, t)| (t.offset_x, t.offset_y)),
+            app.rendering.drag_background.clone(),
+            app.rendering.drag_background_size,
+            app.rendering.drag_layer_composite.clone(),
+            app.rendering.drag_layer_composite_size,
+            app.canvas.image_path.clone(),
+            app.canvas.image_error.clone(),
+            app.tools.selected_tool,
+            app.tools.brush_color,
+            app.tools.color_picker_open,
+            app.canvas.tools_visible,
+            app.canvas.canvas_pan,
+            app.canvas.zoom_level,
+            app.canvas.canvas_selection,
+            app.canvas.color_profile.clone(),
+            app.canvas.canvas_viewport,
             ui_kit::image_canvas::BrushStyle {
                 color: [
-                    (app.brush_color.r * 255.0).clamp(0.0, 255.0) as u8,
-                    (app.brush_color.g * 255.0).clamp(0.0, 255.0) as u8,
-                    (app.brush_color.b * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.tools.brush_color.r * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.tools.brush_color.g * 255.0).clamp(0.0, 255.0) as u8,
+                    (app.tools.brush_color.b * 255.0).clamp(0.0, 255.0) as u8,
                 ],
-                radius: app.brush_size / 2.0,
-                opacity: app.brush_opacity,
-                erase: app.selected_tool == crate::message::Tool::Eraser,
+                radius: app.tools.brush_size / 2.0,
+                opacity: app.tools.brush_opacity,
+                erase: app.tools.selected_tool == crate::message::Tool::Eraser,
             },
-            app.pending_paint.as_ref().map(|p| p.tex.clone()),
-            &app.new_doc_w,
-            &app.new_doc_h,
-            app.welcome_error.as_deref(),
+            app.tools.pending_paint.as_ref().map(|p| p.tex.clone()),
+            app.tools.pick_loupe.clone(),
+            &app.tools.new_doc_w,
+            &app.tools.new_doc_h,
+            app.tools.welcome_error.as_deref(),
         )
     ];
+    let central_with_title = iced::widget::column![central];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
     let base_layout = ui_kit::shell::minimalist_layout_menus_only(
         "Creative Suite Open Photo",
         menu_buttons,
-        central,
+        central_with_title,
         spinner,
     );
 
-    // Modal Préférences unifiée (Général / Raccourcis clavier / À propos)
-    if app.show_prefs {
-        let prefs_overlay = iced::widget::stack![
-            // Scrim : clic hors modal ferme
-            iced::widget::mouse_area(
-                iced::widget::container(
-                    iced::widget::Space::new()
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                )
-                .style(|_| iced::widget::container::Style {
-                    background: Some(ui_kit::theme::colors::CABLE_SHADOW.into()),
-                    ..Default::default()
-                })
-                .width(Length::Fill)
-                .height(Length::Fill)
+    // Dialogue redimensionnement document (Édition → Taille du document...)
+    if app.tools.resize_dialog_open {
+        let dialog = iced::widget::container(
+            iced::widget::column![
+                iced::widget::text("Taille du document")
+                    .size(16)
+                    .color(ui_kit::theme::colors::TEXT_PRIMARY),
+                iced::widget::row![
+                    iced::widget::text("Largeur")
+                        .size(12)
+                        .width(iced::Length::Fixed(60.0)),
+                    iced::widget::text_input("1920", &app.tools.resize_w)
+                        .on_input(Message::SetResizeWidth)
+                        .width(iced::Length::Fixed(80.0)),
+                    iced::widget::text("px").size(11),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+                iced::widget::row![
+                    iced::widget::text("Hauteur")
+                        .size(12)
+                        .width(iced::Length::Fixed(60.0)),
+                    iced::widget::text_input("1080", &app.tools.resize_h)
+                        .on_input(Message::SetResizeHeight)
+                        .width(iced::Length::Fixed(80.0)),
+                    iced::widget::text("px").size(11),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+                iced::widget::row![
+                    iced::widget::button(iced::widget::text("Annuler").size(12))
+                        .on_press(Message::ShowResizeDialog)
+                        .style(|_, s| ui_kit::style::ghost(s)),
+                    iced::widget::button(iced::widget::text("Appliquer").size(12))
+                        .on_press(Message::ResizeDocument {
+                            width: app.tools.resize_w.parse::<u32>().unwrap_or(800),
+                            height: app.tools.resize_h.parse::<u32>().unwrap_or(600),
+                        })
+                        .style(|_, s| ui_kit::style::primary(s)),
+                ]
+                .spacing(8),
+            ]
+            .spacing(12)
+            .padding(16),
+        )
+        .width(iced::Length::Fixed(300.0))
+        .style(|_| {
+            ui_kit::style::floating_card(
+                ui_kit::theme::colors::BG_DROPDOWN,
+                ui_kit::theme::metrics::RADIUS_DROPDOWN,
+                ui_kit::theme::shadows::dropdown(),
             )
-            .on_press(Message::ClosePreferences),
-            components::preferences::view(
-                &app.shortcuts,
-                app.capturing,
-                app.prefs_section,
-                app.gpu_info.clone(),
-                app.gpu_available,
-            ),
-        ];
-        return iced::widget::stack![base_layout, prefs_overlay].into();
+        });
+        let overlay = iced::widget::center(dialog).style(|_| iced::widget::container::Style {
+            background: Some(ui_kit::theme::colors::SCRIM.into()),
+            ..Default::default()
+        });
+        return iced::widget::stack![base_layout, overlay].into();
     }
 
+    // Modal Préférences unifiée (Général / Raccourcis clavier / À propos)
     // Les dropdowns des menus sont gérés nativement par iced_aw::DropDown
     base_layout
 }
 
-/// Tick d'animation uniquement pendant un chargement (spinner + barre)
+/// Tick d'animation (spinner) + écoute clavier GLOBALE.
+///
+/// Le filtre `Status::Ignored` est la clé du comportement : une pression
+/// de touche CONSUMÉE par un widget (champ texte en cours d'édition, par
+/// exemple) n'atteint jamais le résolveur — plus besoin d'un flag
+/// `text_input_focused` maintenu à la main.
 pub fn subscription(app: &PhotoApp) -> Subscription<Message> {
-    let tick = if !app.background_tasks.is_empty() {
+    let tick = if !app.rendering.background_tasks.is_empty() {
         iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::TickFrame)
     } else {
         Subscription::none()
     };
-    Subscription::batch([
-        tick,
-        ui_kit::shortcuts::subscription(
-            &app.shortcuts,
-            app.capturing.is_some(),
-            PhotoApp::message_for,
-            Message::ShortcutCaptured,
-        ),
-    ])
+    let keyboard = iced::event::listen_with(keyboard_filter);
+    let closes = iced::window::close_events().map(Message::WindowClosed);
+    Subscription::batch([tick, keyboard, closes])
+}
+
+/// Filtre d'abonnement : PRESSIONS et RELEASES non consommées.
+fn keyboard_filter(
+    event: iced::Event,
+    status: iced::event::Status,
+    window: iced::window::Id,
+) -> Option<Message> {
+    match (&event, status) {
+        (
+            iced::Event::Keyboard(
+                iced::keyboard::Event::KeyPressed { .. }
+                | iced::keyboard::Event::KeyReleased { .. },
+            ),
+            iced::event::Status::Ignored,
+        ) => Some(Message::Event { event, window }),
+        _ => None,
+    }
 }

@@ -49,17 +49,20 @@ pub fn render<'a>(
     brush_opacity: f32,
     color_picker_open: bool,
 ) -> Element<'a, Message> {
-    let content: Element<'a, Message> = match tool {
-        Tool::Brush => brush_section(brush_color, brush_size, brush_opacity, color_picker_open),
-        Tool::Eraser => eraser_section(brush_size, brush_opacity),
-        Tool::Move => move_section(selected_layer, selected_scale_percent, has_selection),
-        _ => {
-            // Aucun réglage pour cet outil : hauteur nulle
-            return iced::widget::Space::new()
-                .width(Length::Fill)
-                .height(Length::Fixed(0.0))
-                .into();
-        }
+    let Some(content) = tool_controls(
+        tool,
+        selected_layer,
+        selected_scale_percent,
+        has_selection,
+        brush_color,
+        brush_size,
+        brush_opacity,
+        color_picker_open,
+    ) else {
+        return iced::widget::Space::new()
+            .width(Length::Fill)
+            .height(Length::Fixed(0.0))
+            .into();
     };
 
     container(
@@ -81,45 +84,49 @@ pub fn render<'a>(
     .into()
 }
 
+/// Contrôles bruts du tool sans fond ni container — pour intégration dans
+/// la barre haute à droite d'Exporter (`toolbar::context_bar`). Retourne `None`
+/// si l'outil n'a pas de réglages.
+#[allow(clippy::too_many_arguments)]
+pub fn tool_controls<'a>(
+    tool: Tool,
+    selected_layer: Option<Uuid>,
+    selected_scale_percent: Option<f32>,
+    has_selection: bool,
+    brush_color: iced::Color,
+    brush_size: f32,
+    brush_opacity: f32,
+    color_picker_open: bool,
+) -> Option<Element<'a, Message>> {
+    match tool {
+        Tool::Brush => Some(brush_section(
+            brush_color,
+            brush_size,
+            brush_opacity,
+            color_picker_open,
+        )),
+        Tool::Eraser => Some(eraser_section(brush_size, brush_opacity)),
+        Tool::Move => Some(move_section(
+            selected_layer,
+            selected_scale_percent,
+            has_selection,
+        )),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Section PINCEAU : couleur / taille / opacité
 // ---------------------------------------------------------------------------
 
 fn brush_section<'a>(
-    brush_color: iced::Color,
+    _brush_color: iced::Color,
     brush_size: f32,
     brush_opacity: f32,
-    color_picker_open: bool,
+    _color_picker_open: bool,
 ) -> Element<'a, Message> {
-    // Cercle couleur → ColorPicker iced_aw
-    let swatch = button(
-        container(
-            iced::widget::Space::new()
-                .width(Length::Fixed(14.0))
-                .height(Length::Fixed(14.0)),
-        )
-        .style(move |_| container::Style {
-            background: Some(brush_color.into()),
-            border: iced::Border {
-                width: 1.0,
-                color: colors::BORDER_SUBTLE,
-                radius: ui_kit::theme::metrics::RADIUS_DROPDOWN.into(),
-            },
-            ..Default::default()
-        }),
-    )
-    .padding(5)
-    .style(|_t, s| ui_kit::style::ghost(s))
-    .on_press(Message::ToggleColorPicker);
-
-    let color_circle = iced_aw::widget::ColorPicker::new(
-        color_picker_open,
-        brush_color,
-        swatch,
-        Message::ToggleColorPicker,
-        Message::SetBrushColor,
-    );
-
+    // Couleur gérée globalement dans toolpanel — pas de ColorPicker ici
+    // pour éviter double ouverture (même bool partagé)
     let size_slider = row![
         field_label("Taille"),
         iced::widget::slider(1.0..=200.0, brush_size, Message::SetBrushSize)
@@ -131,7 +138,8 @@ fn brush_section<'a>(
 
     let opacity_slider = row![
         field_label("Opacité"),
-        iced::widget::slider(0.05..=1.0, brush_opacity, Message::SetBrushOpacity)
+        iced::widget::slider(0.0..=1.0, brush_opacity, Message::SetBrushOpacity)
+            .step(0.01_f32)
             .width(Length::Fixed(90.0)),
         value_label(format!("{:.0}%", brush_opacity * 100.0)),
     ]
@@ -140,8 +148,6 @@ fn brush_section<'a>(
 
     row![
         field_label("Pinceau"),
-        separator(),
-        color_circle,
         separator(),
         size_slider,
         opacity_slider,
@@ -168,7 +174,8 @@ fn eraser_section<'a>(brush_size: f32, brush_opacity: f32) -> Element<'a, Messag
 
     let opacity_slider = row![
         field_label("Opacité"),
-        iced::widget::slider(0.05..=1.0, brush_opacity, Message::SetBrushOpacity)
+        iced::widget::slider(0.0..=1.0, brush_opacity, Message::SetBrushOpacity)
+            .step(0.01_f32)
             .width(Length::Fixed(90.0)),
         value_label(format!("{:.0}%", brush_opacity * 100.0)),
     ]
@@ -227,14 +234,16 @@ fn move_section<'a>(
         }
     };
 
-    // Slider d'échelle compact (réutilise SetLayerScale comme le panneau
-    // Propriétés — une seule source de vérité pour le réglage)
+    // Slider d'échelle compact (axe X, comme l'indique la valeur affichée).
+    // N'écrit QUE scale_x : une échelle non uniforme (coin du visualiseur,
+    // réglages X/Y du panneau Propriétés) n'est jamais écrasée silencieusement.
     let scale_slider: Element<'a, Message> = match selected_scale_percent {
         Some(pct) => row![
             field_label("Échelle"),
             iced::widget::slider(5.0..=800.0, pct.clamp(5.0, 800.0), move |v| {
-                Message::SetLayerScale {
+                Message::SetLayerScaleAxis {
                     id,
+                    axis: crate::OffsetAxis::X,
                     scale: v / 100.0,
                 }
             },)
@@ -304,7 +313,7 @@ fn move_section<'a>(
             has_layer && has_selection,
         ),
     ]
-    .spacing(6)
+    .spacing(10)
     .align_y(Alignment::Center)
     .padding(Padding::new(5.0))
     .into()

@@ -14,27 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Système de menus générique partagé par toutes les apps.
-//! Utilise le widget natif `iced_aw::menu::MenuBar` : sous-menus au survol,
-//! comme Photoshop/Affinity. Inspiré de `iced_aw/examples/menu.rs`.
+//! Generic menu system shared by all apps.
+//! Uses native `iced_aw::menu::MenuBar` widget: submenus on hover,
+//! like Photoshop/Affinity. Inspired by `iced_aw/examples/menu.rs`.
 
 use crate::theme::colors;
 use iced::widget::{Space, button, container, text};
 use iced::{Alignment, Element, Length};
 
-/// Largeur d'un slot de bouton menu
+/// Width of a menu button slot
 pub const SLOT_WIDTH: f32 = 64.0;
-/// Espace entre deux slots
+/// Space between two slots
 pub const SLOT_GAP: f32 = 2.0;
-/// Hauteur de la rangée de menus
+/// Height of menu row
 pub const BAR_HEIGHT: f32 = 28.0;
 
-/// Un item de menu déroulant
+/// A dropdown menu item
 pub enum Item<Message> {
     Action {
         label: String,
         shortcut: String,
-        /// État cochable optionnel (préfixe ✓ dans le libellé)
+        /// Optional checkable state (✓ prefix in label)
         checked: bool,
         message: Message,
     },
@@ -46,7 +46,7 @@ pub enum Item<Message> {
 }
 
 impl<Message> Item<Message> {
-    /// Action simple sans coche ni raccourci
+    /// Simple action without check nor shortcut
     pub fn action(label: impl Into<String>, message: Message) -> Self {
         Item::Action {
             label: label.into(),
@@ -57,7 +57,7 @@ impl<Message> Item<Message> {
     }
 }
 
-/// Un menu complet (bouton + contenu déroulant)
+/// A complete menu (button + dropdown content)
 pub struct Menu<Message> {
     pub label: String,
     pub items: Vec<Item<Message>>,
@@ -72,9 +72,10 @@ impl<Message> Menu<Message> {
     }
 }
 
-/// Rangée de boutons menus avec le `MenuBar` natif iced_aw.
-/// Les sous-menus s'ouvrent au survol, comme dans Photoshop/Affinity.
-/// L'état d'ouverture est géré en interne par le widget.
+/// Row of menu buttons with native `iced_aw` `MenuBar`.
+/// Submenus open on hover, like in Photoshop/Affinity.
+/// Open state is managed internally by the widget.
+#[must_use]
 pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Message> {
     use iced_aw::menu::{Item as AwItem, Menu as AwMenu};
 
@@ -93,14 +94,14 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                     } => {
                         let content = if shortcut.is_empty() {
                             if *checked {
-                                format!("✓ {}", label)
+                                format!("✓ {label}")
                             } else {
-                                format!("   {}", label)
+                                format!("   {label}")
                             }
                         } else if *checked {
-                            format!("✓ {}  {}", label, shortcut)
+                            format!("✓ {label}  {shortcut}")
                         } else {
-                            format!("   {}  {}", label, shortcut)
+                            format!("   {label}  {shortcut}")
                         };
                         AwItem::new(
                             button(text(content).size(13))
@@ -131,14 +132,14 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
                                     } => {
                                         let content = if shortcut.is_empty() {
                                             if *checked {
-                                                format!("✓ {}", label)
+                                                format!("✓ {label}")
                                             } else {
-                                                format!("   {}", label)
+                                                format!("   {label}")
                                             }
                                         } else if *checked {
-                                            format!("✓ {}  {}", label, shortcut)
+                                            format!("✓ {label}  {shortcut}")
                                         } else {
-                                            format!("   {}  {}", label, shortcut)
+                                            format!("   {label}  {shortcut}")
                                         };
                                         AwItem::new(
                                             button(text(content).size(13))
@@ -198,10 +199,10 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
 
     iced_aw::menu::MenuBar::new(aw_items)
         .spacing(SLOT_GAP)
-        // Le style PAR DÉFAUT d'iced_aw est gris clair ([0.85; 3]) — on
-        // branche le barre + les dropdowns sur les tokens du DESIGN.md :
-        // barre transparente (fond du shell) et cartes sombres pour les
-        // menus déroulants, chemin de menus ouverts teinté accent.
+        // The DEFAULT iced_aw style is light grey ([0.85; 3]) — we
+        // wire the bar + dropdowns to DESIGN.md tokens:
+        // transparent bar (shell background) and dark cards for
+        // dropdown menus, open menu path tinted accent.
         .style(|_, _| iced_aw::style::menu_bar::Style {
             bar_background: iced::Color::TRANSPARENT.into(),
             bar_border: iced::Border {

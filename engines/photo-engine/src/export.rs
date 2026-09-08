@@ -111,14 +111,11 @@ mod tests {
     }
 
     fn temp_path(tag: &str, ext: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "cso-export-{tag}-{}.{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("horloge")
-                .as_nanos(),
-            ext
-        ))
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+            .as_nanos();
+        std::env::temp_dir().join(format!("cso-export-{tag}-{}.{}", nanos, ext))
     }
 
     #[test]

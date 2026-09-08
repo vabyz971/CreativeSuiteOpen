@@ -17,10 +17,12 @@
 use iced::{Element, Length, Task};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Message {
     Mock,
 }
 
+#[allow(dead_code)]
 struct AudioApp {
     zoom: f32,
 }
@@ -31,19 +33,18 @@ impl Default for AudioApp {
     }
 }
 
-fn update(app: &mut AudioApp, msg: Message) -> Task<Message> {
+fn update(_app: &mut AudioApp, msg: Message) -> Task<Message> {
     match msg {
         Message::Mock => {}
     }
     Task::none()
 }
 
-fn view(app: &AudioApp) -> Element<'_, Message> {
-    let central = iced::widget::container("Working progess")
+fn view(_app: &AudioApp) -> Element<'_, Message> {
+    iced::widget::container("Working progess")
         .width(Length::Fill)
         .height(Length::Fill)
-        .into();
-    central
+        .into()
 }
 
 pub fn main() -> iced::Result {

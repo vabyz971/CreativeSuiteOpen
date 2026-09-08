@@ -14,35 +14,32 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Moteur interne des live filters : la chaîne linéaire d'un calque est
-//! traduite à la volée en mini-graphe nodal (`input_image → f₁ → … → fₙ →
-//! output`) évalué par [`crate::processor`]. Le DAG existant ne disparaît
-//! donc pas — il devient l'exécuteur des filtres dynamiques.
+//! Moteur interne des live filters : la chaîne de sous-calques d'un calque
+//! pixels est évaluée séquentiellement — chaque effet reçoit l'image
+//! accumulée en dessous de lui, puis son résultat est composité avec ses
+//! attributs de calque (opacité, fusion, transform, masques), façon Affinity.
 //!
 //! Un type d'effet inconnu (projet d'une version plus récente, effet retiré)
-//! est transparent : le processeur propage son entrée telle quelle.
+//! est transparent : l'image traverse telle quelle.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use datatypes::{NodeId, ParamValue, SocketType, Vec2};
+use datatypes::SocketType;
 use image::DynamicImage;
-use suite_core::{Connection, Graph, Node};
 
-use crate::document::FilterNode;
+use crate::document::{FilterLayer, FilterNode};
 
-/// Position fictive des nœuds du mini-graphe (sans importance pour
-/// l'évaluation, requise par le modèle de données).
-const GRAPH_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
-
-/// Crée un filtre avec les paramètres PAR DÉFAUT de sa définition.
-/// Retourne None si le type_id n'est pas dans le registre.
+/// Crée un SOUS-CALQUE de filtre (attributs de calque neutres : opacité
+/// pleine, fusion normale, sans transform ni masque) avec les paramètres
+/// PAR DÉFAUT de sa définition. Retourne None si type_id inconnu.
 #[must_use]
-pub fn new_filter(type_id: &str) -> Option<FilterNode> {
+pub fn new_filter_layer(type_id: &str) -> Option<FilterLayer> {
     let def = crate::registry::definition_for(type_id)?;
-    let mut filter = FilterNode::new(def.type_id.clone());
-    filter.params = def.default_params.clone();
-    Some(filter)
+    Some(FilterLayer::new(
+        def.type_id.clone(),
+        def.name.clone(),
+        def.default_params.clone(),
+    ))
 }
 
 /// Types d'effets éligibles en live filter / calque d'ajustement :
@@ -64,56 +61,61 @@ pub fn filterable_types() -> Vec<datatypes::NodeDefinition> {
         .collect()
 }
 
-fn chain_node(graph: &mut Graph, type_id: &str, params: HashMap<String, ParamValue>) -> NodeId {
-    let mut node = Node::new(NodeId(0), type_id.to_string(), String::new(), GRAPH_POS);
-    node.params = params;
-    node.preview_enabled = false;
-    graph.add_node(node)
-}
-
-/// Applique la chaîne de filtres ACTIFS à `source`.
-///
-/// - Chaîne vide ou tout désactivé → retourne `source` tel quel (zéro coût).
-/// - Sinon : construction du mini-graphe + évaluation complète.
-/// - Échec d'évaluation ou effet inconnu → dégradation gracieuse sur
-///   l'entrée (le processeur propage l'image à travers les effets inconnus).
-pub fn render_chain(source: &Arc<DynamicImage>, filters: &[FilterNode]) -> Arc<DynamicImage> {
-    let active: Vec<&FilterNode> = filters.iter().filter(|f| f.enabled).collect();
-    if active.is_empty() {
+/// Pli SIMPLE sur des [`FilterNode`] bruts (sans attributs de calque) —
+/// réservé aux calques d'ajustement, dont l'opacité/fusion vivent au niveau
+/// du calque. Les pixels utilisent [`render_chain`] (sous-calques).
+pub(crate) fn render_nodes(
+    source: &Arc<DynamicImage>,
+    filters: &[FilterNode],
+) -> Arc<DynamicImage> {
+    if !filters.iter().any(|f| f.enabled) {
         return Arc::clone(source);
     }
 
-    let mut graph = Graph::new();
-    let mut sources: HashMap<NodeId, Arc<DynamicImage>> = HashMap::new();
-
-    let input = chain_node(&mut graph, "input_image", HashMap::new());
-    sources.insert(input, Arc::clone(source));
-
-    let mut prev = input;
-    for f in &active {
-        let node = chain_node(&mut graph, &f.type_id, f.params.clone());
-        let _ = graph.connect(Connection::new(
-            prev,
-            "image",
-            node,
-            "image",
-            SocketType::Image,
-        ));
-        prev = node;
+    let mut current: DynamicImage = (**source).clone();
+    for f in filters.iter().filter(|f| f.enabled) {
+        let Some(effect) = crate::nodes::find(&f.type_id) else {
+            continue;
+        };
+        let ctx = crate::nodes::NodeCtx {
+            params: &f.params,
+            input_image: Some(&current),
+            original: source,
+        };
+        if let Some(out) = (effect.apply)(&ctx) {
+            current = out;
+        }
     }
-    let output = chain_node(&mut graph, "output", HashMap::new());
-    let _ = graph.connect(Connection::new(
-        prev,
-        "image",
-        output,
-        "image",
-        SocketType::Image,
-    ));
+    Arc::new(current)
+}
 
-    match crate::processor::evaluate(&graph, source, &sources) {
-        Some(img) => Arc::new(img),
-        None => Arc::clone(source),
+/// Applique la chaîne de sous-calques de filtres ACTIFS à `source`.
+///
+/// - Chaîne vide ou tout désactivé → retourne `source` tel quel (zéro coût).
+/// - Sinon : pli séquentiel — chaque effet reçoit l'accumulé, son résultat
+///   est composité avec ses attributs de calque
+///   ([`crate::document::compositing::composite_filter_layer`]).
+/// - Effet inconnu → dégradation gracieuse : l'entrée traverse telle quelle.
+pub fn render_chain(source: &Arc<DynamicImage>, layers: &[FilterLayer]) -> Arc<DynamicImage> {
+    if !layers.iter().any(|f| f.enabled) {
+        return Arc::clone(source);
     }
+
+    let mut current: DynamicImage = (**source).clone();
+    for f in layers.iter().filter(|f| f.enabled) {
+        let Some(effect) = crate::nodes::find(&f.type_id) else {
+            continue; // effet inconnu : propage tel quel (comportement conservé)
+        };
+        let ctx = crate::nodes::NodeCtx {
+            params: &f.params,
+            input_image: Some(&current),
+            original: source,
+        };
+        if let Some(out) = (effect.apply)(&ctx) {
+            current = crate::document::compositing::composite_filter_layer(&current, out, f);
+        }
+    }
+    Arc::new(current)
 }
 
 #[cfg(test)]
@@ -131,6 +133,17 @@ mod tests {
         )))
     }
 
+    fn layer(type_id: &str) -> FilterLayer {
+        new_filter_layer(type_id).expect("définition connue")
+    }
+
+    fn lum(value: f32) -> FilterLayer {
+        let mut f = layer("brightness_contrast");
+        f.params
+            .insert("brightness".into(), ParamValue::Float(value));
+        f
+    }
+
     #[test]
     fn chaine_vide_renvoie_la_source_partagee() {
         let src = grey(10);
@@ -142,7 +155,7 @@ mod tests {
     #[test]
     fn filtre_desactive_est_transparent() {
         let src = grey(10);
-        let mut f = new_filter("brightness_contrast").expect("définition connue");
+        let mut f = layer("brightness_contrast");
         f.enabled = false;
         f.params
             .insert("brightness".into(), ParamValue::Float(100.0));
@@ -153,9 +166,7 @@ mod tests {
     #[test]
     fn brightness_applique_le_parametre() {
         let src = grey(100);
-        let mut f = new_filter("brightness_contrast").expect("définition connue");
-        f.params
-            .insert("brightness".into(), ParamValue::Float(50.0));
+        let f = lum(50.0);
         let contrast_default = f.params.get("contrast").cloned();
         let out = render_chain(&src, &[f]);
         let rgba = out.to_rgba8();
@@ -166,17 +177,15 @@ mod tests {
         assert_eq!(
             contrast_default,
             Some(ParamValue::Float(0.0)),
-            "new_filter doit copier default_params"
+            "new_filter_layer doit copier default_params"
         );
     }
 
     #[test]
     fn chaine_sequentielle_compose_les_effets() {
         let src = grey(100);
-        let mut f1 = new_filter("brightness_contrast").expect("connu");
-        f1.params
-            .insert("brightness".into(), ParamValue::Float(40.0));
-        let mut f2 = new_filter("color_correct").expect("connu");
+        let f1 = lum(40.0);
+        let mut f2 = layer("color_correct");
         f2.params
             .insert("saturation".into(), ParamValue::Float(1.5));
         let out = render_chain(&src, &[f1, f2]);
@@ -190,11 +199,45 @@ mod tests {
     #[test]
     fn effet_inconnu_propage_son_entree() {
         let src = grey(42);
-        let f = FilterNode::new("effet_inexistant");
+        let f = FilterLayer::neutral("effet_inexistant", Default::default());
         let out = render_chain(&src, &[f]);
         let rgba = out.to_rgba8();
         let p = rgba.get_pixel(0, 0);
         assert_eq!(p[0], 42);
+    }
+
+    #[test]
+    fn opacite_sous_calque_mixe_lineairement() {
+        // Façon Affinity : le résultat filtré est pondéré sur l'accumulé.
+        let src = grey(100);
+        let mut f = lum(40.0); // plein = 202
+        f.opacity = 50.0;
+        let out = render_chain(&src, &[f]);
+        let rgba = out.to_rgba8();
+        let p = rgba.get_pixel(0, 0);
+        // mix 100 ↔ 202 à 50 % ≈ 151
+        assert!((p[0] as f32 - 151.0).abs() <= 3.0);
+    }
+
+    #[test]
+    fn fusion_sous_calque_multiply() {
+        let src = grey(100);
+        let mut f = lum(40.0); // filtré = 202
+        f.blend_mode = crate::document::BlendMode::Multiply;
+        let out = render_chain(&src, &[f]);
+        let rgba = out.to_rgba8();
+        let p = rgba.get_pixel(0, 0);
+        // (100/255) × (202/255) × 255 ≈ 79
+        assert!((p[0] as f32 - 79.0).abs() <= 3.0);
+    }
+
+    #[test]
+    fn passthrough_neutre_sans_cout() {
+        let f = lum(10.0);
+        assert!(f.is_passthrough());
+        let mut g = lum(10.0);
+        g.opacity = 50.0;
+        assert!(!g.is_passthrough());
     }
 
     #[test]

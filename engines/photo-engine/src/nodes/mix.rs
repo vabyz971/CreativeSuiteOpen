@@ -20,9 +20,9 @@
 //!
 //! Réutilise la fusion du Calque (modes + alpha compositing).
 
-use super::layer::{MIX_MAX_INPUTS, apply_effect, mix_socket};
+use super::layer::{MIX_MAX_INPUTS, mix_socket};
 use super::{Effect, NodeCtx};
-use datatypes::{NodeCategory, NodeDefinition, NodeId, ParamValue, SocketDef, SocketType};
+use datatypes::{NodeCategory, NodeDefinition, ParamValue, SocketDef, SocketType};
 use image::DynamicImage;
 
 pub fn definition() -> NodeDefinition {
@@ -41,42 +41,10 @@ pub fn definition() -> NodeDefinition {
     def.output(SocketDef::new("image", "Image", SocketType::Image))
 }
 
-fn count_of(ctx: &NodeCtx, id: NodeId) -> usize {
-    let n = ctx
-        .graph
-        .get(id)
-        .and_then(|node| node.params.get("count"))
-        .and_then(|v| match v {
-            ParamValue::Int(i) => Some(*i as usize),
-            ParamValue::Float(f) => Some(*f as usize),
-            _ => None,
-        })
-        .unwrap_or(2);
-    n.clamp(2, MIX_MAX_INPUTS)
-}
-
-fn apply(ctx: &NodeCtx, id: NodeId) -> Option<DynamicImage> {
-    let count = count_of(ctx, id);
-    let blend_mode = ctx
-        .graph
-        .get(id)
-        .and_then(|n| n.params.get("blend_mode"))
-        .and_then(|v| v.as_enum())
-        .unwrap_or("Normal")
-        .to_string();
-
-    // Composite séquentiel : image 1 en dessous, chaque image suivante par-dessus.
-    // Les slots non connectés sont sautés.
-    let mut result: Option<DynamicImage> = None;
-    for i in 1..=count {
-        if let Some(img) = ctx.input(id, &mix_socket(i)) {
-            result = match result {
-                None => Some(img.clone()),
-                Some(prev) => Some(apply_effect(&prev, img, 100.0, &blend_mode, 0.0, 0.0)),
-            };
-        }
-    }
-    result
+fn apply(ctx: &NodeCtx) -> Option<DynamicImage> {
+    // Chaîne linéaire = une seule image : rien à superposer, on transmet
+    // telle quelle (la superposition multi-entrées n'existe qu'en graphe).
+    ctx.input().cloned()
 }
 
 pub fn effect() -> Effect {

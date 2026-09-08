@@ -1,12 +1,12 @@
 [package]
 name = "photo-engine"
-version = "0.5.0"
+version = "0.7.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-suite-core = { path = "../../core/core", package = "suite-core" }
 datatypes = { path = "../../core/datatypes" }
+math-utils = { path = "../../packages/math-utils" }
 image = { workspace = true }
 rayon = { workspace = true }
 wgpu = { workspace = true }

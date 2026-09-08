@@ -17,7 +17,7 @@
 //! Effet Luminosité / Contraste (GPU compute + fallback CPU rayon)
 
 use super::{Effect, NodeCtx, to_rgba8};
-use datatypes::{NodeCategory, NodeDefinition, NodeId, ParamValue, SocketDef, SocketType};
+use datatypes::{NodeCategory, NodeDefinition, ParamValue, SocketDef, SocketType};
 use image::DynamicImage;
 use rayon::prelude::*;
 
@@ -50,20 +50,20 @@ pub fn apply_effect(img: &DynamicImage, brightness: f32, contrast: f32) -> Dynam
         .samples
         .par_chunks_mut(4)
         .for_each(|px| {
-            for c in 0..3 {
-                let mut v = px[c] as f32;
+            for c in px.iter_mut().take(3) {
+                let mut v = *c as f32;
                 v = (v - 128.0) * contrast_factor + 128.0;
                 v += b as f32;
-                px[c] = v.clamp(0.0f32, 255.0f32) as u8;
+                *c = v.clamp(0.0f32, 255.0f32) as u8;
             }
         });
     DynamicImage::ImageRgba8(out)
 }
 
-fn apply(ctx: &NodeCtx, id: NodeId) -> Option<DynamicImage> {
-    let input = ctx.input(id, "image")?;
-    let b = ctx.param(id, "brightness", 0.0);
-    let c = ctx.param(id, "contrast", 0.0);
+fn apply(ctx: &NodeCtx) -> Option<DynamicImage> {
+    let input = ctx.input()?;
+    let b = ctx.param("brightness", 0.0);
+    let c = ctx.param("contrast", 0.0);
     Some(apply_effect(input, b, c))
 }
 

@@ -17,9 +17,13 @@
 use crate::theme::{colors, fonts, metrics};
 use iced::widget::pane_grid;
 use iced::widget::{container, row, text};
-use iced::{Alignment, Element};
+use iced::{Alignment, Element, Padding};
 use iced_aw::ContextMenu;
 
+/// Renders a pane-grid panel with title bar and content.
+///
+/// `close_menu` provides an optional context-menu action for closing the panel.
+#[must_use]
 pub fn render<'a, Message>(
     title: impl Into<String>,
     content: impl Into<Element<'a, Message>>,
@@ -45,7 +49,7 @@ where
     .spacing(5);
 
     let title_area: Element<'_, Message> = match close_menu {
-        // ContextMenu natif : s'ouvre au clic droit, positionné au curseur
+        // Native ContextMenu: opens on right-click, positioned at cursor
         Some(msg) => ContextMenu::new(title_row, move || {
             crate::dropdown::menu_item("Fermer le panneau", "", msg.clone())
         })
@@ -54,7 +58,7 @@ where
     };
 
     let title_bar = pane_grid::TitleBar::new(title_area)
-        .padding(5)
+        .padding(Padding::new(6.0).left(8.0).right(8.0))
         .style(if is_focused {
             style_title_focused
         } else {
@@ -70,18 +74,18 @@ where
         })
 }
 
-// --- STYLES UNIFIÉS ---
+// --- UNIFIED STYLES ---
 
 fn style_title_active(_theme: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(colors::BG_PANEL_HEADER.into()),
+        background: Some(colors::BG_TRANSPARENT.into()),
         ..Default::default()
     }
 }
 
 fn style_title_focused(_theme: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(colors::BG_PANEL_HEADER_FOCUSED.into()),
+        background: Some(colors::BG_TRANSPARENT.into()),
         ..Default::default()
     }
 }

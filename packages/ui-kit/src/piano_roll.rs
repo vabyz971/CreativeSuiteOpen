@@ -14,12 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Piano Roll FL Studio-like — widget minimaliste pour l'app Audio
+//! Piano Roll FL Studio-like — minimal widget for Audio app
 
 use crate::theme::colors;
 use iced::widget::{Space, column, container, row, text};
 use iced::{Alignment, Color, Element, Length};
 
+#[must_use]
 pub fn view<'a, Message>() -> Element<'a, Message>
 where
     Message: 'a,
@@ -39,7 +40,7 @@ where
                 background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
                 ..Default::default()
             }),
-            container(
+            iced::widget::center(
                 column![
                     text("FL Studio • Channel Rack / Mixer")
                         .size(12)
@@ -52,10 +53,6 @@ where
                 .padding(16)
                 .align_x(Alignment::Center)
             )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
             .style(|_| container::Style {
                 background: Some(colors::SURFACE_CONTAINER_LOWEST.into()),
                 ..Default::default()

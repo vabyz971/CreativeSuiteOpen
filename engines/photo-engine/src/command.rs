@@ -72,6 +72,18 @@ pub enum Command {
         old: String,
         new: String,
     },
+    SetMaskEnabled {
+        node_id: Uuid,
+        mask_id: Uuid,
+        old: bool,
+        new: bool,
+    },
+    SetMaskInverted {
+        node_id: Uuid,
+        mask_id: Uuid,
+        old: bool,
+        new: bool,
+    },
 }
 
 impl Command {
@@ -84,7 +96,9 @@ impl Command {
             | Command::SetFilterParam { layer_id, .. } => *layer_id,
             Command::SetBlendMode { node_id, .. }
             | Command::SetVisibility { node_id, .. }
-            | Command::RenameLayer { node_id, .. } => *node_id,
+            | Command::RenameLayer { node_id, .. }
+            | Command::SetMaskEnabled { node_id, .. }
+            | Command::SetMaskInverted { node_id, .. } => *node_id,
         }
     }
 
@@ -130,6 +144,28 @@ impl Command {
                 node_id: *node_id,
                 old: new.clone(),
                 new: old.clone(),
+            },
+            Command::SetMaskEnabled {
+                node_id,
+                mask_id,
+                old,
+                new,
+            } => Command::SetMaskEnabled {
+                node_id: *node_id,
+                mask_id: *mask_id,
+                old: *new,
+                new: *old,
+            },
+            Command::SetMaskInverted {
+                node_id,
+                mask_id,
+                old,
+                new,
+            } => Command::SetMaskInverted {
+                node_id: *node_id,
+                mask_id: *mask_id,
+                old: *new,
+                new: *old,
             },
         }
     }
@@ -213,7 +249,10 @@ impl Command {
     pub fn affects_composite(&self) -> bool {
         matches!(
             self,
-            Command::SetBlendMode { .. } | Command::SetVisibility { .. }
+            Command::SetBlendMode { .. }
+                | Command::SetVisibility { .. }
+                | Command::SetMaskEnabled { .. }
+                | Command::SetMaskInverted { .. }
         )
     }
 }

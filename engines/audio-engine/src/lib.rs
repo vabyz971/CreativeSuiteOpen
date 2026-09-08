@@ -15,7 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Audio Engine — FL Studio-like : piano roll, mixer, effets
-//! Même Graph que Photo/Video mais sockets AudioBuffer (Float/Vector)
+//! Définitions datatypes (sockets AudioBuffer Float/Vector)
 
 use datatypes::{NodeCategory, NodeDefinition, ParamValue, SocketDef, SocketType};
 

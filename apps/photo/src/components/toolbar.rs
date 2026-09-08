@@ -15,17 +15,26 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Barre contextuelle haute : actions globales de droite (Export).
-//! Le nom du fichier/document est porté par le titre du panneau Canvas —
-//! pas de sélecteur redondant ici.
 
-use crate::Message;
+use crate::{Message, Tool};
 use iced::widget::{button, row, text};
 use iced::{Alignment, Element, Length, Padding};
+use uuid::Uuid;
 
-pub fn context_bar() -> Element<'static, Message> {
+#[allow(clippy::too_many_arguments)]
+pub fn context_bar<'a>(
+    selected_tool: Tool,
+    selected_layer: Option<Uuid>,
+    selected_scale_percent: Option<f32>,
+    has_selection: bool,
+    brush_color: iced::Color,
+    brush_size: f32,
+    brush_opacity: f32,
+    color_picker_open: bool,
+) -> Element<'a, Message> {
     let material = ui_kit::icon_button::MATERIAL_ICONS;
 
-    // Bouton primaire Export (accent #007AFF)
+    // Bouton Exporter en pilule arrondie
     let export_btn = button(
         row![
             text("\u{e2c6}").font(material).size(16), // file_upload
@@ -35,11 +44,31 @@ pub fn context_bar() -> Element<'static, Message> {
         .align_y(Alignment::Center),
     )
     .padding(Padding::new(6.0).left(14.0).right(14.0))
-    .style(|_, s| ui_kit::style::primary(s))
+    .style(|_, s| ui_kit::style::primary_pill(s))
     .on_press(Message::MockAction);
 
-    row![iced::widget::Space::new().width(Length::Fill), export_btn,]
+    if let Some(controls) = crate::components::options_bar::tool_controls(
+        selected_tool,
+        selected_layer,
+        selected_scale_percent,
+        has_selection,
+        brush_color,
+        brush_size,
+        brush_opacity,
+        color_picker_open,
+    ) {
+        row![
+            controls,
+            iced::widget::Space::new().width(Length::Fill),
+            export_btn,
+        ]
         .align_y(Alignment::Center)
         .padding(Padding::new(5.0).left(8.0).right(8.0))
         .into()
+    } else {
+        row![iced::widget::Space::new().width(Length::Fill), export_btn,]
+            .align_y(Alignment::Center)
+            .padding(Padding::new(5.0).left(8.0).right(8.0))
+            .into()
+    }
 }

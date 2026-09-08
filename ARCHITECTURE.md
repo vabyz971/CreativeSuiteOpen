@@ -1,3 +1,6 @@
+---
+covers: []
+---
 # Architecture de CreativeSuiteOpen
 
 ## Vue d'ensemble
@@ -11,7 +14,7 @@ graphe nodal générique, widgets et bibliothèques utilitaires.
 ```
 apps/       Applications finales (binaires indépendants)
 engines/    Moteurs métier PURS — zéro dépendance UI
-core/       Socle commun : suite-core (graphe nodal), datatypes, shell
+core/       Socle commun : suite-core (graphe nodal), datatypes
 packages/   Bibliothèques réutilisables : ui-kit, math-utils, file-utils
 assets/     Ressources partagées (polices)
 ```
@@ -20,7 +23,7 @@ assets/     Ressources partagées (polices)
 Bibliothèques partagées réutilisables entre toutes les applications.
 - `ui-kit` (crate `ui_kit`) : widgets iced en couches — `theme` (seule source des
   couleurs/tailles, tokens DESIGN.md), `style` (styles canoniques), primitives
-  transverses, layouts, canvas domaine (`image_canvas`, `node_graph`, `timeline`,
+  transverses, layouts, canvas domaine (`image_canvas`, `timeline`,
   `piano_roll`).
 - `math-utils` : mathématiques communes (`Vec3`, `Matrix4`, courbes de Bézier) ;
   le `Vec2` canonique reste `datatypes::Vec2`, réexporté.
@@ -40,7 +43,8 @@ Ils peuvent dépendre de `core/*` et de `packages/*` (hors UI).
 
 ### core/
 Socle transverse : `suite-core` (graphe nodal générique), `datatypes`
-(nœuds, sockets, `Vec2`), `suite-shell` (layout, menus, fenêtre).
+(nœuds, sockets, `Vec2`). `suite-shell` supprimé (chantier 3, 2026) :
+Photo/Video/Audio restent des apps indépendantes sans coque partagée.
 
 ### apps/
 Applications finales qui combinent packages, core et engines. Découpage par rôle :

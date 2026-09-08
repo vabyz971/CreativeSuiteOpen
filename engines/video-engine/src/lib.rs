@@ -15,7 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Video Engine — Final Cut-like : timeline, transitions, effets
-//! Réutilise suite-core Graph + datatypes, même pattern que photo-engine
+//! Réutilise datatypes, même pattern que photo-engine
 
 use datatypes::{NodeCategory, NodeDefinition, ParamValue, SocketDef, SocketType};
 
