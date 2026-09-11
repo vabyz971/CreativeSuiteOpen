@@ -79,6 +79,9 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
         app.tools.brush_size,
         app.tools.brush_opacity,
         app.tools.color_picker_open,
+        app.tools.rotation_step,
+        app.tools.move_grid_enabled,
+        app.tools.move_grid_size,
     );
 
     let central = iced::widget::column![

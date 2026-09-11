@@ -204,7 +204,7 @@ mod tests {
             photo_engine::BlendMode::Multiply;
         assert!(app.needs_fallback(), "blend non-Normal → fallback");
 
-        let _ = update(&mut app, Message::SelectTool(crate::message::Tool::Move));
+        let _ = update(&mut app, Message::SelectTool(crate::message::Tool::Select));
 
         // Sélection seule (clic sans mouvement) : AUCUN pré-calcul lancé.
         let _ = update(
@@ -232,6 +232,7 @@ mod tests {
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformCursor {
                 doc: (0.1, 0.0),
                 uniform: false,
+                snap: false,
             }),
         );
         assert!(
@@ -254,6 +255,7 @@ mod tests {
                     ui_kit::image_canvas::ImageCanvasEvent::TransformCursor {
                         doc: (*dx, *dy),
                         uniform: false,
+                        snap: false,
                     },
                 ),
             );

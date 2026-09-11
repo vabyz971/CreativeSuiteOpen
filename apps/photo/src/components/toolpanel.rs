@@ -27,7 +27,7 @@ use ui_kit::icon_button;
 const ICON_PAN_TOOL: &str = "\u{e925}"; // pan_tool - Main
 const ICON_ZOOM_IN: &str = "\u{e8ff}"; // zoom_in - Zoom
 const ICON_SELECT: &str = "\u{F01BF}"; // select_all - Sélection
-const ICON_MOVE: &str = "\u{e89f}"; // open_with - Déplacer
+const ICON_MOVE: &str = "\u{e89f}"; // open_with - Déplacer (mode déplacement actif)
 const ICON_BRUSH: &str = "\u{F00E3}"; // brush - Pinceau
 /// Vérifié présent dans la cmap de MaterialIcons-Regular.ttf (format_color_reset).
 /// La police classique n'a pas de glyphe « eraser » dédié.
@@ -39,6 +39,7 @@ pub fn render<'a>(
     brush_color: Color,
     picker_open: bool,
     mask_brush_black: bool,
+    moving_layer: bool,
 ) -> Element<'a, Message> {
     let swatch = iced::widget::button(
         iced::widget::container(
@@ -112,16 +113,14 @@ pub fn render<'a>(
             Message::SelectTool(Tool::Zoom)
         ),
         icon_button::render(
-            ICON_SELECT,
-            "Sélect",
+            if moving_layer { ICON_MOVE } else { ICON_SELECT },
+            if moving_layer {
+                "Déplacement"
+            } else {
+                "Sélect"
+            },
             selected == Tool::Select,
             Message::SelectTool(Tool::Select)
-        ),
-        icon_button::render(
-            ICON_MOVE,
-            "Déplacer",
-            selected == Tool::Move,
-            Message::SelectTool(Tool::Move)
         ),
         icon_button::render(
             ICON_BRUSH,

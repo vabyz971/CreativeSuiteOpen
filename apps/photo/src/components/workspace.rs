@@ -213,7 +213,6 @@ fn render_canvas_preview<'a>(
     let zoom = zoom_level as f32 / 100.0;
     let canvas_tool = match selected_tool {
         Tool::Hand => ui_kit::image_canvas::CanvasTool::Hand,
-        Tool::Move => ui_kit::image_canvas::CanvasTool::Move,
         Tool::Zoom => ui_kit::image_canvas::CanvasTool::Zoom,
         Tool::Select => ui_kit::image_canvas::CanvasTool::Select,
         Tool::Eyedropper => ui_kit::image_canvas::CanvasTool::Eyedropper,
@@ -486,6 +485,7 @@ fn render_canvas_preview<'a>(
             brush_color,
             color_picker_open,
             mask_brush_black,
+            drag_layer.is_some(),
         ))
         .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
         .style(|_| {

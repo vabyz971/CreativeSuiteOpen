@@ -229,6 +229,18 @@ pub fn handle_set_brush_opacity(app: &mut PhotoApp, o: f32) -> Task<Message> {
     app.tools.brush_opacity = o;
     Task::none()
 }
+pub fn handle_set_rotation_step(app: &mut PhotoApp, v: f32) -> Task<Message> {
+    app.tools.rotation_step = v.clamp(1.0, 45.0);
+    Task::none()
+}
+pub fn handle_toggle_move_grid(app: &mut PhotoApp, on: bool) -> Task<Message> {
+    app.tools.move_grid_enabled = on;
+    Task::none()
+}
+pub fn handle_set_move_grid_size(app: &mut PhotoApp, v: f32) -> Task<Message> {
+    app.tools.move_grid_size = v.clamp(4.0, 512.0);
+    Task::none()
+}
 pub fn handle_toggle_picker(app: &mut PhotoApp) -> Task<Message> {
     app.tools.color_picker_open = !app.tools.color_picker_open;
     Task::none()
@@ -414,6 +426,9 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::SetBrushOpacity(o) => Some(handle_set_brush_opacity(app, o)),
         Message::ToggleColorPicker => Some(handle_toggle_picker(app)),
         Message::SelectTool(t) => Some(handle_select_tool(app, t)),
+        Message::SetRotationStep(v) => Some(handle_set_rotation_step(app, v)),
+        Message::ToggleMoveGrid(on) => Some(handle_toggle_move_grid(app, on)),
+        Message::SetMoveGridSize(v) => Some(handle_set_move_grid_size(app, v)),
         Message::ToggleToolsPanel => Some(handle_toggle_tools(app)),
         Message::SetActiveMask(target) => Some(handle_set_active_mask(app, target)),
         Message::AddLayerMask(id) => Some(handle_add_mask(app, id)),
@@ -461,5 +476,8 @@ pub fn handles(msg: &Message) -> bool {
             | Message::ToggleLayerMaskEnabled(..)
             | Message::InvertLayerMask(..)
             | Message::ToggleMaskColor
+            | Message::SetRotationStep(_)
+            | Message::ToggleMoveGrid(_)
+            | Message::SetMoveGridSize(_)
     )
 }

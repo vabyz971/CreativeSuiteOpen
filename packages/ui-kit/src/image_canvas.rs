@@ -27,9 +27,9 @@
 )]
 
 use iced::mouse;
-use iced::widget::canvas::{self, Fill, Frame, Geometry, Path, Stroke};
+use iced::widget::canvas::{self, Frame, Geometry, Path, Stroke};
 use iced::widget::image;
-use iced::{Point, Rectangle, Size, Theme, Vector};
+use iced::{Color, Point, Rectangle, Size, Theme, Vector};
 use uuid::Uuid;
 
 use crate::theme::colors;
@@ -62,7 +62,7 @@ pub enum TransformHandle {
     SkewX,
     /// Côté bas → cisaille Y selon X (inclinaison verticale)
     SkewY,
-    /// Échelle proportionnelle — poignée carrée 0.2× au-delà du coin
+    /// Échelle proportionnelle — poignée carrée 0.12× au-delà du coin
     /// bas-droite (déplace l'image dans son échelle, aspect conservé)
     Scale,
 }
@@ -116,11 +116,13 @@ pub enum ImageCanvasEvent {
         kind: TransformHandle,
         doc: (f32, f32),
     },
-    /// Curseur pendant un geste (coordonnées document). `uniform` = Ctrl
-    /// enfoncé → redimensionnement PROPORTIONNEL (aspect conservé).
+    /// Curseur pendant un geste (coordonnées document).
+    /// `uniform` = Ctrl enfoncé → redimensionnement PROPORTIONNEL.
+    /// `snap` = Shift enfoncé → rotation aimantée (multiples de l'angle).
     TransformCursor {
         doc: (f32, f32),
         uniform: bool,
+        snap: bool,
     },
     /// Fin de geste — l'app commit la transformation
     TransformEnd,
@@ -652,127 +654,38 @@ impl ImageCanvas {
             let corners = self.screen_corners(target, bounds);
             let ui = BoxUi::new(corners);
 
-            let quad = Path::new(|p| {
-                for (i, c) in corners.iter().enumerate() {
-                    if i == 0 {
-                        p.move_to(*c);
-                    } else {
-                        p.line_to(*c);
-                    }
+            // La boîte et ses poignées sont RASTERISÉES en une image RGBA :
+            // dans iced l'ordre de rendu d'une couche est
+            // quads -> meshes -> shaders -> images -> text : des traits
+            // vectoriels (meshes) seraient TOUJOURS dessinés sous les
+            // textures des calques (images). Une texture générée à la volée
+            // est rendue APRÈS ces images, donc par-dessus le calque selectionné.
+            if let Some((handle, off, size)) = OverlayRaster::render(bounds, corners, ui, active) {
+                frame.draw_image(Rectangle::new(off, size), iced_core::Image::new(handle));
+            }
+
+            // Curseur de rotation : un glyphe Material par-dessus la boîte,
+            // visible près du pointeur quand on survole/déplace la poignée
+            // Rotate (iced ne connaît pas d'interaction « rotation »).
+            if let Some(pos) = state.cursor_pos {
+                let hovering_rot = active == Some(TransformHandle::Rotate)
+                    || (state.transform_handle.is_none()
+                        && self
+                            .hit_transform_handle(pos, bounds)
+                            .map(|(k, _)| k == TransformHandle::Rotate)
+                            .unwrap_or(false));
+                if hovering_rot {
+                    let glyph_pos = Point::new(pos.x + 12.0, pos.y - 14.0);
+                    frame.fill_text(iced::widget::canvas::Text {
+                        content: "\u{e41a}".into(), // Material: rotate_right
+                        position: glyph_pos,
+                        color: colors::ACCENT,
+                        size: iced::Pixels(16.0),
+                        font: crate::icon_button::MATERIAL_ICONS,
+                        ..Default::default()
+                    });
                 }
-                p.close();
-            });
-            frame.stroke(
-                &quad,
-                Stroke::default()
-                    .with_width(1.0)
-                    .with_color(colors::SELECTION_STROKE),
-            );
-
-            // Poignée de rotation : tige + cercle au-dessus du bord haut
-            let top_mid = Point::new(
-                (corners[0].x + corners[1].x) / 2.0,
-                (corners[0].y + corners[1].y) / 2.0,
-            );
-            let stem = Path::new(|p| {
-                p.move_to(top_mid);
-                p.line_to(ui.rot_pos);
-            });
-            frame.stroke(
-                &stem,
-                Stroke::default()
-                    .with_width(1.0)
-                    .with_color(colors::SELECTION_STROKE),
-            );
-            let rot_fill = if active == Some(TransformHandle::Rotate) {
-                Fill::from(colors::ACCENT)
-            } else {
-                Fill::from(colors::TEXT_ON_ACCENT)
-            };
-            let rot_circle = Path::circle(ui.rot_pos, 5.0);
-            frame.fill(&rot_circle, rot_fill);
-            frame.stroke(
-                &rot_circle,
-                Stroke::default()
-                    .with_width(1.2)
-                    .with_color(colors::SELECTION_STROKE),
-            );
-            frame.fill(
-                &Path::circle(top_mid, 1.8),
-                Fill::from(colors::SELECTION_STROKE),
-            );
-
-            // Poignées d'angle (redimensionner) : CERCLES
-            let corner_kinds = [
-                (Corner::TopLeft, ui.corners[0]),
-                (Corner::TopRight, ui.corners[1]),
-                (Corner::BottomRight, ui.corners[2]),
-                (Corner::BottomLeft, ui.corners[3]),
-            ];
-            for (kind, c) in corner_kinds {
-                let fill = if active == Some(TransformHandle::Corner(kind)) {
-                    Fill::from(colors::ACCENT)
-                } else {
-                    Fill::from(colors::TEXT_ON_ACCENT)
-                };
-                let circle = Path::circle(c, HANDLE_HALF);
-                frame.fill(&circle, fill);
-                frame.stroke(
-                    &circle,
-                    Stroke::default()
-                        .with_width(1.0)
-                        .with_color(colors::SELECTION_STROKE),
-                );
             }
-
-            // Poignées d'inclinaison (losanges, milieux des côtés droit et bas)
-            for (kind, m) in [
-                (TransformHandle::SkewX, ui.right_mid),
-                (TransformHandle::SkewY, ui.bottom_mid),
-            ] {
-                let di = HANDLE_HALF;
-                let diamond = Path::new(|p| {
-                    p.move_to(Point::new(m.x, m.y - di));
-                    p.line_to(Point::new(m.x + di, m.y));
-                    p.line_to(Point::new(m.x, m.y + di));
-                    p.line_to(Point::new(m.x - di, m.y));
-                    p.close();
-                });
-                let fill = if active == Some(kind) {
-                    colors::ACCENT
-                } else {
-                    colors::TEXT_ON_ACCENT
-                };
-                frame.fill(&diamond, Fill::from(fill));
-                frame.stroke(
-                    &diamond,
-                    Stroke::default()
-                        .with_width(1.0)
-                        .with_color(colors::SELECTION_STROKE),
-                );
-            }
-
-            // Poignée d'ÉCHELLE : CARRÉ au-delà du coin bas-droite (0.2× la
-            // demi-diagonale) — distincte des cercles (coins) et des
-            // losanges (inclinaisons).
-            let s = ui.scale_pos;
-            let sq = HANDLE_HALF * 1.4;
-            let square = Path::rectangle(
-                Point::new(s.x - sq, s.y - sq),
-                Size::new(sq * 2.0, sq * 2.0),
-            );
-            let fill = if active == Some(TransformHandle::Scale) {
-                colors::ACCENT
-            } else {
-                colors::TEXT_ON_ACCENT
-            };
-            frame.fill(&square, Fill::from(fill));
-            frame.stroke(
-                &square,
-                Stroke::default()
-                    .with_width(1.0)
-                    .with_color(colors::SELECTION_STROKE),
-            );
         }
 
         Some(frame.into_geometry())
@@ -790,7 +703,7 @@ pub struct BoxUi {
     /// Milieu côté droit (inclinaison X) et côté bas (inclinaison Y)
     pub right_mid: Point,
     pub bottom_mid: Point,
-    /// Poignée d'ÉCHELLE : 0.2× au-delà du coin bas-droite, le long de la
+    /// Poignée d'ÉCHELLE : 0.12× au-delà du coin bas-droite, le long de la
     /// diagonale centre → coin (façon « resize » Photoshop/Affinity).
     pub scale_pos: Point,
 }
@@ -835,14 +748,321 @@ impl BoxUi {
     }
 }
 
-/// Rayon de hit des poignées (écran)
-const HANDLE_HIT: f32 = 8.0;
+/// Rasteriseur CPU de l'overlay de transformation en texture RGBA.
+///
+/// iced dessine chaque couche dans l'ordre quads -> meshes -> shaders ->
+/// images -> text : des traits vectoriels (meshes) restent TOUJOURS sous les
+/// textures des calques (images). Pour garantir que la boîte et ses poignées
+/// apparaissent PAR-DESSUS le calque sélectionné, on rasterise l'overlay dans
+/// une petite texture RGBA — moyenne via `point_in_convex_quad`/segment —
+/// et on la dessine avec `draw_image` dans une 2e géométrie.
+struct OverlayRaster {
+    // Buffer centré sur la bounding box écran de l'overlay (1 px écran = 1 px texture)
+    buf: Vec<u8>,
+    w: u32,
+    h: u32,
+    ox: f32,
+    oy: f32,
+}
+
+impl OverlayRaster {
+    /// Rasterise la boîte de transformation. Retourne (handle, coin sup. gauche, taille écran).
+    fn render(
+        bounds: Rectangle,
+        corners: [Point; 4],
+        ui: BoxUi,
+        active: Option<TransformHandle>,
+    ) -> Option<(image::Handle, Point, Size)> {
+        // Bounding box de tous les éléments (poignées en extension max.)
+        const PAD: f32 = HANDLE_HALF * 1.4 + 3.0;
+        let xs = [
+            corners[0].x,
+            corners[1].x,
+            corners[2].x,
+            corners[3].x,
+            ui.rot_pos.x,
+            ui.scale_pos.x,
+        ];
+        let ys = [
+            corners[0].y,
+            corners[1].y,
+            corners[2].y,
+            corners[3].y,
+            ui.rot_pos.y,
+            ui.scale_pos.y,
+        ];
+        let min_x = xs.iter().copied().fold(f32::INFINITY, f32::min) - PAD;
+        let max_x = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) + PAD;
+        let min_y = ys.iter().copied().fold(f32::INFINITY, f32::min) - PAD;
+        let max_y = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) + PAD;
+
+        // Clamp à la zone visible — corners sont en coordonnées locales
+        // du canvas (0..width, 0..height), PAS en coordonnées absolues
+        // (bounds.x/y). Le renderer est déjà translaté par (bounds.x,
+        // bounds.y) dans iced Canvas::draw, donc tout dessin dans le frame
+        // est relatif au coin haut-gauche local du widget.
+        let ox = min_x.max(0.0);
+        let oy = min_y.max(0.0);
+        let ex = max_x.min(bounds.width);
+        let ey = max_y.min(bounds.height);
+        if ex <= ox || ey <= oy {
+            return None;
+        }
+        let w = ((ex - ox).ceil().max(1.0)) as u32;
+        let h = ((ey - oy).ceil().max(1.0)) as u32;
+        let buf = vec![0u8; (w as usize) * (h as usize) * 4];
+        let mut r = Self { buf, w, h, ox, oy };
+
+        let stroke = r.to_u8(colors::SELECTION_STROKE);
+        // Quadrilatère : 4 segments d'épaisseur 1 px
+        for (a, b) in [
+            (corners[0], corners[1]),
+            (corners[1], corners[2]),
+            (corners[2], corners[3]),
+            (corners[3], corners[0]),
+        ] {
+            r.stroke_line(a.x, a.y, b.x, b.y, 1.0, stroke);
+        }
+
+        let top_mid = Point::new(
+            (corners[0].x + corners[1].x) / 2.0,
+            (corners[0].y + corners[1].y) / 2.0,
+        );
+
+        // Tige de rotation + petit centre
+        r.stroke_line(
+            top_mid.x,
+            top_mid.y,
+            ui.rot_pos.x,
+            ui.rot_pos.y,
+            1.0,
+            stroke,
+        );
+        r.fill_circle(top_mid.x, top_mid.y, 1.8, stroke);
+
+        // Poignée de rotation
+        let active_rot = active == Some(TransformHandle::Rotate);
+        r.fill_circle(
+            ui.rot_pos.x,
+            ui.rot_pos.y,
+            HANDLE_HALF,
+            r.handle_color(active_rot),
+        );
+        r.stroke_circle(ui.rot_pos.x, ui.rot_pos.y, HANDLE_HALF, 1.0, stroke);
+
+        // Coins (cercles)
+        for (kind, c) in [
+            (Corner::TopLeft, ui.corners[0]),
+            (Corner::TopRight, ui.corners[1]),
+            (Corner::BottomRight, ui.corners[2]),
+            (Corner::BottomLeft, ui.corners[3]),
+        ] {
+            let active_c = active == Some(TransformHandle::Corner(kind));
+            r.fill_circle(c.x, c.y, HANDLE_HALF, r.handle_color(active_c));
+            r.stroke_circle(c.x, c.y, HANDLE_HALF, 1.0, stroke);
+        }
+
+        // Inclinaisons (losanges)
+        for (kind, m) in [
+            (TransformHandle::SkewX, ui.right_mid),
+            (TransformHandle::SkewY, ui.bottom_mid),
+        ] {
+            let active_d = active == Some(kind);
+            let di = HANDLE_HALF;
+            let quad = [
+                Point::new(m.x, m.y - di),
+                Point::new(m.x + di, m.y),
+                Point::new(m.x, m.y + di),
+                Point::new(m.x - di, m.y),
+            ];
+            r.fill_quad(&quad, r.handle_color(active_d));
+            r.stroke_quad(&quad, 1.0, stroke);
+        }
+
+        // Échelle (carré)
+        let active_s = active == Some(TransformHandle::Scale);
+        let s = ui.scale_pos;
+        let sq = HANDLE_HALF * 1.4;
+        let quad = [
+            Point::new(s.x - sq, s.y - sq),
+            Point::new(s.x + sq, s.y - sq),
+            Point::new(s.x + sq, s.y + sq),
+            Point::new(s.x - sq, s.y + sq),
+        ];
+        r.fill_quad(&quad, r.handle_color(active_s));
+        r.stroke_quad(&quad, 1.0, stroke);
+
+        let handle = image::Handle::from_rgba(w, h, r.buf);
+        Some((handle, Point::new(ox, oy), Size::new(w as f32, h as f32)))
+    }
+
+    /// Blanc sur poignée active, couleur de fond sinon — comme l'ancien overlay mesh.
+    fn handle_color(&self, active: bool) -> [u8; 4] {
+        if active {
+            Self::color_bytes(colors::ACCENT)
+        } else {
+            Self::color_bytes(colors::TEXT_ON_ACCENT)
+        }
+    }
+
+    fn color_bytes(color: Color) -> [u8; 4] {
+        [
+            (color.r * 255.0).round() as u8,
+            (color.g * 255.0).round() as u8,
+            (color.b * 255.0).round() as u8,
+            (color.a * 255.0).round() as u8,
+        ]
+    }
+
+    fn to_u8(&self, color: Color) -> [u8; 4] {
+        Self::color_bytes(color)
+    }
+
+    /// Source-over d'un pixel en coordonnées écran, alpha = couverture.
+    fn blend_px(&mut self, x: f32, y: f32, color: [u8; 4], cov: f32) {
+        if cov <= 0.004 {
+            return;
+        }
+        let px = (x - self.ox).round() as i64;
+        let py = (y - self.oy).round() as i64;
+        if px < 0 || py < 0 || px >= self.w as i64 || py >= self.h as i64 {
+            return;
+        }
+        let idx = ((py as u32 * self.w + px as u32) * 4) as usize;
+        // Src-over sur buffer transparent
+        let sa = color[3] as f32 / 255.0 * cov;
+        let da = self.buf[idx + 3] as f32 / 255.0;
+        let out_a = sa + da * (1.0 - sa);
+        if out_a <= 0.0 {
+            return;
+        }
+        let put = |fg: u8, bg: u8| -> u8 {
+            ((fg as f32 * sa + bg as f32 * da * (1.0 - sa)) / out_a).round() as u8
+        };
+        self.buf[idx] = put(color[0], self.buf[idx]);
+        self.buf[idx + 1] = put(color[1], self.buf[idx + 1]);
+        self.buf[idx + 2] = put(color[2], self.buf[idx + 2]);
+        self.buf[idx + 3] = (out_a * 255.0).round() as u8;
+    }
+
+    /// Distance point→segment (2D).
+    fn dist_seg(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+        let dx = bx - ax;
+        let dy = by - ay;
+        let l2 = dx * dx + dy * dy;
+        if l2 <= 1e-9 {
+            return ((px - ax) * (px - ax) + (py - ay) * (py - ay)).sqrt();
+        }
+        let t = (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0);
+        let cx = ax + t * dx;
+        let cy = ay + t * dy;
+        ((px - cx) * (px - cx) + (py - cy) * (py - cy)).sqrt()
+    }
+
+    /// Trait AA : itère la bbox du segment, alpha = couverture d'un demi-trait.
+    fn stroke_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, color: [u8; 4]) {
+        let pad = width * 0.5 + 1.0;
+        let lo_x = x0.min(x1) - pad;
+        let hi_x = x0.max(x1) + pad;
+        let lo_y = y0.min(y1) - pad;
+        let hi_y = y0.max(y1) + pad;
+        let sx = (lo_x + 0.5) as i64;
+        let ex = hi_x as i64;
+        let sy = (lo_y + 0.5) as i64;
+        let ey = hi_y as i64;
+        for py in sy..=ey {
+            for px in sx..=ex {
+                let d = Self::dist_seg(px as f32 + 0.5, py as f32 + 0.5, x0, y0, x1, y1);
+                let cov = ((width * 0.5) + 0.5 - d).clamp(0.0, 1.0);
+                self.blend_px(px as f32, py as f32, color, cov);
+            }
+        }
+    }
+
+    fn fill_circle(&mut self, cx: f32, cy: f32, rad: f32, color: [u8; 4]) {
+        self.stroke_circle_inner(cx, cy, rad, rad, color, true);
+    }
+
+    fn stroke_circle(&mut self, cx: f32, cy: f32, rad: f32, width: f32, color: [u8; 4]) {
+        self.stroke_circle_inner(cx, cy, rad, width, color, false);
+    }
+
+    fn stroke_circle_inner(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        rad: f32,
+        width: f32,
+        color: [u8; 4],
+        fill: bool,
+    ) {
+        let pad = rad + width + 1.0;
+        let sx = (cx - pad + 0.5) as i64;
+        let ex = (cx + pad) as i64;
+        let sy = (cy - pad + 0.5) as i64;
+        let ey = (cy + pad) as i64;
+        for py in sy..=ey {
+            for px in sx..=ex {
+                let dx = px as f32 + 0.5 - cx;
+                let dy = py as f32 + 0.5 - cy;
+                let d = (dx * dx + dy * dy).sqrt();
+                let cov = if fill {
+                    (rad + 0.5 - d).clamp(0.0, 1.0)
+                } else {
+                    // Anneau : bande AA de chaque côté du rayon
+                    let inner = (rad - width * 0.5).max(0.0);
+                    let outer = rad + width * 0.5;
+                    if d < inner {
+                        (d - (inner - 0.5)).clamp(0.0, 1.0)
+                    } else {
+                        (outer + 0.5 - d).clamp(0.0, 1.0)
+                    }
+                };
+                self.blend_px(px as f32, py as f32, color, cov);
+            }
+        }
+    }
+
+    /// Remplit un quadrilatère convexe (AA par 4 sous-échantillons).
+    fn fill_quad(&mut self, quad: &[Point; 4], color: [u8; 4]) {
+        let [a, b, c, d] = *quad;
+        let lo_x = a.x.min(b.x).min(c.x).min(d.x) - 1.0;
+        let hi_x = a.x.max(b.x).max(c.x).max(d.x) + 1.0;
+        let lo_y = a.y.min(b.y).min(c.y).min(d.y) - 1.0;
+        let hi_y = a.y.max(b.y).max(c.y).max(d.y) + 1.0;
+        let sx = (lo_x + 0.5) as i64;
+        let ex = hi_x as i64;
+        let sy = (lo_y + 0.5) as i64;
+        let ey = hi_y as i64;
+        for py in sy..=ey {
+            for px in sx..=ex {
+                let mut cov = 0.0;
+                for (ox, oy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                    if point_in_quad(Point::new(px as f32 + ox, py as f32 + oy), *quad) {
+                        cov += 0.25;
+                    }
+                }
+                self.blend_px(px as f32, py as f32, color, cov);
+            }
+        }
+    }
+
+    fn stroke_quad(&mut self, quad: &[Point; 4], width: f32, color: [u8; 4]) {
+        for i in 0..4 {
+            let a = quad[i];
+            let b = quad[(i + 1) % 4];
+            self.stroke_line(a.x, a.y, b.x, b.y, width, color);
+        }
+    }
+}
 /// Longueur de la tige de rotation
 const ROT_STEM: f32 = 24.0;
+/// Rayon de hit des poignées (écran)
+const HANDLE_HIT: f32 = 8.0;
 /// Demi-côté des poignées dessinées (écran)
 const HANDLE_HALF: f32 = 5.0;
-/// Distance de la poignée d'échelle : 0.2× la demi-diagonale, au-delà du coin
-const SCALE_OFFSET: f32 = 0.2;
+/// Distance de la poignée d'échelle : 0.12× la demi-diagonale, au-delà du coin
+const SCALE_OFFSET: f32 = 0.12;
 /// Quantum de mouvement doc avant de publier un `PickHover` (évite la rafale)
 const PICK_HOVER_STEP: f32 = 4.0;
 /// Grossissement écran d'un pixel doc dans la loupe pipette
@@ -1155,6 +1375,8 @@ impl canvas::Program<ImageCanvasEvent> for ImageCanvas {
                             doc: (doc.x, doc.y),
                             // Ctrl maintenu pendant le geste → échelle uniforme
                             uniform: state.modifiers.control(),
+                            // Shift maintenu → rotation aimantée
+                            snap: state.modifiers.shift(),
                         })
                         .and_capture(),
                     );

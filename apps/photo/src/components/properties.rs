@@ -119,6 +119,13 @@ pub fn render<'a>(
     match node {
         LayerNode::Pixel(l) => {
             common = common
+                .push(param_slider(
+                    "Rotation (°)",
+                    l.transform.rotation_deg,
+                    -360.0..=360.0,
+                    1.0,
+                    move |v| Message::SetLayerRotation { id, degrees: v },
+                ))
                 .push(offset_row("Décalage X", l.transform.offset_x, move |v| {
                     Message::SetLayerOffset {
                         id,
@@ -306,6 +313,16 @@ fn filter_editor<'a>(
             move |v| Message::SetLayerSkew {
                 id: fid,
                 axis: crate::OffsetAxis::X,
+                degrees: v,
+            },
+        ),
+        param_slider(
+            "Rotation (°)",
+            f.transform.rotation_deg,
+            -360.0..=360.0,
+            1.0,
+            move |v| Message::SetLayerRotation {
+                id: fid,
                 degrees: v,
             },
         ),

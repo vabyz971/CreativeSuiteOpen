@@ -24,7 +24,6 @@ pub enum Tool {
     Zoom,
     Select,
     Eyedropper,
-    Move,
     /// Pinceau : peint sur le calque sélectionné.
     Brush,
     /// Gomme : efface (réduit l'alpha) sur le calque sélectionné.

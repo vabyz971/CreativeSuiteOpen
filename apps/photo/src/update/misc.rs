@@ -73,7 +73,7 @@ fn handle_execute_action(app: &mut PhotoApp, action: preferences::PhotoAction) -
         preferences::PhotoAction::ToolBrush => Message::SelectTool(Tool::Brush),
         preferences::PhotoAction::ToolEraser => Message::SelectTool(Tool::Eraser),
         preferences::PhotoAction::ToolEyedropper => Message::SelectTool(Tool::Eyedropper),
-        preferences::PhotoAction::ToolMove => Message::SelectTool(Tool::Move),
+        preferences::PhotoAction::ToolMove => Message::SelectTool(Tool::Select),
         preferences::PhotoAction::ToolHand => Message::SelectTool(Tool::Hand),
         preferences::PhotoAction::ToolZoom => Message::SelectTool(Tool::Zoom),
         preferences::PhotoAction::Undo => Message::Undo,
@@ -193,8 +193,8 @@ fn handle_image_canvas_event(
         ui_kit::image_canvas::ImageCanvasEvent::TransformStart { id, kind, doc } => {
             handle_transform_start(app, id, kind, doc)
         }
-        ui_kit::image_canvas::ImageCanvasEvent::TransformCursor { doc, uniform } => {
-            handle_transform_cursor(app, doc, uniform)
+        ui_kit::image_canvas::ImageCanvasEvent::TransformCursor { doc, uniform, snap } => {
+            handle_transform_cursor(app, doc, uniform, snap)
         }
         ui_kit::image_canvas::ImageCanvasEvent::TransformEnd => handle_transform_end(app),
         ui_kit::image_canvas::ImageCanvasEvent::ClearSelection => {
@@ -265,7 +265,12 @@ fn handle_transform_start(
     Task::none()
 }
 
-fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -> Task<Message> {
+fn handle_transform_cursor(
+    app: &mut PhotoApp,
+    doc: (f32, f32),
+    uniform: bool,
+    snap: bool,
+) -> Task<Message> {
     let Some(anchor) = app.tools.transform_anchor else {
         return Task::none();
     };
@@ -297,7 +302,23 @@ fn handle_transform_cursor(app: &mut PhotoApp, doc: (f32, f32), uniform: bool) -
     let (w0, h0) = l.dimensions();
     let (w0, h0) = (w0 as f32, h0 as f32);
     let base = anchor.base;
-    let new_t = transform_for_cursor(&base, w0, h0, anchor.kind, anchor.cursor_doc, doc, uniform);
+    let move_grid = if app.tools.move_grid_enabled {
+        Some(app.tools.move_grid_size)
+    } else {
+        None
+    };
+    let new_t = transform_for_cursor(
+        &base,
+        w0,
+        h0,
+        anchor.kind,
+        anchor.cursor_doc,
+        doc,
+        uniform,
+        snap,
+        app.tools.rotation_step,
+        move_grid,
+    );
     l.transform = new_t;
     // Invalide la fallback stale (contient le calque à l'ancienne position).
     if app.rendering.fallback_handle.is_some() {
@@ -337,6 +358,7 @@ fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
 }
 
 /// Calcule la transformation d'une position curseur document pour un geste.
+#[allow(clippy::too_many_arguments)]
 fn transform_for_cursor(
     base: &crate::layers::Transform2D,
     w0: f32,
@@ -345,15 +367,26 @@ fn transform_for_cursor(
     start: (f32, f32),
     cur: (f32, f32),
     uniform: bool,
+    snap: bool,
+    rot_step: f32,
+    move_grid: Option<f32>,
 ) -> crate::layers::Transform2D {
     let cx = w0 / 2.0;
     let cy = h0 / 2.0;
     match kind {
         // Déplacement : l'offset suit le delta document 1:1 (déjà en px image).
+        // Grille active (outil Sélection) → delta arrondi au pas de grille.
         TransformHandle::Move => {
             let mut t = *base;
-            t.offset_x = base.offset_x + (cur.0 - start.0);
-            t.offset_y = base.offset_y + (cur.1 - start.1);
+            let dx = cur.0 - start.0;
+            let dy = cur.1 - start.1;
+            if let Some(step) = move_grid {
+                t.offset_x = base.offset_x + (dx / step).round() * step;
+                t.offset_y = base.offset_y + (dy / step).round() * step;
+            } else {
+                t.offset_x = base.offset_x + dx;
+                t.offset_y = base.offset_y + dy;
+            }
             t
         }
         // Rotation : autour du centre du rectangle scalé, angle Δ depuis le début.
@@ -362,7 +395,19 @@ fn transform_for_cursor(
             let a0 = (start.1 - center_doc.1).atan2(start.0 - center_doc.0);
             let a1 = (cur.1 - center_doc.1).atan2(cur.0 - center_doc.0);
             let mut t = *base;
-            t.rotation_deg = base.rotation_deg + (a1 - a0).to_degrees();
+            let mut deg = base.rotation_deg + (a1 - a0).to_degrees();
+            // Aimantation : Ctrl → multiples du cran (défaut 5°), Shift → multiples de 90°.
+            let step = if uniform {
+                Some(rot_step)
+            } else if snap {
+                Some(90.0)
+            } else {
+                None
+            };
+            if let Some(step) = step {
+                deg = (deg / step).round() * step;
+            }
+            t.rotation_deg = deg;
             t
         }
         // Redimensionnement : le coin opposé reste PIVOTÉ (fixe), le coin

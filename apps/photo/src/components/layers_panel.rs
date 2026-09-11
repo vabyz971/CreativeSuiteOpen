@@ -234,16 +234,7 @@ pub fn render<'a>(
         .spacing(4)
         .align_y(Alignment::Center),
     )
-    .padding(Padding::new(6.0).left(8.0).right(8.0))
-    .style(move |_| container::Style {
-        background: Some(colors::BG_TRANSPARENT.into()),
-        border: iced::Border {
-            width: 1.0,
-            color: colors::BORDER_PANEL,
-            radius: layer_item_radius.into(),
-        },
-        ..Default::default()
-    });
+    .padding(Padding::new(6.0).left(8.0).right(8.0));
 
     // Le MouseArea englobe tout le panneau : clic n'importe où (hors menu
     // ouvert via capture interne) → ferme le menu contextuel et le menu

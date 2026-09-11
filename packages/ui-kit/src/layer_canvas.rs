@@ -295,6 +295,7 @@ where
                             ImageCanvasEvent::TransformCursor {
                                 doc: self.screen_to_doc(cursor_pos, bounds),
                                 uniform: state.modifiers.control(),
+                                snap: state.modifiers.shift(),
                             },
                         )));
                     }

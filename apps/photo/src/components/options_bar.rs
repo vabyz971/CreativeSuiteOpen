@@ -48,6 +48,9 @@ pub fn render<'a>(
     brush_size: f32,
     brush_opacity: f32,
     color_picker_open: bool,
+    rotation_step: f32,
+    move_grid_enabled: bool,
+    move_grid_size: f32,
 ) -> Element<'a, Message> {
     let Some(content) = tool_controls(
         tool,
@@ -58,6 +61,9 @@ pub fn render<'a>(
         brush_size,
         brush_opacity,
         color_picker_open,
+        rotation_step,
+        move_grid_enabled,
+        move_grid_size,
     ) else {
         return iced::widget::Space::new()
             .width(Length::Fill)
@@ -97,6 +103,9 @@ pub fn tool_controls<'a>(
     brush_size: f32,
     brush_opacity: f32,
     color_picker_open: bool,
+    rotation_step: f32,
+    move_grid_enabled: bool,
+    move_grid_size: f32,
 ) -> Option<Element<'a, Message>> {
     match tool {
         Tool::Brush => Some(brush_section(
@@ -106,11 +115,16 @@ pub fn tool_controls<'a>(
             color_picker_open,
         )),
         Tool::Eraser => Some(eraser_section(brush_size, brush_opacity)),
-        Tool::Move => Some(move_section(
-            selected_layer,
-            selected_scale_percent,
-            has_selection,
-        )),
+        Tool::Select => Some(
+            row![
+                select_section(rotation_step, move_grid_enabled, move_grid_size),
+                separator(),
+                move_section(selected_layer, selected_scale_percent, has_selection),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
+        ),
         _ => None,
     }
 }
@@ -187,6 +201,62 @@ fn eraser_section<'a>(brush_size: f32, brush_opacity: f32) -> Element<'a, Messag
         separator(),
         size_slider,
         opacity_slider,
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .padding(Padding::new(5.0))
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Section SÉLECTION : cran de rotation + grille d'aimantation du déplacement
+// ---------------------------------------------------------------------------
+
+fn select_section<'a>(
+    rotation_step: f32,
+    move_grid_enabled: bool,
+    move_grid_size: f32,
+) -> Element<'a, Message> {
+    let step_slider = row![
+        field_label("Cran rot."),
+        iced::widget::slider(1.0..=45.0, rotation_step, Message::SetRotationStep)
+            .step(1.0_f32)
+            .width(Length::Fixed(80.0)),
+        value_label(format!("{:.0}°", rotation_step)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let grid_size_ctl: Element<'a, Message> = if move_grid_enabled {
+        iced::widget::slider(4.0..=512.0, move_grid_size, Message::SetMoveGridSize)
+            .step(1.0_f32)
+            .width(Length::Fixed(90.0))
+            .into()
+    } else {
+        iced::widget::Space::new().width(Length::Fixed(90.0)).into()
+    };
+    let grid_val: Element<'a, Message> = if move_grid_enabled {
+        value_label(format!("{:.0}", move_grid_size))
+    } else {
+        iced::widget::Space::new().width(Length::Fixed(0.0)).into()
+    };
+
+    let grid_toggle = row![
+        field_label("Grille"),
+        iced::widget::checkbox(move_grid_enabled)
+            .on_toggle(Message::ToggleMoveGrid)
+            .size(14),
+        grid_size_ctl,
+        grid_val,
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    row![
+        field_label("Sélection"),
+        separator(),
+        step_slider,
+        grid_toggle,
     ]
     .spacing(10)
     .align_y(Alignment::Center)

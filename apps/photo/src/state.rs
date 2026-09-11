@@ -101,6 +101,12 @@ pub struct ToolState {
     pub brush_color: Color,
     pub brush_size: f32,
     pub brush_opacity: f32,
+    /// Cran de rotation aimantée (degrés) — outil Sélection (Ctrl).
+    pub rotation_step: f32,
+    /// Grille du déplacement aimanté (outil Sélection) — `false` = libre.
+    pub move_grid_enabled: bool,
+    /// Taille de la grille d'aimantation (px document).
+    pub move_grid_size: f32,
     pub color_picker_open: bool,
     pub active_mask: Option<crate::message::MaskTarget>,
     /// `true` = noir (masque), `false` = blanc (révèle).
@@ -142,6 +148,9 @@ impl Default for ToolState {
             brush_color: ui_kit::theme::colors::BRUSH_DEFAULT,
             brush_size: 12.0,
             brush_opacity: 1.0,
+            rotation_step: 5.0,
+            move_grid_enabled: false,
+            move_grid_size: 10.0,
             color_picker_open: false,
             active_mask: None,
             mask_brush_black: true,

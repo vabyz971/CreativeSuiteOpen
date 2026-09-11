@@ -31,6 +31,9 @@ pub fn context_bar<'a>(
     brush_size: f32,
     brush_opacity: f32,
     color_picker_open: bool,
+    rotation_step: f32,
+    move_grid_enabled: bool,
+    move_grid_size: f32,
 ) -> Element<'a, Message> {
     let material = ui_kit::icon_button::MATERIAL_ICONS;
 
@@ -56,6 +59,9 @@ pub fn context_bar<'a>(
         brush_size,
         brush_opacity,
         color_picker_open,
+        rotation_step,
+        move_grid_enabled,
+        move_grid_size,
     ) {
         row![
             controls,

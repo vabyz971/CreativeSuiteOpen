@@ -286,6 +286,12 @@ pub enum Message {
     SetBrushColor(iced::Color),
     SetBrushSize(f32),
     SetBrushOpacity(f32),
+    /// Cran de rotation aimantée (degrés) — outil Sélection.
+    SetRotationStep(f32),
+    /// Active/désactive la grille d'aimantation du déplacement — outil Sélection.
+    ToggleMoveGrid(bool),
+    /// Taille de la grille d'aimantation (px document).
+    SetMoveGridSize(f32),
     ToggleColorPicker,
     /// Pipette : demande d'échantillonner la couleur au point document (x,y)
     PickColor {
