@@ -593,6 +593,57 @@ fn fx_stack_section<'a>(
                 },
                 child_indent,
             ));
+            // Masques du sous-calque : mêmes contrôles que les masques de
+            // calque (porteur = le filtre) — ajout, activation, peinture,
+            // déplacement, suppression passent par les mêmes messages.
+            let mask_indent = child_indent + 14.0;
+            for m in f.masks.iter() {
+                let target = crate::message::MaskTarget {
+                    layer_id: f.id,
+                    mask_id: m.id,
+                };
+                let is_active = active_mask.map(|t| (t.layer_id, t.mask_id)) == Some((f.id, m.id));
+                let thumb = preview_cache.mask_thumb(m.id).cloned().unwrap_or_else(|| {
+                    iced::widget::image::Handle::from_rgba(38, 26, vec![60, 60, 60, 255])
+                });
+                stack = stack.push(fx_child_row(
+                    m.id,
+                    ICON_MASK,
+                    Some(thumb),
+                    &m.name,
+                    if m.enabled {
+                        "Actif".to_string()
+                    } else {
+                        "Désactivé".to_string()
+                    },
+                    m.enabled,
+                    is_active,
+                    Message::ToggleLayerMaskEnabled(f.id, m.id),
+                    Some(Message::SetActiveMask(Some(target))),
+                    Message::MoveMask {
+                        owner_id: f.id,
+                        mask_id: m.id,
+                        up: true,
+                    },
+                    Message::MoveMask {
+                        owner_id: f.id,
+                        mask_id: m.id,
+                        up: false,
+                    },
+                    Message::RemoveLayerMask(f.id, m.id),
+                    mask_indent,
+                ));
+            }
+            stack = stack.push(
+                container(
+                    button(text("+ Masque").size(10).color(colors::TEXT_MUTED))
+                        .padding(2)
+                        .style(|_t, s| ui_kit::style::ghost(s))
+                        .on_press(Message::AddLayerMask(f.id)),
+                )
+                .width(Length::Fill)
+                .padding(Padding::new(0.0).left(mask_indent)),
+            );
         }
     }
 

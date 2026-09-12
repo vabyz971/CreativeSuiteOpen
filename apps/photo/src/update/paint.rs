@@ -27,15 +27,31 @@ pub fn handle_brush_start(app: &mut PhotoApp, x: f32, y: f32, erase: bool) -> Ta
     let _ = (x, y, erase);
     if app.tools.pending_paint.is_none()
         && let Some(id) = app.document.selected_layer
-        && app.document.doc.pixel_layer(id).is_some()
-        && app
-            .document
-            .doc
-            .find(id)
-            .map(|n| n.visible())
-            .unwrap_or(false)
     {
-        app.tools.stroke_layer = Some(id);
+        // Cible du trait : le calque pixels sélectionné, ou — si un masque
+        // de sous-calque est actif — le calque PORTEUR (l'espace de peinture
+        // d'un masque de filtre est celui du parent).
+        let target = if app.document.doc.pixel_layer(id).is_some() {
+            Some(id)
+        } else {
+            let mask_ok = app.tools.active_mask.is_some_and(|t| {
+                t.layer_id == id && app.document.doc.mask_of(id, t.mask_id).is_some()
+            });
+            mask_ok
+                .then(|| app.document.doc.find_filter_parent(id))
+                .flatten()
+        };
+        if let Some(tid) = target
+            && app.document.doc.pixel_layer(tid).is_some()
+            && app
+                .document
+                .doc
+                .find(tid)
+                .map(|n| n.visible())
+                .unwrap_or(false)
+        {
+            app.tools.stroke_layer = Some(tid);
+        }
     }
     Task::none()
 }

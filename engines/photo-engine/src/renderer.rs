@@ -41,18 +41,31 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use image::DynamicImage;
+use image::{DynamicImage, ImageBuffer, Rgba};
 use uuid::Uuid;
 
 use crate::document::{Appearance, Document, FilterLayer, LayerMask, PixelLayer};
 
 /// Entrée de cache : apparence dérivée + preuves de validité.
+///
+/// L'image NON masquée (source × filtres) et la couverture de masques sont
+/// cacheées SÉPARÉMENT : peindre un masque ne ré-exécute jamais la chaîne
+/// de filtres, elle ne fait que recombiner la couverture avec l'image non
+/// masquée déjà chaude. La couverture séparée est aussi la donnée qu'un
+/// futur chemin shader échantillonnera directement au draw.
 struct CacheEntry {
     /// Signature ordonnée de la chaîne de filtres au moment du calcul.
-    signature: u64,
+    filter_signature: u64,
     /// Source conservée vivante : validation par identité de pointeur
     /// (une peinture/remplacement produit un nouvel Arc → miss garanti).
     source: Arc<DynamicImage>,
+    /// Image non masquée (chaîne de filtres seule), réutilisée quand seuls
+    /// les masques changent.
+    unmasked: Arc<DynamicImage>,
+    /// Signature de la couverture de masques au moment du calcul.
+    mask_signature: u64,
+    /// Couverture combinée des masques actifs (`None` = aucun masque actif).
+    mask_cover: Option<Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>>,
     appearance: Appearance,
 }
 
@@ -84,47 +97,123 @@ impl Renderer {
     }
 
     /// Corps de [`Renderer::appearance`] — jamais appelé directement.
+    ///
+    /// L'image non masquée et la couverture sont réutilisées séparément :
+    /// une édition de masque ne ré-exécute jamais la chaîne de filtres.
+    /// Le pixels rendus restent identiques au chemin baké historique.
     fn appearance_locked(&mut self, layer: &PixelLayer) -> Appearance {
-        let signature = pixel_layer_signature(&layer.filter_layers, &layer.masks);
+        let unmasked = self.unmasked_image(layer);
+        let mask_signature = mask_signature(&layer.masks);
+        let mask_cover = match self.entries.get_mut(&layer.id) {
+            Some(entry) if entry.mask_signature == mask_signature => entry.mask_cover.clone(),
+            Some(entry) => {
+                let cover = Self::fresh_cover(&layer.masks);
+                entry.mask_signature = mask_signature;
+                entry.mask_cover = cover.clone();
+                cover
+            }
+            // Inatteignable en pratique : `unmasked_image` crée l'entrée.
+            None => Self::fresh_cover(&layer.masks),
+        };
+        let baked = Self::bake(&unmasked, &mask_cover);
+        let appearance = Appearance {
+            preview: crate::document::preview_buf(&baked),
+            thumb: crate::document::thumb_buf(&baked),
+            image: baked,
+        };
+        if let Some(entry) = self.entries.get_mut(&layer.id) {
+            entry.appearance = appearance.clone();
+        }
+        appearance
+    }
+
+    /// Image NON masquée par les masques DU CALQUE (source × filtres, les
+    /// masques des sous-calques restant bakés dans la chaîne car ils
+    /// s'appliquent avant transform/fusion de chaque filtre).
+    ///
+    /// Peindre un masque de calque ne ré-exécute jamais la chaîne : l'appel
+    /// suivant retrouve la même image (même `Arc`) tant que source et
+    /// filtres sont inchangés. C'est aussi l'image qu'un futur chemin
+    /// shader combinera avec la couverture au draw.
+    pub fn unmasked_image(&mut self, layer: &PixelLayer) -> Arc<DynamicImage> {
+        let filter_signature = filters_signature(&layer.filter_layers);
         // perf-entry-api: use Entry to avoid double hashing on miss path
         use std::collections::hash_map::Entry;
         match self.entries.entry(layer.id) {
             Entry::Occupied(entry)
-                if entry.get().signature == signature
+                if entry.get().filter_signature == filter_signature
                     && Arc::ptr_eq(&entry.get().source, &layer.source_image) =>
             {
                 self.hits += 1;
-                entry.get().appearance.clone()
+                Arc::clone(&entry.get().unmasked)
             }
-            Entry::Occupied(mut entry) => {
+            Entry::Occupied(entry) => {
                 self.misses += 1;
-                let rendered = render_appearance(layer);
-                let appearance = Appearance {
-                    preview: crate::document::preview_buf(&rendered),
-                    thumb: crate::document::thumb_buf(&rendered),
-                    image: Arc::clone(&rendered),
-                };
+                let unmasked =
+                    crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
+                let slot = entry.into_mut();
+                slot.filter_signature = filter_signature;
+                slot.source = Arc::clone(&layer.source_image);
+                slot.unmasked = Arc::clone(&unmasked);
+                unmasked
+            }
+            Entry::Vacant(entry) => {
+                self.misses += 1;
+                let unmasked =
+                    crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
                 entry.insert(CacheEntry {
-                    signature,
+                    filter_signature,
                     source: Arc::clone(&layer.source_image),
-                    appearance: appearance.clone(),
+                    unmasked: Arc::clone(&unmasked),
+                    // Forcée périmée : la couverture est (re)calculée par
+                    // l'appelant (`appearance_locked`) juste après.
+                    mask_signature: mask_signature(&layer.masks).wrapping_add(1),
+                    mask_cover: None,
+                    appearance: Appearance {
+                        preview: crate::document::preview_buf(&unmasked),
+                        thumb: crate::document::thumb_buf(&unmasked),
+                        image: Arc::clone(&unmasked),
+                    },
                 });
-                appearance
+                unmasked
             }
-            Entry::Vacant(slot) => {
-                self.misses += 1;
-                let rendered = render_appearance(layer);
-                let appearance = Appearance {
-                    preview: crate::document::preview_buf(&rendered),
-                    thumb: crate::document::thumb_buf(&rendered),
-                    image: Arc::clone(&rendered),
-                };
-                slot.insert(CacheEntry {
-                    signature,
-                    source: Arc::clone(&layer.source_image),
-                    appearance: appearance.clone(),
-                });
-                appearance
+        }
+    }
+
+    /// Couverture combinée des masques ACTIFS du calque (`None` = aucun),
+    /// cacheable séparément. Donnée pure destinée à être échantillonnée
+    /// directement par un shader au draw (aucune dépendance UI ici).
+    pub fn mask_coverage(
+        &mut self,
+        layer: &PixelLayer,
+    ) -> Option<Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>> {
+        let signature = mask_signature(&layer.masks);
+        if let Some(entry) = self.entries.get_mut(&layer.id) {
+            if entry.mask_signature == signature {
+                return entry.mask_cover.clone();
+            }
+            let cover = Self::fresh_cover(&layer.masks);
+            entry.mask_signature = signature;
+            entry.mask_cover = cover.clone();
+            return cover;
+        }
+        Self::fresh_cover(&layer.masks)
+    }
+
+    fn fresh_cover(masks: &[LayerMask]) -> Option<Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>> {
+        crate::document::compositing::combined_mask_coverage(masks).map(Arc::new)
+    }
+
+    /// Combine une image non masquée avec une couverture : pixels identiques
+    /// à l'ancien chemin baké (`apply_layer_masks`).
+    fn bake(
+        unmasked: &Arc<DynamicImage>,
+        cover: &Option<Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>>,
+    ) -> Arc<DynamicImage> {
+        match cover {
+            None => Arc::clone(unmasked),
+            Some(cover) => {
+                crate::document::compositing::apply_coverage(Arc::clone(unmasked), cover)
             }
         }
     }
@@ -140,10 +229,14 @@ impl Renderer {
     /// Le `None` n'est pas une erreur : l'appelant doit alors basculer sur
     /// [`Self::appearance`] (le seul chemin qui exécute la chaîne).
     pub fn appearance_hit(&mut self, layer: &PixelLayer) -> Option<Appearance> {
-        let signature = pixel_layer_signature(&layer.filter_layers, &layer.masks);
+        let filter_signature = filters_signature(&layer.filter_layers);
+        let mask_signature = mask_signature(&layer.masks);
         match self.entries.get(&layer.id) {
-            Some(e) if e.signature == signature && Arc::ptr_eq(&e.source, &layer.source_image) => {
-                self.hits += 1;
+            Some(e)
+                if e.filter_signature == filter_signature
+                    && e.mask_signature == mask_signature
+                    && Arc::ptr_eq(&e.source, &layer.source_image) =>
+            {
                 Some(e.appearance.clone())
             }
             _ => None,
@@ -163,8 +256,11 @@ impl Renderer {
             self.entries.insert(
                 *id,
                 CacheEntry {
-                    signature: e.signature,
+                    filter_signature: e.filter_signature,
                     source: Arc::clone(&e.source),
+                    unmasked: Arc::clone(&e.unmasked),
+                    mask_signature: e.mask_signature,
+                    mask_cover: e.mask_cover.clone(),
                     appearance: e.appearance.clone(),
                 },
             );
@@ -213,12 +309,21 @@ impl Renderer {
     }
 }
 
-/// Source × filtres × masques de calque — l'apparence complète, prête pour
-/// preview/thumb/composite. Masques inactifs → retour annule `render_chain`
-/// sans coût supplémentaire (`apply_layer_masks` rend le même Arc).
-fn render_appearance(layer: &PixelLayer) -> Arc<DynamicImage> {
-    let rendered = crate::filters::render_chain(&layer.source_image, &layer.filter_layers);
-    crate::document::compositing::apply_layer_masks(rendered, &layer.masks)
+/// Signature d'une liste de masques : nombre, id, état actif, inversion et
+/// version (la peinture remplace le buffer ET touche la version → MISS
+/// garanti). Le nom d'un masque en est EXCLU (renommer ne change pas les
+/// pixels). Utilisée pour la couverture cacheable SÉPARÉMENT de l'image.
+fn mask_signature(masks: &[LayerMask]) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write_usize(masks.len());
+    for m in masks {
+        h.write(m.id.as_bytes());
+        h.write_u8(u8::from(m.enabled));
+        h.write_u8(u8::from(m.inverted));
+        h.write_u64(m.version);
+    }
+    h.finish()
 }
 
 /// Signature ORDONNÉE d'une chaîne de sous-calques de filtres : deux chaînes
@@ -227,11 +332,11 @@ fn render_appearance(layer: &PixelLayer) -> Arc<DynamicImage> {
 /// ordre. L'ordre est significatif — c'est une CHAÎNE de traitement, pas
 /// un ensemble.
 ///
-/// Les masques des sous-calques EN FONT PARTIE (comme ceux des calques
-/// pixels, vus par [`pixel_layer_signature`]) : ils sont bakés dans
-/// l'apparence par `composite_filter_layer` / `apply_layer_masks`, donc
-/// toute édition (peinture, toggle, inversion) doit invalider le cache —
-/// la version du masque l'assure.
+/// Les masques des sous-calques EN FONT PARTIE : ils sont bakés dans la
+/// chaîne par `composite_filter_layer`, donc toute édition (peinture,
+/// toggle, inversion) doit invalider le cache — la version du masque
+/// l'assure. (Les masques du CALQUE lui-même sont suivis séparément par
+/// [`mask_signature`].)
 ///
 /// Déterministe entre processus (`DefaultHasher::new()` = clés fixes),
 /// indépendant de l'itération désordonnée de `HashMap` (clés triées).
@@ -277,25 +382,6 @@ pub fn filters_signature(filters: &[FilterLayer]) -> u64 {
             h.write(key.as_bytes());
             hash_param_value(&mut h, &f.params[key]);
         }
-    }
-    h.finish()
-}
-
-/// Signature COMBINÉE d'un calque pixels : chaîne de sous-calques + ses
-/// propres masques. Les masques de calque sont bakés dans l'apparence par
-/// `apply_layer_masks` — leur version (peinture), état et inversion doivent
-/// donc invalider le cache, exactement comme pour les masques de sous-calques.
-/// Le nom d'un masque en est EXCLU (renommer ne change pas les pixels).
-fn pixel_layer_signature(filters: &[FilterLayer], masks: &[LayerMask]) -> u64 {
-    use std::hash::Hasher;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    h.write_u64(filters_signature(filters));
-    h.write_usize(masks.len());
-    for m in masks {
-        h.write(m.id.as_bytes());
-        h.write_u8(u8::from(m.enabled));
-        h.write_u8(u8::from(m.inverted));
-        h.write_u64(m.version);
     }
     h.finish()
 }
@@ -534,5 +620,57 @@ mod tests {
         let mut touched = masked.clone();
         touched[0].masks[0].touch();
         assert_ne!(filters_signature(&masked), filters_signature(&touched));
+    }
+
+    #[test]
+    fn couverture_masque_combinee_doree() {
+        use crate::document::LayerMask;
+        use crate::document::compositing::combined_mask_coverage;
+        use image::ImageBuffer;
+
+        // Aucun masque actif → pas de couverture.
+        let mut vide = LayerMask::full(2, 2);
+        vide.enabled = false;
+        assert!(combined_mask_coverage(&[vide]).is_none());
+        assert!(combined_mask_coverage(&[]).is_none());
+
+        // 128 × inversé(64→191) = 128*191/255 = 95 (tronqué).
+        let mut a = LayerMask::full(2, 2);
+        a.image = Arc::new(ImageBuffer::from_pixel(2, 2, Rgba([128, 0, 0, 255])));
+        let mut b = LayerMask::full(2, 2);
+        b.image = Arc::new(ImageBuffer::from_pixel(2, 2, Rgba([64, 0, 0, 255])));
+        b.inverted = true;
+        let cover = combined_mask_coverage(&[a, b]).expect("couverture");
+        assert_eq!(cover.dimensions(), (2, 2));
+        assert_eq!(cover.get_pixel(0, 0)[0], 95);
+        assert_eq!(cover.get_pixel(0, 0)[3], 255);
+    }
+
+    #[test]
+    fn peinture_masque_ne_reexecute_pas_la_chaine() {
+        use crate::document::LayerMask;
+        let mut layer = layer_with_filter(10.0);
+        layer.masks.push(LayerMask::full(2, 2));
+        let mut r = Renderer::default();
+
+        let u1 = r.unmasked_image(&layer);
+        assert_eq!((r.misses(), r.hits()), (1, 0));
+
+        // Peinture du masque : seule la couverture change, la chaîne NON.
+        layer.masks[0].touch();
+        let u2 = r.unmasked_image(&layer);
+        assert_eq!((r.misses(), r.hits()), (1, 1));
+        assert!(Arc::ptr_eq(&u1, &u2), "chaîne non ré-exécutée");
+
+        // La couverture, elle, est bien recalculée et mise en cache.
+        let c1 = r.mask_coverage(&layer).expect("couverture");
+        let c2 = r.mask_coverage(&layer).expect("couverture");
+        assert!(Arc::ptr_eq(&c1, &c2));
+
+        // L'apparence bakée reste correcte : source 100 + filtre 10,
+        // masque plein blanc → alpha 255.
+        let a = r.appearance(&layer);
+        let rgba = a.image.to_rgba8();
+        assert_eq!(rgba.get_pixel(0, 0)[3], 255);
     }
 }

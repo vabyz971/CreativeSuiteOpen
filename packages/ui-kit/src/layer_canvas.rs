@@ -28,6 +28,8 @@
     clippy::unreadable_literal
 )]
 //! - each layer is a persistent GPU texture (uploaded ONCE per version)
+//! - mask coverage is a SEPARATE persistent texture, sampled at draw time:
+//!   painting a mask never regenerates the layer texture
 //! - compositing happens in render passes on ping-pong textures, on the
 //!   ICED wgpu device (via shader widget) — never transfers to CPU
 //! - display is a blit with pan/zoom + procedural dotted background
@@ -65,6 +67,26 @@ pub struct DisplayLayer {
     pub blend: u32,
     pub offset_x: f32,
     pub offset_y: f32,
+    /// Couverture de masque combinée (canal R), optionnelle.
+    ///
+    /// Échantillonnée AU DRAW dans le shader (`alpha × couverture`) : éditer
+    /// un masque ne régénère jamais la texture du calque, seule la texture
+    /// de masque est re-téléversée (clé = identité du contenu).
+    ///
+    /// Contrat d'espace : mêmes dimensions et même rect source que la
+    /// texture du calque (le moteur fournit la couverture aux dims de
+    /// l'image via `combined_mask_coverage` + rééchantillonnage).
+    pub mask: Option<DisplayMask>,
+}
+
+/// Couverture de masque prête pour upload GPU (pixels RGBA8 partagés).
+#[derive(Clone, Debug)]
+pub struct DisplayMask {
+    /// Content identity (texture cache key, e.g. Arc pointer)
+    pub key: u64,
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
 }
 
 pub struct LayerCanvas<Message> {
@@ -404,6 +426,14 @@ fn config_hash(layers: &[DisplayLayer], doc: (f32, f32)) -> u64 {
         feed(u64::from(l.offset_y.to_bits()), &mut h);
         feed(u64::from(l.width), &mut h);
         feed(u64::from(l.height), &mut h);
+        match &l.mask {
+            Some(m) => {
+                feed(m.key, &mut h);
+                feed(u64::from(m.width), &mut h);
+                feed(u64::from(m.height), &mut h);
+            }
+            None => feed(0, &mut h),
+        }
     }
     h
 }
@@ -468,6 +498,8 @@ struct Params {
     off_sel: [f32; 4],
     /// xy = selection size (x > 0 = active)
     sel_size: [f32; 4],
+    /// x = 1 si masque présent, y/z = dims texture masque
+    mask_info: [u32; 4],
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +518,10 @@ pub struct CompositePipeline {
 
     /// Persistent layer textures, key = content identity
     layer_textures: HashMap<u64, LayerTex>,
+    /// Persistent mask-coverage textures, key = content identity
+    mask_textures: HashMap<u64, LayerTex>,
+    /// 1×1 opaque fallback bound when a layer has no mask
+    white_tex: LayerTex,
     /// Ping-pong accumulators (document space)
     accum: Option<Accum>,
     /// Hash of last GPU recomposite (atomic: `render()` takes &self)
@@ -549,6 +585,8 @@ impl shader::Pipeline for CompositePipeline {
                     },
                     count: None,
                 },
+                tex_entry(5),
+                samp_entry(6),
             ],
         });
 
@@ -627,6 +665,14 @@ impl shader::Pipeline for CompositePipeline {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let white_tex = Self::upload_texture(
+            device,
+            queue,
+            "layer-canvas-white",
+            &[255, 255, 255, 255],
+            1,
+            1,
+        );
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -636,6 +682,8 @@ impl shader::Pipeline for CompositePipeline {
             bgl_all,
             sampler,
             layer_textures: HashMap::new(),
+            mask_textures: HashMap::new(),
+            white_tex,
             accum: None,
             last_hash: std::sync::atomic::AtomicU64::new(0),
         }
@@ -645,12 +693,14 @@ impl shader::Pipeline for CompositePipeline {
 }
 
 impl CompositePipeline {
-    /// Full bind group: tex0 + sampler in base slots, `top` reused
-    /// in top slots (unused by present shader).
+    /// Full bind group: base + top + mask textures, shared sampler, uniforms.
+    /// `mask_view = None` → opaque 1×1 fallback (shader skips sampling via
+    /// `mask_info.x`, but every binding must be bound).
     fn scene_bg(
         &self,
         view: &wgpu::TextureView,
         top_view: Option<&wgpu::TextureView>,
+        mask_view: Option<&wgpu::TextureView>,
     ) -> wgpu::BindGroup {
         let fallback = view;
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -677,8 +727,112 @@ impl CompositePipeline {
                     binding: 4,
                     resource: self.params_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(
+                        mask_view.unwrap_or(&self.white_tex.view),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
             ],
         })
+    }
+
+    /// Upload RGBA8 pixels vers une texture GPU (lignes alignées sur 256 o).
+    fn upload_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> LayerTex {
+        // Capture wgpu validation errors (otherwise silent)
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let w = w.max(1);
+        let h = h.max(1);
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        // bytes_per_row must be multiple of 256 (COPY_ALIGNMENT
+        // wgpu). Otherwise silent validation error → texture
+        // never uploaded → invisible image. Pad rows.
+        const ALIGN: u32 = 256;
+        let row_bytes = w * 4;
+        let padded_row = row_bytes.div_ceil(ALIGN) * ALIGN;
+        if padded_row == row_bytes {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row_bytes),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        } else {
+            // Copy line by line into padded buffer (once
+            // per content version — amortized cost)
+            let mut staged = vec![0u8; (padded_row * h) as usize];
+            for r in 0..h as usize {
+                let src = r * row_bytes as usize;
+                let dst = r * padded_row as usize;
+                staged[dst..dst + row_bytes as usize]
+                    .copy_from_slice(&rgba[src..src + row_bytes as usize]);
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &staged[..],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        if let Some(err) = pollster::block_on(device.pop_error_scope()) {
+            eprintln!("layer-canvas: échec upload texture {label} {err:#?}");
+        }
+        LayerTex {
+            view,
+            width: w,
+            height: h,
+        }
     }
 
     fn ensure_accum(&mut self, size: (u32, u32)) {
@@ -724,92 +878,38 @@ impl CompositePipeline {
         let live: Vec<u64> = prim.layers.iter().map(|l| l.key).collect();
         for l in &prim.layers {
             self.layer_textures.entry(l.key).or_insert_with(|| {
-                // Capture wgpu validation errors (otherwise silent)
-                device.push_error_scope(wgpu::ErrorFilter::Validation);
-                let w = l.width.max(1);
-                let h = l.height.max(1);
-                let tex = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("layer-canvas-layer"),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                // bytes_per_row must be multiple of 256 (COPY_ALIGNMENT
-                // wgpu). Otherwise silent validation error → texture
-                // never uploaded → invisible image. Pad rows.
-                const ALIGN: u32 = 256;
-                let row_bytes = w * 4;
-                let padded_row = row_bytes.div_ceil(ALIGN) * ALIGN;
-                if padded_row == row_bytes {
-                    queue.write_texture(
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &tex,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        &l.rgba[..],
-                        wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(row_bytes),
-                            rows_per_image: None,
-                        },
-                        wgpu::Extent3d {
-                            width: w,
-                            height: h,
-                            depth_or_array_layers: 1,
-                        },
-                    );
-                } else {
-                    // Copy line by line into padded buffer (once
-                    // per content version — amortized cost)
-                    let mut staged = vec![0u8; (padded_row * h) as usize];
-                    for r in 0..h as usize {
-                        let src = r * row_bytes as usize;
-                        let dst = r * padded_row as usize;
-                        staged[dst..dst + row_bytes as usize]
-                            .copy_from_slice(&l.rgba[src..src + row_bytes as usize]);
-                    }
-                    queue.write_texture(
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &tex,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        &staged[..],
-                        wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(padded_row),
-                            rows_per_image: None,
-                        },
-                        wgpu::Extent3d {
-                            width: w,
-                            height: h,
-                            depth_or_array_layers: 1,
-                        },
-                    );
-                }
-                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-                if let Some(err) = pollster::block_on(device.pop_error_scope()) {
-                    eprintln!("layer-canvas: échec upload calque {err:#?}");
-                }
-                LayerTex {
-                    view,
-                    width: l.width,
-                    height: l.height,
-                }
+                Self::upload_texture(
+                    device,
+                    queue,
+                    "layer-canvas-layer",
+                    &l.rgba,
+                    l.width,
+                    l.height,
+                )
             });
+            // Couverture de masque : téléversée séparément, clé = identité
+            // du contenu — peindre un masque ne touche jamais la texture
+            // du calque.
+            if let Some(mask) = &l.mask {
+                self.mask_textures.entry(mask.key).or_insert_with(|| {
+                    Self::upload_texture(
+                        device,
+                        queue,
+                        "layer-canvas-mask",
+                        &mask.rgba,
+                        mask.width,
+                        mask.height,
+                    )
+                });
+            }
         }
         self.layer_textures.retain(|k, _| live.contains(k));
+        let live_masks: Vec<u64> = prim
+            .layers
+            .iter()
+            .filter_map(|l| l.mask.as_ref().map(|m| m.key))
+            .collect();
+        self.mask_textures.retain(|k, _| live_masks.contains(k));
 
         // Recomposite decided in render(): compare current hash
         let _ = config_hash(&prim.layers, prim.doc_size);
@@ -870,8 +970,21 @@ impl CompositePipeline {
                 let src_view = accum_ref.views[cur].clone();
                 let dst_view = accum_ref.views[cur ^ 1].clone();
 
-                let scene_bg = self.scene_bg(&src_view, Some(&tex.view));
+                let scene_bg = self.scene_bg(
+                    &src_view,
+                    Some(&tex.view),
+                    layer
+                        .mask
+                        .as_ref()
+                        .and_then(|m| self.mask_textures.get(&m.key))
+                        .map(|t| &t.view),
+                );
 
+                let (mask_present, mask_w, mask_h) = layer
+                    .mask
+                    .as_ref()
+                    .map(|m| (1, m.width, m.height))
+                    .unwrap_or((0, 1, 1));
                 let params = Params {
                     screen_doc: [
                         prim.viewport.0,
@@ -888,6 +1001,7 @@ impl CompositePipeline {
                     mode_sizes: [layer.blend, tex.width, tex.height, 0],
                     off_sel: [layer.offset_x, layer.offset_y, 0.0, 0.0],
                     sel_size: [0.0, 0.0, 0.0, 0.0],
+                    mask_info: [mask_present, mask_w, mask_h, 0],
                 };
                 self.write_params(&params);
 
@@ -923,7 +1037,7 @@ impl CompositePipeline {
         // --- PRESENTATION PASS (screen) ---
         let acc = self.accum.as_ref().expect("accum initialized for present");
         let final_view = acc.views[acc.current.load(Ordering::Relaxed)].clone();
-        let acc_bg = self.scene_bg(&final_view, None);
+        let acc_bg = self.scene_bg(&final_view, None, None);
 
         let (sel_pos, sel_size) = match prim.selection {
             Some(r) => ([r.x, r.y, 0.0, 0.0], [r.width, r.height, 0.0, 0.0]),
@@ -940,6 +1054,7 @@ impl CompositePipeline {
             mode_sizes: [0, 0, 0, u32::from(prim.has_doc)],
             off_sel: sel_pos,
             sel_size,
+            mask_info: [0, 1, 1, 0],
         };
         self.write_params(&params);
 
@@ -966,5 +1081,40 @@ impl CompositePipeline {
         pass.set_pipeline(&self.present_pipeline);
         pass.set_bind_group(0, &acc_bg, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn layer(key: u64, mask_key: Option<u64>) -> DisplayLayer {
+        DisplayLayer {
+            key,
+            rgba: Arc::new(vec![0u8; 16]),
+            width: 2,
+            height: 2,
+            opacity: 1.0,
+            blend: 0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            mask: mask_key.map(|key| DisplayMask {
+                key,
+                rgba: Arc::new(vec![255u8; 16]),
+                width: 2,
+                height: 2,
+            }),
+        }
+    }
+
+    #[test]
+    fn hash_change_avec_masque() {
+        // Éditer un masque doit invalider le composite GPU, sans toucher à
+        // la texture du calque : seule la clé de couverture change.
+        let sans = config_hash(&[layer(1, None)], (8.0, 8.0));
+        let avec = config_hash(&[layer(1, Some(2))], (8.0, 8.0));
+        assert_ne!(sans, avec);
+        assert_eq!(avec, config_hash(&[layer(1, Some(2))], (8.0, 8.0)));
     }
 }

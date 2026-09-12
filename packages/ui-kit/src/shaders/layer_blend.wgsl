@@ -6,10 +6,11 @@ struct VOut {
 
 struct Params {
     screen_doc: vec4<f32>,   // xy = viewport widget px, zw = document px
-    pan_zoom: vec4<f32>,     // xy = pan, z = zoom, w = opacite layer
+    pan_zoom: vec4<f32>,     // xy = pan, z = zoom, w = layer opacity
     mode_sizes: vec4<u32>,   // x = blend mode, y/z = top texture dims, w = image flag
     off_sel: vec4<f32>,      // xy = decalage layer, zw = position selection
     sel_size: vec4<f32>,     // xy = size selection (x > 0 = active)
+    mask_info: vec4<u32>,    // x = 1 si masque, y/z = dims texture masque
 };
 
 @vertex
@@ -39,6 +40,8 @@ fn blend_channel(b: f32, t: f32, mode: u32) -> f32 {
 @group(0) @binding(2) var top_tex: texture_2d<f32>;
 @group(0) @binding(3) var top_samp: sampler;
 @group(0) @binding(4) var<uniform> bp: Params;
+@group(0) @binding(5) var mask_tex: texture_2d<f32>;
+@group(0) @binding(6) var mask_samp: sampler;
 
 @fragment
 fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
@@ -53,7 +56,15 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
     if (t_uv.x >= 0.0 && t_uv.x <= 1.0 && t_uv.y >= 0.0 && t_uv.y <= 1.0) {
         t = textureSampleLevel(top_tex, top_samp, t_uv, 0.0);
     }
-    let ta = t.a * bp.pan_zoom.w;
+    // Masque échantillonné AU DRAW (même espace source que le calque) :
+    // peindre un masque ne régénère jamais la texture du calque.
+    // Hors bornes, l'échantillonneur clamp (comme le rééchantillonnage CPU).
+    var cov = 1.0;
+    if (bp.mask_info.x == 1u) {
+        let m_uv = t_px / vec2<f32>(f32(bp.mask_info.y), f32(bp.mask_info.z));
+        cov = textureSampleLevel(mask_tex, mask_samp, m_uv, 0.0).r;
+    }
+    let ta = t.a * cov * bp.pan_zoom.w;
     if (ta <= 0.001) { return b; }
     let br = blend_channel(b.r, t.r, bp.mode_sizes.x);
     let bg_ = blend_channel(b.g, t.g, bp.mode_sizes.x);

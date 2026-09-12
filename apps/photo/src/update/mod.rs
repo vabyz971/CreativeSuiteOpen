@@ -433,6 +433,64 @@ mod tests {
     }
 
     #[test]
+    fn pinceau_masque_filtre_cible_porteur() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let pid = seed_layer(&mut app, 2, 2);
+        let fid = app
+            .document
+            .doc
+            .add_filter(
+                pid,
+                photo_engine::FilterLayer::neutral("brightness_contrast", Default::default()),
+            )
+            .expect("filtre");
+        let mid = {
+            let masks = app
+                .document
+                .doc
+                .masks_of_mut(fid)
+                .expect("masques du filtre");
+            let mask = photo_engine::LayerMask::full(2, 2);
+            let mid = mask.id;
+            masks.push(mask);
+            mid
+        };
+
+        // Masque de filtre actif : le trait part du calque porteur.
+        let _ = update(&mut app, Message::SelectLayer(fid));
+        let _ = update(
+            &mut app,
+            Message::SetActiveMask(Some(crate::message::MaskTarget {
+                layer_id: fid,
+                mask_id: mid,
+            })),
+        );
+        let _ = update(
+            &mut app,
+            Message::BrushStart {
+                x: 0.0,
+                y: 0.0,
+                erase: false,
+            },
+        );
+        assert_eq!(app.tools.stroke_layer, Some(pid));
+
+        // Sans masque actif : filtre sélectionné → pas de trait (conservé).
+        let _ = update(&mut app, Message::SetActiveMask(None));
+        app.tools.stroke_layer = None;
+        let _ = update(
+            &mut app,
+            Message::BrushStart {
+                x: 0.0,
+                y: 0.0,
+                erase: false,
+            },
+        );
+        assert_eq!(app.tools.stroke_layer, None);
+    }
+
+    #[test]
     fn drop_noop_sans_entree_historique() {
         let mut app = PhotoApp::default();
         app.document.doc = photo_engine::Document::new(4, 4);
