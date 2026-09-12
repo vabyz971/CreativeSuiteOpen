@@ -20,7 +20,7 @@
 use iced::{Color, Font, Shadow, Vector};
 
 // ---------------------------------------------------------------------------
-// Typography — DESIGN.md: Hanken Grotesk (loaded in each app via .font())
+// Typography — Hanken Grotesk (loaded in each app via .font())
 // ---------------------------------------------------------------------------
 
 pub mod fonts {
@@ -47,12 +47,12 @@ pub mod fonts {
 // Pro dark palette
 // ---------------------------------------------------------------------------
 
-/// Official tokens for the "Lumina Creative" design system — see DESIGN.md.
+/// Official tokens for the "Lumina Creative" design system.
 /// Every color must go through these constants, never hard-coded.
 pub mod colors {
     use super::Color;
 
-    // --- Surfaces (Material dark scale, DESIGN.md) ---
+    // --- Surfaces (Material dark scale) ---
     pub const SURFACE: Color = Color::from_rgb(0.0745, 0.0745, 0.0745); // #131313
     pub const SURFACE_CONTAINER_LOWEST: Color = Color::from_rgb(0.0549, 0.0549, 0.0549); // #0E0E0E
     pub const SURFACE_CONTAINER_LOW: Color = Color::from_rgb(0.1098, 0.1059, 0.1059); // #1C1B1B
@@ -100,7 +100,7 @@ pub mod colors {
     pub const BORDER_NODE: Color = SURFACE_CONTAINER_LOWEST;
     pub const BORDER_NODE_SELECTED: Color = ACCENT;
 
-    /// Rectangular selection on canvas — DESIGN.md ACCENT (no ad-hoc blue)
+    /// Rectangular selection on canvas — ACCENT (no ad-hoc blue)
     pub const SELECTION_STROKE: Color = ACCENT;
     pub const SELECTION_FILL: Color = Color::from_rgba(0.0, 0.4784, 1.0, 0.15);
 
@@ -180,7 +180,7 @@ pub mod metrics {
     pub const TOOLBAR_WIDTH: f32 = 60.0;
 }
 
-/// Typographic scale (DESIGN.md) — ALL text sizes go through here.
+/// Typographic scale — ALL text sizes go through here.
 pub mod type_scale {
     pub const LABEL_SM: u16 = 11;
     pub const LABEL_MD: u16 = 12;
@@ -191,7 +191,7 @@ pub mod type_scale {
     pub const HEADLINE_LG: u16 = 22;
 }
 
-/// Spacing (DESIGN.md "spacing")
+/// Spacing tokens
 pub mod spacing {
     pub const STACK_SM: f32 = 8.0;
     pub const STACK_MD: f32 = 12.0;

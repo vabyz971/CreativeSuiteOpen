@@ -3,7 +3,7 @@ covers: []
 ---
 # AGENTS.md
 
-Suite créative Rust : workspace Cargo, apps **Iced 0.14 + wgpu**, licence GPL-3.0. Docs : `README.md` (architecture, roadmap), `ARCHITECTURE.md` (règles de dépendances), `DESIGN.md` (tokens thème).
+Suite créative Rust : workspace Cargo, apps **Iced 0.14 + wgpu**, licence GPL-3.0. Docs : `README.md` (architecture, roadmap), `ARCHITECTURE.md` (règles de dépendances).
 
 ## Environnement
 - Édition Rust 2024 → toolchain **1.85+** obligatoire.
@@ -12,21 +12,21 @@ Suite créative Rust : workspace Cargo, apps **Iced 0.14 + wgpu**, licence GPL-3
 
 ## Commandes
 - App principale : `cargo run --release -p photo`. Autres apps (fondations) : `-p video`, `-p audio`.
-- Vérification avant commit : `cargo fmt --all` puis `cargo clippy --workspace`. La CI GitHub (`.github/workflows/ci.yml`) rejoue fmt+clippy+tests sur chaque PR.
-- Tests : `cargo test -p photo-engine` (compositing, historique, projet). Les tests « golden » de `document.rs` vérifient les modes de fusion pixel par pixel — ne pas les affaiblir pour faire passer un refactor.
+- Vérification avant commit : `cargo fmt --all -- --check`, puis `cargo clippy --workspace --all-targets -- -D warnings`, puis `cargo test --workspace`. La CI GitHub (`.github/workflows/ci.yml`) rejoue fmt+clippy+tests sur chaque PR.
+- Tests ciblés : `cargo test -p photo-engine` (compositing, historique, projet). Les tests « golden » de `engines/photo-engine/src/document/tests.rs` vérifient les modes de fusion pixel par pixel — ne pas les affaiblir pour faire passer un refactor.
 
 ## Packages du workspace
 Le nom de crate diffère parfois du dossier — utiliser `-p` avec le nom de crate :
 | Dossier | Crate |
 |---|---|
 | `apps/photo` / `apps/video` / `apps/audio` | `photo` / `video` / `audio` (entrypoint `src/main.rs`) |
-| `core/core` | `suite-core` (graphe nodal générique) |
 | `core/datatypes` | `datatypes` (nœuds, sockets, Vec2 partagés) |
 | `engines/photo-engine` | `photo-engine` (document, compositing CPU/GPU, historique, projet) |
 | `engines/audio-engine` / `engines/video-engine` | `audio-engine` / `video-engine` (fondations, purs) |
 | `packages/ui-kit` | `ui-kit` (lib `ui_kit`, widgets iced réutilisables) |
-| `packages/math-utils` | `math-utils` (Vec3, Matrix4, Bézier ; Vec2 canonique = datatypes) |
+| `packages/math-utils` | `math-utils` (transformation affine `Transform2D` ; Vec2 canonique = datatypes) |
 | `packages/file-utils` | `file-utils` (erreurs fichiers, drag & drop, dialogues) |
+| `packages/preferences` | `preferences` (préférences persistantes, matériel, raccourcis) |
 
 Dépendances autorisées : `packages/*` ← `core/*` ← `engines/*` ← `apps/*`. Les packages ne dépendent jamais des engines ni des apps ; pas de dépendances entre apps.
 
@@ -43,10 +43,10 @@ Dépendances autorisées : `packages/*` ← `core/*` ← `engines/*` ← `apps/*
 
 ## Structure de l'app photo
 Découpée par rôle (même schéma pour les futures apps) :
-`message.rs` (enum Message + types partagés) · `state.rs` (PhotoApp + helpers) · `update.rs` (un handler par message) · `view.rs` (rendu + abonnements) · `menus.rs` · `ui_handles.rs`. Ne pas regrossir vers un main.rs monolithique.
+`message/` (enum Message + types partagés) · `state.rs` (PhotoApp + helpers) · `update/` (un handler par message) · `view.rs` (rendu + abonnements) · `menus.rs` · `ui_handles.rs`. Ne pas regrossir vers un main.rs monolithique.
 
 ## Architecture de `packages/ui-kit` (en couches, voir lib.rs)
-1. **`theme`** = SEULE source des couleurs/tailles/rayons/ombres (tokens DESIGN.md : `colors`, `type_scale`, `metrics`, `spacing`, `shadows`).
+1. **`theme`** = SEULE source des couleurs/tailles/rayons/ombres (tokens `colors`, `type_scale`, `metrics`, `spacing`, `shadows`).
 2. **`style`** = styles canoniques par famille visuelle (`ghost`, `ghost_selected`, `menu_item`, `primary`, `chip`, `action_chip*`, `floating_card`, `inset_card`). Un composant n'écrit JAMAIS sa closure de style : il référence `ui_kit::style::*`.
 3. **Primitives transverses** (`icon_button`, `spinner`, `dropdown`, `settings`, `shortcuts`) → 4. **Layouts** (`shell`, `menu`, `base_panel`) → 5. **Canvas domaine** (`image_canvas`, `layer_canvas`, `timeline`, `piano_roll`).
 - Les éléments spécifiques à une app restent dans `apps/<app>/src/components/`. Promotion vers `packages/ui-kit` seulement quand une 2e app en a besoin.
@@ -56,7 +56,7 @@ Découpée par rôle (même schéma pour les futures apps) :
 - `unwrap()`/`expect()` interdits hors tests ; pas d'emoji dans le code ni les commits.
 - Commits courts et préfixés par l'app : `photo: fix blend-mode offset jump`.
 - Chaque fichier `.rs` commence par l'en-tête GPL v3 (copier celui de `apps/photo/src/main.rs`).
-- Thème : palette/tokens définis dans `DESIGN.md`, implémentés dans `packages/ui-kit/src/theme.rs` ; police Hanken Grotesk et icônes Material chargées depuis `assets/fonts/`.
+- Thème : palette/tokens implémentés dans `packages/ui-kit/src/theme.rs` ; police Hanken Grotesk et icônes Material chargées depuis `assets/fonts/`.
 
 <!-- graft:start -->
 ## Graft — repo context graph
@@ -97,5 +97,6 @@ needed detail, and then at the exact file:line the node points to — never
 re-read whole files.
 
 After big code changes, refresh the graph with `graft build` (deterministic,
-no API key, $0).
+no API key, $0). The graph is a derived index: it may lag the source tree, so
+the code and `Cargo.toml` remain the source of truth.
 <!-- graft:end -->
