@@ -200,7 +200,7 @@ pub fn bar<'a, Message: Clone + 'a>(menus: &[Menu<Message>]) -> Element<'a, Mess
     iced_aw::menu::MenuBar::new(aw_items)
         .spacing(SLOT_GAP)
         // The DEFAULT iced_aw style is light grey ([0.85; 3]) — we
-        // wire the bar + dropdowns to DESIGN.md tokens:
+        // wire the bar + dropdowns to theme tokens:
         // transparent bar (shell background) and dark cards for
         // dropdown menus, open menu path tinted accent.
         .style(|_, _| iced_aw::style::menu_bar::Style {
