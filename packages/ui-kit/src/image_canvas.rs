@@ -30,6 +30,7 @@ use iced::mouse;
 use iced::widget::canvas::{self, Frame, Geometry, Path, Stroke};
 use iced::widget::image;
 use iced::{Color, Point, Rectangle, Size, Theme, Vector};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::theme::colors;
@@ -660,7 +661,10 @@ impl ImageCanvas {
             // vectoriels (meshes) seraient TOUJOURS dessinés sous les
             // textures des calques (images). Une texture générée à la volée
             // est rendue APRÈS ces images, donc par-dessus le calque selectionné.
-            if let Some((handle, off, size)) = OverlayRaster::render(bounds, corners, ui, active) {
+            // À fort zoom, cette zone peut dépasser la taille maximale d'une
+            // texture (`atlas::MAX_SIZE`) : elle est donc découpée en tuiles
+            // de 512 px, comme l'aperçu du trait.
+            for (handle, off, size) in OverlayRaster::render(bounds, corners, ui, active) {
                 frame.draw_image(Rectangle::new(off, size), iced_core::Image::new(handle));
             }
 
@@ -756,23 +760,53 @@ impl BoxUi {
 /// apparaissent PAR-DESSUS le calque sélectionné, on rasterise l'overlay dans
 /// une petite texture RGBA — moyenne via `point_in_convex_quad`/segment —
 /// et on la dessine avec `draw_image` dans une 2e géométrie.
-struct OverlayRaster {
-    // Buffer centré sur la bounding box écran de l'overlay (1 px écran = 1 px texture)
-    buf: Vec<u8>,
-    w: u32,
-    h: u32,
+/// Tuile d'overlay : au plus 512×512 px écran, donc toujours sous la
+/// limite de l'atlas de textures.
+struct OverlayTile {
     ox: f32,
     oy: f32,
+    w: u32,
+    h: u32,
+    buf: Vec<u8>,
+}
+
+/// Côté d'une tuile d'overlay en pixels écran.
+const OVERLAY_TILE: i64 = 512;
+
+struct OverlayRaster {
+    // Bounding box écran visible de l'overlay (1 px écran = 1 px texture).
+    ox: f32,
+    oy: f32,
+    w: u32,
+    h: u32,
+    tiles: BTreeMap<(i64, i64), OverlayTile>,
 }
 
 impl OverlayRaster {
-    /// Rasterise la boîte de transformation. Retourne (handle, coin sup. gauche, taille écran).
+    /// Rasterise la boîte de transformation en tuiles. Retourne
+    /// (handle, coin sup. gauche, taille écran) pour chaque tuile.
     fn render(
         bounds: Rectangle,
         corners: [Point; 4],
         ui: BoxUi,
         active: Option<TransformHandle>,
-    ) -> Option<(image::Handle, Point, Size)> {
+    ) -> Vec<(image::Handle, Point, Size)> {
+        Self::render_tiles(bounds, corners, ui, active)
+            .into_iter()
+            .map(|(off, size, buf)| {
+                let handle = image::Handle::from_rgba(size.width as u32, size.height as u32, buf);
+                (handle, off, size)
+            })
+            .collect()
+    }
+
+    /// Même rendu que [`Self::render`], mais expose les tampons RGBA pour les tests.
+    fn render_tiles(
+        bounds: Rectangle,
+        corners: [Point; 4],
+        ui: BoxUi,
+        active: Option<TransformHandle>,
+    ) -> Vec<(Point, Size, Vec<u8>)> {
         // Bounding box de tous les éléments (poignées en extension max.)
         const PAD: f32 = HANDLE_HALF * 1.4 + 3.0;
         let xs = [
@@ -806,12 +840,19 @@ impl OverlayRaster {
         let ex = max_x.min(bounds.width);
         let ey = max_y.min(bounds.height);
         if ex <= ox || ey <= oy {
-            return None;
+            return Vec::new();
         }
         let w = ((ex - ox).ceil().max(1.0)) as u32;
         let h = ((ey - oy).ceil().max(1.0)) as u32;
-        let buf = vec![0u8; (w as usize) * (h as usize) * 4];
-        let mut r = Self { buf, w, h, ox, oy };
+        // Seules les tuiles touchées par un tracé sont allouées : à fort zoom,
+        // aucun tampon géant n'est créé et chaque texture reste ≤ 512×512.
+        let mut r = Self {
+            ox,
+            oy,
+            w,
+            h,
+            tiles: BTreeMap::new(),
+        };
 
         let stroke = r.to_u8(colors::SELECTION_STROKE);
         // Quadrilatère : 4 segments d'épaisseur 1 px
@@ -892,8 +933,16 @@ impl OverlayRaster {
         r.fill_quad(&quad, r.handle_color(active_s));
         r.stroke_quad(&quad, 1.0, stroke);
 
-        let handle = image::Handle::from_rgba(w, h, r.buf);
-        Some((handle, Point::new(ox, oy), Size::new(w as f32, h as f32)))
+        r.tiles
+            .into_values()
+            .map(|tile| {
+                (
+                    Point::new(tile.ox, tile.oy),
+                    Size::new(tile.w as f32, tile.h as f32),
+                    tile.buf,
+                )
+            })
+            .collect()
     }
 
     /// Blanc sur poignée active, couleur de fond sinon — comme l'ancien overlay mesh.
@@ -918,6 +967,51 @@ impl OverlayRaster {
         Self::color_bytes(color)
     }
 
+    /// Tuile contenant un pixel de l'overlay, créée à la demande.
+    fn tile_mut(&mut self, tx: i64, ty: i64) -> Option<&mut OverlayTile> {
+        let x0 = tx.saturating_mul(OVERLAY_TILE);
+        let y0 = ty.saturating_mul(OVERLAY_TILE);
+        let w = ((x0 + OVERLAY_TILE).min(self.w as i64) - x0).max(0) as u32;
+        let h = ((y0 + OVERLAY_TILE).min(self.h as i64) - y0).max(0) as u32;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let ox = self.ox + x0 as f32;
+        let oy = self.oy + y0 as f32;
+        Some(self.tiles.entry((tx, ty)).or_insert_with(|| OverlayTile {
+            ox,
+            oy,
+            w,
+            h,
+            buf: vec![0; w as usize * h as usize * 4],
+        }))
+    }
+
+    /// Restreint une plage de pixels absolus à la zone visible de l'overlay.
+    /// Les boucles restent exprimées en coordonnées écran absolues : seul
+    /// l'intervalle est réduit, puis `blend_px` traduit vers la tuile locale.
+    fn clipped_span(
+        &self,
+        lo_x: f32,
+        hi_x: f32,
+        lo_y: f32,
+        hi_y: f32,
+    ) -> Option<(i64, i64, i64, i64)> {
+        let min_x = (self.ox - 1.0).floor() as i64;
+        let max_x = (self.ox + self.w as f32 + 1.0).ceil() as i64;
+        let min_y = (self.oy - 1.0).floor() as i64;
+        let max_y = (self.oy + self.h as f32 + 1.0).ceil() as i64;
+        let sx = ((lo_x + 0.5) as i64).max(min_x);
+        let ex = (hi_x as i64).min(max_x);
+        let sy = ((lo_y + 0.5) as i64).max(min_y);
+        let ey = (hi_y as i64).min(max_y);
+        if sx > ex || sy > ey {
+            None
+        } else {
+            Some((sx, ex, sy, ey))
+        }
+    }
+
     /// Source-over d'un pixel en coordonnées écran, alpha = couverture.
     fn blend_px(&mut self, x: f32, y: f32, color: [u8; 4], cov: f32) {
         if cov <= 0.004 {
@@ -928,10 +1022,19 @@ impl OverlayRaster {
         if px < 0 || py < 0 || px >= self.w as i64 || py >= self.h as i64 {
             return;
         }
-        let idx = ((py as u32 * self.w + px as u32) * 4) as usize;
-        // Src-over sur buffer transparent
         let sa = color[3] as f32 / 255.0 * cov;
-        let da = self.buf[idx + 3] as f32 / 255.0;
+        if sa <= 0.0 {
+            return;
+        }
+        let tx = px.div_euclid(OVERLAY_TILE);
+        let ty = py.div_euclid(OVERLAY_TILE);
+        let Some(tile) = self.tile_mut(tx, ty) else {
+            return;
+        };
+        let lx = (px - tx.saturating_mul(OVERLAY_TILE)) as u32;
+        let ly = (py - ty.saturating_mul(OVERLAY_TILE)) as u32;
+        let idx = ((ly * tile.w + lx) * 4) as usize;
+        let da = tile.buf[idx + 3] as f32 / 255.0;
         let out_a = sa + da * (1.0 - sa);
         if out_a <= 0.0 {
             return;
@@ -939,10 +1042,10 @@ impl OverlayRaster {
         let put = |fg: u8, bg: u8| -> u8 {
             ((fg as f32 * sa + bg as f32 * da * (1.0 - sa)) / out_a).round() as u8
         };
-        self.buf[idx] = put(color[0], self.buf[idx]);
-        self.buf[idx + 1] = put(color[1], self.buf[idx + 1]);
-        self.buf[idx + 2] = put(color[2], self.buf[idx + 2]);
-        self.buf[idx + 3] = (out_a * 255.0).round() as u8;
+        tile.buf[idx] = put(color[0], tile.buf[idx]);
+        tile.buf[idx + 1] = put(color[1], tile.buf[idx + 1]);
+        tile.buf[idx + 2] = put(color[2], tile.buf[idx + 2]);
+        tile.buf[idx + 3] = (out_a * 255.0).round() as u8;
     }
 
     /// Distance point→segment (2D).
@@ -966,10 +1069,9 @@ impl OverlayRaster {
         let hi_x = x0.max(x1) + pad;
         let lo_y = y0.min(y1) - pad;
         let hi_y = y0.max(y1) + pad;
-        let sx = (lo_x + 0.5) as i64;
-        let ex = hi_x as i64;
-        let sy = (lo_y + 0.5) as i64;
-        let ey = hi_y as i64;
+        let Some((sx, ex, sy, ey)) = self.clipped_span(lo_x, hi_x, lo_y, hi_y) else {
+            return;
+        };
         for py in sy..=ey {
             for px in sx..=ex {
                 let d = Self::dist_seg(px as f32 + 0.5, py as f32 + 0.5, x0, y0, x1, y1);
@@ -997,10 +1099,10 @@ impl OverlayRaster {
         fill: bool,
     ) {
         let pad = rad + width + 1.0;
-        let sx = (cx - pad + 0.5) as i64;
-        let ex = (cx + pad) as i64;
-        let sy = (cy - pad + 0.5) as i64;
-        let ey = (cy + pad) as i64;
+        let Some((sx, ex, sy, ey)) = self.clipped_span(cx - pad, cx + pad, cy - pad, cy + pad)
+        else {
+            return;
+        };
         for py in sy..=ey {
             for px in sx..=ex {
                 let dx = px as f32 + 0.5 - cx;
@@ -1030,10 +1132,9 @@ impl OverlayRaster {
         let hi_x = a.x.max(b.x).max(c.x).max(d.x) + 1.0;
         let lo_y = a.y.min(b.y).min(c.y).min(d.y) - 1.0;
         let hi_y = a.y.max(b.y).max(c.y).max(d.y) + 1.0;
-        let sx = (lo_x + 0.5) as i64;
-        let ex = hi_x as i64;
-        let sy = (lo_y + 0.5) as i64;
-        let ey = hi_y as i64;
+        let Some((sx, ex, sy, ey)) = self.clipped_span(lo_x, hi_x, lo_y, hi_y) else {
+            return;
+        };
         for py in sy..=ey {
             for px in sx..=ex {
                 let mut cov = 0.0;
@@ -1917,6 +2018,60 @@ mod tests {
 
     fn alpha_at(tile: &Tile, local_x: u32, local_y: u32) -> u8 {
         tile.rgba[((local_y * TILE + local_x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn overlay_origine_decalee_reste_visible() {
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(2000.0, 2000.0));
+        let corners = [
+            Point::new(1000.0, 1000.0),
+            Point::new(1500.0, 1000.0),
+            Point::new(1500.0, 1500.0),
+            Point::new(1000.0, 1500.0),
+        ];
+        let ui = BoxUi::new(corners);
+        let tiles = OverlayRaster::render_tiles(bounds, corners, ui, None);
+
+        assert!(
+            !tiles.is_empty(),
+            "l'overlay décalé doit produire des tuiles"
+        );
+        let right = tiles
+            .iter()
+            .map(|(off, size, _)| off.x + size.width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(right >= 1499.0, "le bord droit visible doit être rasterisé");
+    }
+
+    #[test]
+    fn overlay_grande_zone_reste_tuilee_sous_limite_atlas() {
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(3000.0, 3000.0));
+        let corners = [
+            Point::new(100.0, 100.0),
+            Point::new(2900.0, 100.0),
+            Point::new(2900.0, 2900.0),
+            Point::new(100.0, 2900.0),
+        ];
+        let ui = BoxUi::new(corners);
+        let tiles = OverlayRaster::render_tiles(bounds, corners, ui, None);
+
+        assert!(tiles.len() > 1, "la zone doit être découpée en tuiles");
+        for (off, size, buf) in &tiles {
+            assert!(size.width <= OVERLAY_TILE as f32);
+            assert!(size.height <= OVERLAY_TILE as f32);
+            assert_eq!(buf.len(), size.width as usize * size.height as usize * 4);
+            assert!(off.x >= 0.0 && off.y >= 0.0);
+        }
+        let right = tiles
+            .iter()
+            .map(|(off, size, _)| off.x + size.width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = tiles
+            .iter()
+            .map(|(off, size, _)| off.y + size.height)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((right - 3000.0).abs() < 1.0);
+        assert!((bottom - 3000.0).abs() < 1.0);
     }
 
     #[test]
