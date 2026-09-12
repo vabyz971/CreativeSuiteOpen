@@ -14,7 +14,7 @@ graphe nodal générique, widgets et bibliothèques utilitaires.
 ```
 apps/       Applications finales (binaires indépendants)
 engines/    Moteurs métier PURS — zéro dépendance UI
-core/       Socle commun : datatypes
+core/       Socle commun : suite-core (graphe nodal), datatypes
 packages/   Bibliothèques réutilisables : ui-kit, math-utils, file-utils
 assets/     Ressources partagées (polices)
 ```
@@ -22,10 +22,10 @@ assets/     Ressources partagées (polices)
 ### packages/
 Bibliothèques partagées réutilisables entre toutes les applications.
 - `ui-kit` (crate `ui_kit`) : widgets iced en couches — `theme` (seule source des
-  couleurs/tailles, tokens dans `theme.rs`), `style` (styles canoniques), primitives
+  couleurs/tailles, tokens DESIGN.md), `style` (styles canoniques), primitives
   transverses, layouts, canvas domaine (`image_canvas`, `timeline`,
   `piano_roll`).
-- `math-utils` : transformation affine 2D canonique (`Transform2D`) ;
+- `math-utils` : mathématiques communes (`Vec3`, `Matrix4`, courbes de Bézier) ;
   le `Vec2` canonique reste `datatypes::Vec2`, réexporté.
 - `file-utils` : erreurs fichiers, types drag & drop et dialogues.
 
@@ -42,7 +42,9 @@ texture UI se fait côté app.
 Ils peuvent dépendre de `core/*` et de `packages/*` (hors UI).
 
 ### core/
-Socle transverse : `datatypes` (nœuds, sockets, `Vec2`).
+Socle transverse : `suite-core` (graphe nodal générique), `datatypes`
+(nœuds, sockets, `Vec2`). `suite-shell` supprimé (chantier 3, 2026) :
+Photo/Video/Audio restent des apps indépendantes sans coque partagée.
 
 ### apps/
 Applications finales qui combinent packages, core et engines. Découpage par rôle :
@@ -52,8 +54,8 @@ d'adaptation moteur→UI (`ui_handles.rs`). Chaque app est un binaire indépenda
 ## Règles de dépendances
 
 1. `packages/` ne dépend JAMAIS de `engines/` ni de `apps/`
-2. `engines/` peut dépendre de `core/` et des `packages/` non-UI ; `datatypes` ne dépend que de `serde`
-3. `apps/` peuvent dépendre de `core/`, `engines/` et `packages/`
+2. `core/` ne dépend que de lui-même ; `engines/` peut dépendre de `core/` et `packages/` (hors UI)
+3. `apps/` peuvent dépendre de tout le reste
 4. Pas de dépendances circulaires
 5. Pas de dépendances entre apps
 

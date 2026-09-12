@@ -51,7 +51,7 @@ Versions follow each crate's functional maturity: `0.1.0` = foundations, `0.2.0`
 ### Hybrid history & native project (`0.7.0`)
 - **Hybrid undo/redo** (Ctrl+Z / Ctrl+Y, 50 steps): full snapshots for destructive/structural operations (paint, crop, reordering), lightweight commands for micro-editions (opacity, transforms, blend, renames, filter parameters) — near-zero memory cost, precise render invalidation
 - Continuous gestures (sliders, renaming, drags) coalesced into a single restoration point within an 800 ms window; redo after a coalesced gesture restores the gesture's final value
-- **Native project format `.csophoto` (v4)**: hierarchical tree saved as versioned JSON, source pixels stored as PNG so filters stay alive across sessions — Save (`Ctrl+S`), Save As (`Ctrl+Shift+S`); open projects or plain images from the same dialog (legacy `.csphoto` files are still detected, v3 projects migrate to filter sub-layers)
+- **Native project format `.csophoto` (v2)**: hierarchical tree saved as versioned JSON, source pixels stored as PNG so filters stay alive across sessions — Save (`Ctrl+S`), Save As (`Ctrl+Shift+S`); open projects or plain images from the same dialog (legacy `.csphoto` files are still detected)
 - **PNG/JPEG export**: exports the full composite (`Ctrl+Shift+E`) — transparency preserved in PNG, alpha flattened onto white in JPEG (quality 90)
 
 ### Infinite canvas
@@ -78,7 +78,7 @@ Hand, Zoom, Rectangle selection, Move, **Brush**, **Eraser** (destination-out, r
 ### Interface
 - Resizable panel layout (Layers, Properties, Generator)
 - Full menus (File, Edit, Layer, View) with shortcuts (`Ctrl+O`, `Ctrl+J`, `F7`…)
-- Unified design system: tokens in `packages/ui-kit/src/theme.rs` + shared canonical styles (`ui_kit::style`) — macOS-style tool palette
+- Unified design system: DESIGN.md tokens + shared canonical styles (`ui_kit::style`) — macOS-style tool palette
 - Consistent dark theme, Hanken Grotesk typeface, Material icons
 
 ---
@@ -102,10 +102,9 @@ CreativeSuiteOpen/
 │   ├── ui-kit/               # Iced widgets: theme.rs (SOLE source of tokens), style.rs,
 │   │                         #   image_canvas.rs, layer_canvas.rs,
 │   │                         #   menu.rs / dropdown.rs, timeline.rs / piano_roll.rs
-│   ├── math-utils/           # Shared math: canonical affine `Transform2D`
-│   │                         #   (canonical `Vec2` = datatypes)
-│   ├── file-utils/           # I/O: drag & drop, file dialogs
-│   └── preferences/          # Persistent preferences, hardware, keybindings
+│   ├── math-utils/           # Shared math: Vec3, Matrix4, Bézier, Transform2D
+│   │                         #   (canonical affine transform; canonical Vec2 = datatypes)
+│   └── file-utils/           # I/O: drag & drop, file dialogs
 ├── assets/fonts/             # Hanken Grotesk, Material Icons
 ├── flake.nix                 # NixOS dev environment (Vulkan, Wayland)
 └── Cargo.toml                # Rust workspace
@@ -114,7 +113,7 @@ CreativeSuiteOpen/
 ### Architecture philosophy
 - **Strict modularity**: business logic lives in `engines/*` and `core/*`, never in the apps. An app = interface + orchestration.
 - **Pure engines**: `photo-engine` (layer tree, compositing, history) has no UI dependency and can later serve the video module (titles, image compositing).
-- **Layered dependencies**: `apps/*` may depend on `engines/*`, `core/*`, and `packages/*`; `engines/*` may depend on `core/*` and non-UI `packages/*`. Packages never depend on engines or apps.
+- **Layered dependencies**: `packages` ← `core`/`engines` ← `apps`. Packages never depend on engines or apps.
 - **State-only rendering**: settings (opacity, transform, blend) never regenerate pixels — they apply at draw time. This invariant is what makes the UI feel instant.
 - **Rust + Iced + wgpu**: one codebase, native GPU rendering on all three platforms.
 

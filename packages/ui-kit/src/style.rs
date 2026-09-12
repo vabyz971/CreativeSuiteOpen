@@ -18,7 +18,7 @@
 //!
 //! Rule: a component NEVER writes a style closure by hand;
 //! it references a function from this module. Every color/radius consumed here
-//! comes from [`crate::theme`]. Add a variant here rather
+//! comes from [`crate::theme`] (DESIGN.md). Add a variant here rather
 //! than duplicating elsewhere.
 
 use iced::widget::{button, container, text_input};
@@ -134,7 +134,7 @@ pub fn menu_item(status: button::Status) -> button::Style {
     }
 }
 
-/// Primary button (theme primary-button tokens): solid ACCENT,
+/// Primary button (DESIGN.md "Buttons > Primary"): solid ACCENT,
 /// brightened on hover. Primary actions only (Create, Export...).
 #[must_use]
 pub fn primary(status: button::Status) -> button::Style {
@@ -233,7 +233,7 @@ fn action_chip_colored(status: button::Status, hover: Color) -> button::Style {
 }
 
 /// Floating card (dropdown, task menu, tool palette) — panel
-/// theme floating-panel tokens: surface + subtle border + shadow.
+/// DESIGN.md "Floating Panel": surface + subtle border + shadow.
 #[must_use]
 pub fn floating_card(background: Color, radius: f32, shadow: Shadow) -> container::Style {
     container::Style {

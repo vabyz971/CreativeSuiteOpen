@@ -19,7 +19,7 @@
 //! Layered architecture (bottom to top):
 //!
 //! 1. **`theme`** — SINGLE source of colors, sizes, radii, shadows
-//!    (theme tokens). No other module hard-codes a color.
+//!    (DESIGN.md tokens). No other module hard-codes a color.
 //! 2. **`style`** — canonical styles per visual family (buttons, cards).
 //!    Components reference these functions instead of writing closures.
 //! 3. **Cross-cutting primitives** — reusable by ALL apps without

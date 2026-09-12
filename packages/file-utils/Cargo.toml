@@ -2,11 +2,8 @@
 name = "file-utils"
 version = "0.1.0"
 authors = ["vabyz971 <vabyz971@gmail.com>"]
-edition.workspace = true
-license.workspace = true
-
-[lints]
-workspace = true
+edition = "2024"
+license = "GPL-3.0-or-later"
 
 [dependencies]
-thiserror = { workspace = true }
+thiserror = "2"

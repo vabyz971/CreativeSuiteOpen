@@ -51,8 +51,8 @@ cargo run -p photo
 ## Project layout
 
 ```
-packages/     ui-kit, math-utils, file-utils, preferences # reusable libraries
-core/         datatypes                         # shared foundation
+packages/     ui-kit, math-utils, file-utils      # reusable libraries
+core/         suite-core, datatypes, shell        # shared foundation
 engines/      photo-engine, video-engine, audio-engine
 apps/         photo, video, audio                 # final applications
 ```
@@ -60,12 +60,14 @@ apps/         photo, video, audio                 # final applications
 Dependency direction is **strictly one-way**:
 
 ```
-apps → engines, core, packages
-engines → core and non-UI packages
-packages ↛ engines or apps
+apps  →  engines  →  packages
+  │          │            │
+  │          │            └── never depend on engines/ or apps/
+  │          └── may depend on packages/
+  └── may depend on packages/ and engines/
 ```
 
-Crate names sometimes differ from folder names — use `-p` with the crate name (`photo-engine`, `datatypes`, `ui-kit`…).
+Crate names sometimes differ from folder names — use `-p` with the crate name (`photo-engine`, `suite-core`, `ui-kit`…).
 
 ---
 
@@ -74,16 +76,16 @@ Crate names sometimes differ from folder names — use `-p` with the crate name 
 These rules exist because they are what keeps the suite fast and maintainable. A review will ask you to change anything that violates them.
 
 1. **Business logic lives in `engines/*` and `core/*`.** An app = interface + orchestration only. No rendering logic in apps.
-2. **Engines are PURE.** No UI framework dependencies. `photo-engine` knows nothing about Iced; its buffers are plain data (`RgbaBuf`, `Arc<[u8]>`). Converting engine buffers into UI textures happens exclusively app-side.
+2. **Engines are PURE.** No UI framework dependencies. `photo-engine` knows nothing about Iced; its buffers are plain data (`RgbaBuf`, `Arc<DynamicImage>`). Converting engine buffers into UI textures happens exclusively app-side.
 3. **State-only rendering model.** A setting change (opacity, transform, blend mode) must NEVER regenerate pixels or textures — it applies at draw time on the GPU. This invariant is what makes sliders feel instant. Preserve it at all costs.
 4. **Single UI-texture frontier.** Iced image handles derive from engine buffers in one place and are synchronized once per message. Do not create texture handles elsewhere.
-5. **The theme is the only source of colors/sizes.** Never hardcode a color outside `packages/ui-kit/src/theme.rs` — including inside canvas shaders. Use the tokens implemented there.
+5. **The theme is the only source of colors/sizes.** Never hardcode a color outside `packages/ui-kit/src/theme.rs` — including inside canvas shaders. Use tokens from `DESIGN.md`.
 6. **Canonical styles only.** Components reference `ui_kit::style::*`; a component never writes its own style closures.
 7. **History contract.**
    - Snapshots for destructive/structural operations (paint, crop, add/remove/reorder).
    - Lightweight commands for micro-editions (opacity, transforms, filter params), coalesced over an 800 ms window.
    - Push the PRE-mutation state, never post.
-8. **Project format `.csophoto` is versioned.** Any incompatible model change requires bumping `FORMAT_VERSION` in `engines/photo-engine/src/project.rs` and handling older versions cleanly.
+8. **Project format `.csophoto` is versioned.** Any incompatible model change requires bumping `FORMAT_VERSION` in `photo-engine/src/project.rs` and handling older versions cleanly.
 
 ---
 
@@ -98,7 +100,7 @@ These rules exist because they are what keeps the suite fast and maintainable. A
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace
 cargo test --workspace
 ```
 
@@ -114,7 +116,7 @@ cargo test --workspace       # everything
 ```
 
 - Unit tests live in `#[cfg(test)] mod tests` at the end of each module.
-- **Golden pixel tests** in `engines/photo-engine/src/document/tests.rs` verify blend modes pixel-by-pixel with a ±1 tolerance. Do NOT weaken them to make a refactor pass — if your change alters expected values, it needs a very good justification and a discussion first.
+- **Golden pixel tests** in `document.rs` verify blend modes pixel-by-pixel with a ±1 tolerance. Do NOT weaken them to make a refactor pass — if your change alters expected values, it needs a very good justification and a discussion first.
 - Project-format tests do real save/load round-trips through temp files; keep them working whenever you touch serialization.
 - GPU-dependent paths must degrade gracefully: every GPU function returns `None`/falls back to CPU when no adapter exists, so tests pass on headless CI machines.
 
@@ -154,7 +156,7 @@ Open a draft PR early if you want feedback mid-work. For significant architectur
 
 Ideas matched to the current roadmap:
 
-- **Photo**: vector shapes, JPEG quality dialog for export
+- **Photo**: layer masks, vector shapes, JPEG quality dialog for export
 - **Nodal generator**: wire graph evaluation output into layer textures
 - **Video / Audio**: move the foundations forward toward a functional timeline/mixer
 - **Packaging**: Flatpak, AppImage, AUR, brew

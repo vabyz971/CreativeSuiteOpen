@@ -3375,7 +3375,7 @@ dependencies = [
  "pollster 0.3.0",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror 1.0.69",
  "wgpu 30.0.1",
 ]
 

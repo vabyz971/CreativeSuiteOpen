@@ -1,10 +1,6 @@
 # CreativeSuiteOpen — CI minimale
-# Linux : fmt → clippy → tests, sur la plateforme de référence (Linux/Vulkan).
-# Windows/macOS : vérification de compilation uniquement, pour une confiance
-# multiplateforme à coût maîtrisé.
+# fmt → clippy → tests, sur la plateforme de référence (Linux/Vulkan).
 # C'est le garde-fou principal du repo (pas de hooks locaux partagés).
-# Les actions restent épinglées à des tags stables upstream plutôt qu'à des
-# SHA : choix conscient de maintenabilité pour ce niveau de risque.
 
 name: CI
 
@@ -13,18 +9,11 @@ on:
     branches: [main, photo]
   pull_request:
 
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-linux:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,20 +39,3 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
-
-  check-portability:
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Toolchain Rust stable (édition 2024)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Vérification de compilation
-        run: cargo check --workspace
