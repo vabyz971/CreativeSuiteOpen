@@ -14,364 +14,47 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Panneau Calques façon Affinity (arbre hiérarchique) :
-//! - En-tête : mode de fusion + opacité du nœud sélectionné
-//! - Arbre (haut de pile en premier) : groupes repliables, calques pixels
-//!   (avec sous-calques de filtres repliables, façon Affinity), calques
-//!   d'ajustement, miniature, nom, œil de visibilité
-//! - Barre bas : ajouter (dont dropdown de filtres), dupliquer,
-//!   grouper/dégrouper, monter/descendre
+//! Ligne du panneau Calques : sélection, visibilité, expansion, miniature,
+//! nom, drag & drop et pile FX/contextuel associés.
 
+use super::{DropPosition, LayerDragState, resolve_drop_target};
 use crate::Message;
-use crate::layers::{BlendMode, FilterLayer, LayerNode};
-use iced::widget::{
-    Space, button, column, container, image, mouse_area, pick_list, row, scrollable, slider, text,
-    text_input,
-};
+use crate::layers::{FilterLayer, LayerNode};
+use iced::widget::{Space, button, column, container, image, mouse_area, row, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use photo_engine::Document;
-use ui_kit::theme::{colors, metrics};
+use ui_kit::theme::colors;
 use uuid::Uuid;
 
-const ICON_ADD: &str = "\u{e145}"; // add
-const ICON_IMAGE: &str = "\u{e3f4}"; // image
-const ICON_DUPLICATE: &str = "\u{e14d}"; // content_copy
-const ICON_DELETE: &str = "\u{e872}"; // delete
-const ICON_UP: &str = "\u{e316}"; // keyboard_arrow_up
-const ICON_DOWN: &str = "\u{e313}"; // keyboard_arrow_down
-const ICON_VISIBLE: &str = "\u{e8f4}"; // visibility
-const ICON_HIDDEN: &str = "\u{e8f5}"; // visibility_off
-const ICON_FOLDER: &str = "\u{e2c8}"; // folder_open
-const ICON_UNGROUP: &str = "\u{e2c7}"; // folder → dégrouper
-const ICON_ADJUST: &str = "\u{e39e}"; // filter_b_and_w → ajustement
-const ICON_PALETTE: &str = "\u{e40a}"; // palette → couleur uni
-const ICON_MASK: &str = "\u{e3b0}"; // mask
-const ICON_FX: &str = "\u{e590}"; // filter_vintage → sous-calque de filtre
-const ICON_FILTER_ADD: &str = "\u{e152}"; // filter_list → menu d'ajout de filtre
-
+pub(crate) const ICON_ADD: &str = "\u{e145}"; // add
+pub(crate) const ICON_IMAGE: &str = "\u{e3f4}"; // image
+pub(crate) const ICON_DUPLICATE: &str = "\u{e14d}"; // content_copy
+pub(crate) const ICON_DELETE: &str = "\u{e872}"; // delete
+pub(crate) const ICON_UP: &str = "\u{e316}"; // keyboard_arrow_up
+pub(crate) const ICON_DOWN: &str = "\u{e313}"; // keyboard_arrow_down
+pub(crate) const ICON_VISIBLE: &str = "\u{e8f4}"; // visibility
+pub(crate) const ICON_HIDDEN: &str = "\u{e8f5}"; // visibility_off
+pub(crate) const ICON_FOLDER: &str = "\u{e2c8}"; // folder_open
+pub(crate) const ICON_UNGROUP: &str = "\u{e2c7}"; // folder → dégrouper
+pub(crate) const ICON_ADJUST: &str = "\u{e39e}"; // filter_b_and_w → ajustement
+pub(crate) const ICON_PALETTE: &str = "\u{e40a}"; // palette → couleur uni
+pub(crate) const ICON_MASK: &str = "\u{e3b0}"; // mask
+pub(crate) const ICON_FX: &str = "\u{e590}"; // filter_vintage → sous-calque de filtre
+pub(crate) const ICON_FILTER_ADD: &str = "\u{e152}"; // filter_list → menu d'ajout de filtre
 #[allow(clippy::too_many_arguments)]
-pub fn render<'a>(
-    doc: &'a Document,
-    preview_cache: &'a crate::ui_handles::PreviewCache,
-    selected: Option<Uuid>,
-    dragged: Option<Uuid>,
-    active_mask: Option<crate::message::MaskTarget>,
-    expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
-    filter_menu_open: bool,
-    context_menu_open: Option<Uuid>,
-    layer_item_radius: f32,
-) -> Element<'a, Message> {
-    let sel_node = selected.and_then(|id| doc.find(id));
-    let sel_filter = selected.and_then(|id| doc.find_filter_layer(id));
-
-    // --- En-tête : mode de fusion + opacité (nœud OU sous-calque) ---
-    let blend = selected
-        .and_then(|id| doc.blend_of(id))
-        .unwrap_or(BlendMode::Normal);
-    let opacity = selected.and_then(|id| doc.opacity_of(id)).unwrap_or(100.0);
-    let has_sel = sel_node.is_some() || sel_filter.is_some();
-
-    let header = container(
-        column![
-            row![
-                text("Fusion").size(11).color(colors::TEXT_MUTED),
-                Space::new().width(Length::Fill),
-                pick_list(BlendMode::ALL, Some(blend), move |m: BlendMode| {
-                    Message::SetLayerBlend {
-                        id: selected.unwrap_or_else(Uuid::nil),
-                        mode: m,
-                    }
-                },)
-                .width(Length::Fixed(130.0))
-                .placeholder("—"),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(6),
-            row![
-                text("Opacité").size(11).color(colors::TEXT_MUTED),
-                container(
-                    text(format!("{:.0} %", opacity))
-                        .size(11)
-                        .color(colors::TEXT_PRIMARY)
-                )
-                .padding(2)
-                .width(Length::Fixed(48.0))
-                .style(|_t| container::Style {
-                    background: Some(colors::SURFACE_CONTAINER_HIGH.into()),
-                    border: iced::Border {
-                        radius: metrics::RADIUS_BUTTON.into(),
-                        width: 1.0,
-                        color: colors::BORDER_PANEL,
-                    },
-                    ..Default::default()
-                }),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(6),
-            slider(0.0..=100.0, opacity, move |v| Message::SetLayerOpacity {
-                id: selected.unwrap_or_else(Uuid::nil),
-                opacity: v,
-            })
-            .step(1.0_f32),
-        ]
-        .spacing(8)
-        .padding(10),
-    )
-    .style(|_| container::Style {
-        background: Some(colors::BG_TRANSPARENT.into()),
-        ..Default::default()
-    });
-
-    // --- Arbre des calques (haut de la pile affiché en premier) ---
-    let list = tree_column(
-        doc,
-        &doc.root,
-        preview_cache,
-        selected,
-        dragged,
-        active_mask,
-        expanded_fx_stack,
-        context_menu_open,
-        layer_item_radius,
-        0,
-    )
-    .padding(6);
-    let list_view: Element<'_, Message> = if doc.root.is_empty() {
-        container(
-            text("Aucun calque — ouvrez une image ou ajoutez un calque")
-                .size(11)
-                .color(colors::TEXT_MUTED),
-        )
-        .padding(12)
-        .into()
-    } else {
-        scrollable(list)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    };
-
-    // --- Barre d'actions (mini toolbar en bas) ---
-    let material = ui_kit::icon_button::MATERIAL_ICONS;
-    let action_btn = |codepoint: &'a str, _tip: &'a str, msg: Message, enabled: bool| {
-        let b = button(text(codepoint).font(material).size(16).color(if enabled {
-            colors::TEXT_SECONDARY
-        } else {
-            colors::TEXT_MUTED
-        }))
-        .padding(4);
-
-        if enabled {
-            b.on_press(msg).style(move |_t, s| {
-                let mut st = ui_kit::style::ghost(s);
-                st.border.radius = layer_item_radius.into();
-                st
-            })
-        } else {
-            b.style(|_t, _s| button::Style::default())
-        }
-    };
-
-    // Le nœud sélectionné est-il déjà un groupe ? (grouper/dégrouper)
-    let sel_filter_parent = selected.and_then(|sid| doc.find_filter_parent(sid));
-    let sel_is_filter = sel_filter_parent.is_some();
-    // Cible d'ajout de filtre : pixels et ajustements (un sous-calque
-    // sélectionné redirige vers son calque porteur).
-    let filter_target = match selected {
-        Some(sid) if sel_is_filter => doc.find_filter_parent(sid),
-        Some(sid) => match doc.find(sid) {
-            Some(LayerNode::Pixel(_) | LayerNode::Adjustment(_)) => Some(sid),
-            _ => None,
-        },
-        None => None,
-    };
-    let can_have_mask =
-        matches!(sel_node, Some(LayerNode::Pixel(_) | LayerNode::Group(_))) || sel_is_filter;
-    let nil = Uuid::nil();
-    // Suppression : sous-calque → RemoveLiveFilter, sinon DeleteLayer.
-    let (delete_msg, delete_enabled) = match (selected, sel_filter_parent) {
-        (Some(fid), Some(parent)) => (
-            Message::RemoveLiveFilter {
-                layer_id: parent,
-                filter_id: fid,
-            },
-            true,
-        ),
-        (Some(sid), None) => (Message::DeleteLayer(sid), has_sel && doc.pixel_count() > 1),
-        _ => (Message::DeleteLayer(nil), false),
-    };
-    let mini_bar = container(
-        row![
-            action_btn(ICON_IMAGE, "Ouvrir une image", Message::OpenImage, true),
-            action_btn(
-                ICON_ADD,
-                "Nouveau calque vide",
-                Message::AddEmptyLayer,
-                true
-            ),
-            action_btn(
-                ICON_DUPLICATE,
-                "Dupliquer",
-                Message::DuplicateLayer(selected.unwrap_or(nil)),
-                has_sel
-            ),
-            action_btn(
-                ICON_PALETTE,
-                "Nouveau calque uni",
-                Message::AddSolidColorLayer,
-                true
-            ),
-            Space::new().width(Length::Fill),
-            action_btn(
-                ICON_MASK,
-                "Ajouter un masque",
-                Message::AddLayerMask(selected.unwrap_or(nil)),
-                can_have_mask
-            ),
-            filter_add_button(filter_target.is_some()),
-            action_btn(ICON_DELETE, "Supprimer", delete_msg, delete_enabled),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center),
-    )
-    .padding(Padding::new(6.0).left(8.0).right(8.0));
-
-    // Le MouseArea englobe tout le panneau : clic n'importe où (hors menu
-    // ouvert via capture interne) → ferme le menu contextuel et le menu
-    // filtre. Les boutons du menu contextuel court-circuitent via leur
-    // propre `.on_press` qui consomme l'événement avant qu'il ne remonte.
-    let content = column![
-        header,
-        list_view,
-        mini_bar,
-        filter_add_menu(filter_target, filter_menu_open)
-    ]
-    .width(Length::Fill)
-    .height(Length::Fill);
-    mouse_area(content)
-        .on_press(Message::CloseContextMenu)
-        .into()
-}
-
-/// Bouton d'ajout de filtre (ouvre le menu ci-dessous).
-fn filter_add_button(enabled: bool) -> Element<'static, Message> {
-    let material = ui_kit::icon_button::MATERIAL_ICONS;
-    let b = button(
-        text(ICON_FILTER_ADD)
-            .font(material)
-            .size(16)
-            .color(if enabled {
-                colors::TEXT_SECONDARY
-            } else {
-                colors::TEXT_MUTED
-            }),
-    )
-    .padding(4);
-    if enabled {
-        b.on_press(Message::ToggleFilterMenu)
-            .style(move |_t, s| ui_kit::style::ghost(s))
-    } else {
-        b.style(|_t, _s| button::Style::default())
-    }
-    .into()
-}
-
-/// Menu d'ajout de filtre (effets image→image du registre) — visible quand
-/// le bouton est activé. Choisir referme le menu (côté handler).
-fn filter_add_menu(target: Option<Uuid>, open: bool) -> Element<'static, Message> {
-    if !open {
-        return Space::new().height(Length::Fixed(0.0)).into();
-    }
-    let Some(tid) = target else {
-        return Space::new().height(Length::Fixed(0.0)).into();
-    };
-    let defs = photo_engine::filterable_types();
-    let mut list = iced::widget::Column::new().spacing(2);
-    for d in defs {
-        let type_id = d.type_id.clone();
-        list = list.push(
-            button(
-                text(format!("+ {}", d.name))
-                    .size(11)
-                    .color(colors::TEXT_SECONDARY),
-            )
-            .padding(4)
-            .width(Length::Fill)
-            .style(|_t, s| ui_kit::style::ghost(s))
-            .on_press(Message::AddLiveFilter { id: tid, type_id }),
-        );
-    }
-    container(list.padding(Padding::new(4.0).left(8.0).right(8.0)))
-        .style(|_| container::Style {
-            background: Some(colors::BG_TRANSPARENT.into()),
-            ..Default::default()
-        })
-        .into()
-}
-
-/// Construit la colonne d'une portée (haut-de-pile d'abord) ; les groupes
-/// dépliés imbriquent récursivement leurs enfants avec indentation.
-#[allow(clippy::too_many_arguments)]
-fn tree_column<'a>(
-    doc: &'a Document,
-    nodes: &'a [LayerNode],
-    preview_cache: &'a crate::ui_handles::PreviewCache,
-    selected: Option<Uuid>,
-    dragged: Option<Uuid>,
-    active_mask: Option<crate::message::MaskTarget>,
-    expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
-    context_menu_open: Option<Uuid>,
-    layer_item_radius: f32,
-    depth: usize,
-) -> iced::widget::Column<'a, Message> {
-    let mut list = iced::widget::Column::new().spacing(2);
-    for node in nodes.iter().rev() {
-        list = list.push(node_row(
-            doc,
-            node,
-            preview_cache,
-            selected,
-            dragged,
-            active_mask,
-            expanded_fx_stack,
-            context_menu_open,
-            layer_item_radius,
-            depth,
-        ));
-        if let LayerNode::Group(g) = node
-            && !g.collapsed
-        {
-            list = list.push(tree_column(
-                doc,
-                &g.children,
-                preview_cache,
-                selected,
-                dragged,
-                active_mask,
-                expanded_fx_stack,
-                context_menu_open,
-                layer_item_radius,
-                depth + 1,
-            ));
-        }
-    }
-    list
-}
-
-#[allow(clippy::too_many_arguments)]
-fn node_row<'a>(
+pub(crate) fn node_row<'a>(
     doc: &'a Document,
     node: &'a LayerNode,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected: Option<Uuid>,
-    dragged: Option<Uuid>,
+    drag: &'a LayerDragState,
+    hovered: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
     expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
     context_menu_open: Option<Uuid>,
     layer_item_radius: f32,
     depth: usize,
 ) -> Element<'a, Message> {
-    let _ = dragged;
     let material = ui_kit::icon_button::MATERIAL_ICONS;
     let id = node.id();
     let _ = layer_item_radius;
@@ -479,34 +162,24 @@ fn node_row<'a>(
 
     let is_visible = node.visible();
     let is_selected = Some(id) == selected;
-    let is_dragged = dragged == Some(id);
-    let drag_handle = button(
-        text("\u{e945}")
-            .font(material)
-            .size(14)
-            .color(if is_dragged {
-                colors::ACCENT
-            } else {
-                colors::TEXT_MUTED
-            }),
-    )
-    .padding(2)
-    .style(|_t, s| ui_kit::style::ghost(s))
-    .on_press(Message::SetDraggedLayer(id));
-
-    // Si un drag est en cours, cliquer sur une autre ligne = drop avant celle-ci
-    let row_action = if let Some(dragged_id) = dragged {
-        if dragged_id != id {
-            Some(Message::DropLayerOn(id))
+    let is_dragged = drag.dragged_id() == Some(id);
+    let is_hovered = hovered == Some(id);
+    // Poignée visuelle
+    // Poignée visuelle : toute la ligne est la zone de drag, donc la
+    // poignée reste un simple glyphe (pas de bouton imbriqué qui capterait
+    // le pressé avant la ligne).
+    let drag_grip = text("\u{e945}")
+        .font(material)
+        .size(14)
+        .color(if is_dragged {
+            colors::ACCENT
         } else {
-            // Cliquer sur la source annule le drag
-            Some(Message::SetDraggedLayer(id))
-        }
-    } else if is_visible {
-        Some(Message::SelectLayer(id))
-    } else {
-        None
-    };
+            colors::TEXT_MUTED
+        });
+
+    // Le pressé part de la ligne entière (boutons enfants exclus : ils
+    // capturent leur propre pressé). Un clic sans déplacement sélectionne
+    // au relâchement, via l'abonnement global.
 
     // Bouton de suppression (tout à droite)
     let delete_btn = {
@@ -535,9 +208,22 @@ fn node_row<'a>(
         .on_press_maybe(can_delete.then_some(msg))
     };
 
-    let mut row_btn = button(
+    // Survol d'un groupe pendant un drag : candidat Inside, validé moteur.
+    let hover_inside = match drag {
+        LayerDragState::Dragging { layer_id, .. } if matches!(node, LayerNode::Group(_)) => {
+            resolve_drop_target(doc, *layer_id, id, DropPosition::Inside)
+        }
+        _ => None,
+    };
+    let inside_active = hover_inside.is_some() && drag.target() == hover_inside;
+
+    // La ligne est un conteneur, pas un bouton : `Button::on_press` ne
+    // publie qu'au relâchement, trop tard pour armer le drag. `mouse_area`
+    // publie le pressé immédiatement ; la sélection a lieu au relâchement
+    // global si le pointeur n'a pas bougé.
+    let row_body = container(
         row![
-            drag_handle,
+            drag_grip,
             eye,
             leading,
             column![
@@ -553,34 +239,61 @@ fn node_row<'a>(
     )
     .padding(Padding::new(4.0).left(4.0).right(6.0))
     .width(Length::Fill)
-    .style(move |_t, s| {
-        let mut st = if is_dragged {
-            ui_kit::style::ghost_selected(true, s)
-        } else if !is_visible {
-            ui_kit::style::ghost(s)
+    .style(move |_| {
+        let background = if is_dragged || is_selected {
+            Some(colors::BG_PANEL_HEADER_FOCUSED.into())
+        } else if is_hovered && is_visible {
+            Some(colors::HOVER_OVERLAY.into())
         } else {
-            ui_kit::style::ghost_selected(is_selected, s)
+            None
         };
-        // Rayon configuré par préférence (override du radius du style)
-        st.border.radius = layer_item_radius.into();
-        st
+        container::Style {
+            background,
+            border: iced::Border {
+                // Rayon configuré par préférence (override du radius du style)
+                radius: layer_item_radius.into(),
+                width: if inside_active { 1.5 } else { 0.0 },
+                color: if inside_active {
+                    colors::ACCENT
+                } else {
+                    iced::Color::TRANSPARENT
+                },
+            },
+            ..Default::default()
+        }
     });
-    if let Some(msg) = row_action {
-        row_btn = row_btn.on_press(msg);
-    }
 
-    // Clic droit sur la ligne → menu contextuel. Les boutons enfants ne
-    // consomment que le clic gauche (`on_press`), donc l'événement remonte
-    // au `mouse_area` parent.
-    let row_with_right_click = mouse_area(row_btn).on_right_press(Message::OpenContextMenu {
+    // Clic gauche/droit sur la ligne → pressé drag / menu contextuel. Les
+    // boutons enfants (œil, chevron, suppression, nom) capturent leur propre
+    // pressé et ne démarrent donc aucun drag. Pendant un drag, le survol
+    // d'un corps de groupe propose Inside ; le curseur reflète la validité
+    // moteur.
+    let mut row_area = mouse_area(row_body).on_right_press(Message::OpenContextMenu {
         layer_id: id,
         mouse_pos: (0.0, 0.0),
+    });
+    if is_visible {
+        row_area = row_area.on_press(Message::LayerDragPressed { id });
+    }
+    row_area = row_area
+        .on_enter(Message::LayerRowHovered(id))
+        .on_exit(Message::LayerRowUnhovered(id));
+    row_area = row_area.interaction(match drag {
+        LayerDragState::Dragging { .. } => {
+            if inside_active {
+                iced::mouse::Interaction::Grabbing
+            } else {
+                iced::mouse::Interaction::NoDrop
+            }
+        }
+        _ if is_visible => iced::mouse::Interaction::Grab,
+        _ => iced::mouse::Interaction::default(),
     });
 
     // Indentation hiérarchique — scope drag & drop au panel calque
     let indent = 4.0 + (depth as f32) * 14.0;
     let mut stack = iced::widget::Column::new().spacing(2).push(
-        container(row_with_right_click)
+        container(row_area)
             .width(Length::Fill)
             .padding(Padding::new(0.0).left(indent)),
     );

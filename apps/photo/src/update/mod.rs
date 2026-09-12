@@ -342,4 +342,128 @@ mod tests {
             "aucune entrée d'historique pour un clic immobile"
         );
     }
+
+    #[test]
+    fn drag_drop_couche_cree_une_entree_unique() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let id1 = seed_layer(&mut app, 2, 2);
+        let id2 = seed_layer(&mut app, 2, 2);
+        let before = app.document.history.undo_len();
+
+        let _ = update(&mut app, Message::LayerDragPressed { id: id2 });
+        let _ = update(
+            &mut app,
+            Message::LayerDragMoved {
+                position: (0.0, 0.0),
+            },
+        );
+        let _ = update(
+            &mut app,
+            Message::LayerDragMoved {
+                position: (10.0, 0.0),
+            },
+        );
+        let _ = update(
+            &mut app,
+            Message::LayerDragHover {
+                hovered: Some(id1),
+                position: crate::components::layers::DropPosition::Before,
+            },
+        );
+        let _ = update(&mut app, Message::LayerDragReleased);
+
+        let order: Vec<uuid::Uuid> = app.document.doc.root.iter().map(|node| node.id()).collect();
+        assert_eq!(order, vec![id2, id1]);
+        assert_eq!(app.document.history.undo_len(), before + 1);
+    }
+
+    #[test]
+    fn drag_sans_cible_sans_historique() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let id1 = seed_layer(&mut app, 2, 2);
+        let _ = seed_layer(&mut app, 2, 2);
+        let before = app.document.history.undo_len();
+
+        let _ = update(&mut app, Message::LayerDragPressed { id: id1 });
+        let _ = update(
+            &mut app,
+            Message::LayerDragMoved {
+                position: (0.0, 0.0),
+            },
+        );
+        let _ = update(
+            &mut app,
+            Message::LayerDragMoved {
+                position: (10.0, 0.0),
+            },
+        );
+        let _ = update(&mut app, Message::LayerDragReleased);
+
+        assert_eq!(app.document.history.undo_len(), before);
+        assert!(matches!(
+            app.tools.layer_drag,
+            crate::components::layers::LayerDragState::Idle
+        ));
+    }
+
+    #[test]
+    fn drag_annule_sans_selection_ni_historique() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let id1 = seed_layer(&mut app, 2, 2);
+        let _ = seed_layer(&mut app, 2, 2);
+        let before = app.document.history.undo_len();
+
+        let _ = update(&mut app, Message::LayerDragPressed { id: id1 });
+        let _ = update(
+            &mut app,
+            Message::LayerDragMoved {
+                position: (10.0, 0.0),
+            },
+        );
+        let _ = update(&mut app, Message::LayerDragCancelled);
+
+        assert_eq!(app.document.history.undo_len(), before);
+        assert!(matches!(
+            app.tools.layer_drag,
+            crate::components::layers::LayerDragState::Idle
+        ));
+    }
+
+    #[test]
+    fn drop_noop_sans_entree_historique() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let id1 = seed_layer(&mut app, 2, 2);
+        let id2 = seed_layer(&mut app, 2, 2);
+        let before = app.document.history.undo_len();
+
+        let _ = update(&mut app, Message::LayerDragPressed { id: id2 });
+        let _ = update(
+            &mut app,
+            Message::LayerDragMoved {
+                position: (0.0, 0.0),
+            },
+        );
+        let _ = update(
+            &mut app,
+            Message::LayerDragMoved {
+                position: (10.0, 0.0),
+            },
+        );
+        let _ = update(
+            &mut app,
+            Message::LayerDragHover {
+                hovered: Some(id1),
+                position: crate::components::layers::DropPosition::After,
+            },
+        );
+        let _ = update(&mut app, Message::LayerDragReleased);
+
+        let order: Vec<uuid::Uuid> = app.document.doc.root.iter().map(|node| node.id()).collect();
+        assert_eq!(order, vec![id1, id2]);
+        assert_eq!(app.document.history.undo_len(), before);
+    }
 }

@@ -377,6 +377,107 @@ fn arbre_operations_structurelles() {
     assert_eq!(doc.pixel_count(), 4);
 }
 
+fn ids(doc: &Document) -> Vec<Uuid> {
+    doc.root.iter().map(LayerNode::id).collect()
+}
+
+fn groupe_imbrique() -> (Document, Uuid, Uuid, Uuid, Uuid, Uuid, Uuid) {
+    let fond = solid(1, 1, [1, 1, 1, 255]);
+    let mut doc = Document::new(4, 4);
+    let image1 = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let image2 = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let image3 = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let image4 = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let (id1, id2, id3, id4) = (image1.id(), image2.id(), image3.id(), image4.id());
+    let groupe_b = GroupLayer::new("B", vec![image3, image4]);
+    let gid_b = groupe_b.id;
+    let groupe_a = GroupLayer::new("A", vec![image1, image2, LayerNode::Group(groupe_b)]);
+    let gid_a = groupe_a.id;
+    doc.push_layer(LayerNode::Group(groupe_a));
+    (doc, id1, id2, id3, id4, gid_a, gid_b)
+}
+
+#[test]
+fn reorder_before_apres_cibles_unitaires() {
+    let fond = solid(1, 1, [1, 1, 1, 255]);
+    let a = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let b = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let c = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let (ida, idb, idc) = (a.id(), b.id(), c.id());
+    let mut doc = doc_of(vec![a, b, c], 4, 4);
+
+    assert!(doc.can_reorder_before(idc, ida));
+    assert!(doc.reorder_before(idc, ida, true));
+    assert_eq!(ids(&doc), vec![idc, ida, idb]);
+
+    assert!(doc.can_reorder_before(ida, idb));
+    assert!(doc.reorder_before(ida, idb, false));
+    assert_eq!(ids(&doc), vec![idc, idb, ida]);
+}
+
+#[test]
+fn reorder_adjacent_sans_effet_est_noop() {
+    let fond = solid(1, 1, [1, 1, 1, 255]);
+    let a = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let b = pixel_node(&fond, 100.0, BlendMode::Normal, 0.0, 0.0);
+    let (ida, idb) = (a.id(), b.id());
+    let mut doc = doc_of(vec![a, b], 4, 4);
+
+    assert!(!doc.reorder_before(idb, ida, false));
+    assert_eq!(ids(&doc), vec![ida, idb]);
+    assert!(!doc.reorder_before(ida, idb, true));
+    assert_eq!(ids(&doc), vec![ida, idb]);
+}
+
+#[test]
+fn move_into_groupe_et_imbrication() {
+    let (mut doc, id1, id2, id3, id4, gid_a, gid_b) = groupe_imbrique();
+
+    assert!(doc.can_move_into(id1, gid_b));
+    assert!(doc.move_into(id1, gid_b));
+    let groupe_a = match doc.find(gid_a).expect("groupe A") {
+        LayerNode::Group(groupe) => groupe,
+        _ => unreachable!("groupe A"),
+    };
+    assert_eq!(groupe_a.children.len(), 2);
+    let groupe_b = match &groupe_a.children[1] {
+        LayerNode::Group(groupe) => groupe,
+        _ => unreachable!("groupe B"),
+    };
+    assert_eq!(
+        groupe_b
+            .children
+            .iter()
+            .map(LayerNode::id)
+            .collect::<Vec<_>>(),
+        vec![id1, id3, id4]
+    );
+    assert_eq!(doc.find(id2).map(LayerNode::id), Some(id2));
+}
+
+#[test]
+fn move_into_premier_enfant_est_noop() {
+    let (mut doc, id1, _, _, _, _, gid_b) = groupe_imbrique();
+    assert!(doc.move_into(id1, gid_b));
+    assert!(!doc.move_into(id1, gid_b));
+}
+
+#[test]
+fn drops_illegaux_refuses() {
+    let (mut doc, _, _, id3, _, gid_a, gid_b) = groupe_imbrique();
+
+    assert!(!doc.can_reorder_before(gid_a, gid_a));
+    assert!(!doc.reorder_before(gid_a, gid_a, true));
+    assert!(!doc.can_reorder_before(gid_a, id3));
+    assert!(!doc.reorder_before(gid_a, id3, false));
+    assert!(!doc.can_move_into(gid_a, gid_a));
+    assert!(!doc.move_into(gid_a, gid_a));
+    assert!(!doc.can_move_into(gid_a, gid_b));
+    assert!(!doc.move_into(gid_a, gid_b));
+    assert!(!doc.can_move_into(id3, id3));
+    assert!(!doc.move_into(id3, id3));
+}
+
 #[test]
 fn snapshot_aller_retour_conserve_l_arbre() {
     let img = solid(2, 2, [7, 7, 7, 255]);

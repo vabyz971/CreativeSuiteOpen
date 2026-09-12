@@ -118,7 +118,9 @@ pub struct ToolState {
     pub filter_menu_open: bool,
     pub stroke_layer: Option<Uuid>,
     pub pending_paint: Option<PendingPaint>,
-    pub dragged_layer: Option<Uuid>,
+    pub layer_drag: crate::components::layers::LayerDragState,
+    /// Ligne du panneau Calques survolée (style hover uniquement).
+    pub hovered_layer_row: Option<Uuid>,
     // Écran d'accueil
     pub new_doc_w: String,
     pub new_doc_h: String,
@@ -158,7 +160,8 @@ impl Default for ToolState {
             filter_menu_open: false,
             stroke_layer: None,
             pending_paint: None,
-            dragged_layer: None,
+            layer_drag: crate::components::layers::LayerDragState::default(),
+            hovered_layer_row: None,
             new_doc_w: "1920".to_string(),
             new_doc_h: "1080".to_string(),
             welcome_error: None,

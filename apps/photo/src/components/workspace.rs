@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::components::{layers_panel, properties, toolpanel};
+use crate::components::{layers::panel as layers_panel, properties, toolpanel};
 use crate::{Message, PanelType, Tool};
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{Space, container, image};
@@ -31,7 +31,8 @@ pub fn render<'a>(
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected_layer: Option<Uuid>,
-    dragged_layer: Option<Uuid>,
+    layer_drag: &'a crate::components::layers::LayerDragState,
+    hovered_layer_row: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
     expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
     filter_menu_open: bool,
@@ -141,7 +142,8 @@ pub fn render<'a>(
                     doc,
                     preview_cache,
                     selected_layer,
-                    dragged_layer,
+                    layer_drag,
+                    hovered_layer_row,
                     active_mask,
                     expanded_fx_stack,
                     filter_menu_open,

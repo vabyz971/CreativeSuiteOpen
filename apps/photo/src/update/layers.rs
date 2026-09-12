@@ -20,6 +20,9 @@ use iced::Task;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::components::layers::{
+    DropPosition, LayerDragRelease, LayerDragState, LayerDropTarget, resolve_drop_target,
+};
 use crate::layers::{LayerNode, PixelLayer, Transform2D};
 use crate::message::{Message, OffsetAxis};
 use crate::state::PhotoApp;
@@ -603,8 +606,96 @@ pub fn handle_crop(app: &mut PhotoApp) -> Task<Message> {
     }
 }
 
-pub fn handle_set_dragged(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
-    app.tools.dragged_layer = Some(id);
+pub fn handle_layer_drag_pressed(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    app.tools.layer_drag = LayerDragState::press(id);
+    Task::none()
+}
+
+pub fn handle_layer_drag_moved(app: &mut PhotoApp, position: (f32, f32)) -> Task<Message> {
+    app.tools
+        .layer_drag
+        .moved(iced::Point::new(position.0, position.1));
+    Task::none()
+}
+
+pub fn handle_layer_drag_hover(
+    app: &mut PhotoApp,
+    hovered: Option<Uuid>,
+    position: DropPosition,
+) -> Task<Message> {
+    let target = match (app.tools.layer_drag.dragged_id(), hovered) {
+        (Some(dragged), Some(hovered)) => {
+            resolve_drop_target(&app.document.doc, dragged, hovered, position)
+        }
+        _ => None,
+    };
+    app.tools.layer_drag.hover(target);
+    Task::none()
+}
+
+pub fn handle_layer_drag_released(app: &mut PhotoApp) -> Task<Message> {
+    let (release, _) = app.tools.layer_drag.release();
+    app.tools.layer_drag = LayerDragState::Idle;
+    match release {
+        LayerDragRelease::None => Task::none(),
+        LayerDragRelease::Select(id) => handle_select_layer(app, id),
+        LayerDragRelease::Commit { layer_id, target } => {
+            handle_layer_drop_commit(app, layer_id, target)
+        }
+    }
+}
+
+pub fn handle_layer_drag_cancelled(app: &mut PhotoApp) -> Task<Message> {
+    app.tools.layer_drag = LayerDragState::Idle;
+    Task::none()
+}
+
+pub fn handle_layer_row_hovered(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    app.tools.hovered_layer_row = Some(id);
+    // Pendant un drag, le survol d'un corps de ligne vaut proposition Inside
+    // pour les groupes, ou effacement pour les autres lignes.
+    if matches!(app.tools.layer_drag, LayerDragState::Dragging { .. }) {
+        let target = match app.tools.layer_drag.dragged_id() {
+            Some(dragged) => resolve_drop_target(
+                &app.document.doc,
+                dragged,
+                id,
+                crate::components::layers::DropPosition::Inside,
+            ),
+            None => None,
+        };
+        app.tools.layer_drag.hover(target);
+    }
+    Task::none()
+}
+
+pub fn handle_layer_row_unhovered(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
+    if app.tools.hovered_layer_row == Some(id) {
+        app.tools.hovered_layer_row = None;
+    }
+    // Quitter le corps d'un groupe abandonne sa cible Inside éventuelle.
+    if app.tools.layer_drag.target() == Some(crate::components::layers::LayerDropTarget::Inside(id))
+    {
+        app.tools.layer_drag.hover(None);
+    }
+    Task::none()
+}
+
+fn handle_layer_drop_commit(
+    app: &mut PhotoApp,
+    layer_id: Uuid,
+    target: LayerDropTarget,
+) -> Task<Message> {
+    let pre = app.snapshot();
+    let moved = match target {
+        LayerDropTarget::Before(target) => app.document.doc.reorder_before(layer_id, target, true),
+        LayerDropTarget::After(target) => app.document.doc.reorder_before(layer_id, target, false),
+        LayerDropTarget::Inside(group) => app.document.doc.move_into(layer_id, group),
+    };
+    if moved {
+        app.document.history.push_snapshot(pre);
+        app.invalidate_fallback();
+    }
     Task::none()
 }
 
@@ -658,37 +749,6 @@ pub fn handle_destructive_op_computed(
             app.invalidate_fallback();
         }
         Err(e) => app.canvas.image_error = Some(e),
-    }
-    Task::none()
-}
-
-pub fn handle_drop_on(app: &mut PhotoApp, target: Uuid) -> Task<Message> {
-    if let Some(dragged) = app.tools.dragged_layer.take() {
-        if dragged != target
-            && app.document.doc.find(dragged).is_some()
-            && app.document.doc.find(target).is_some()
-        {
-            let pre = app.snapshot();
-            if app.document.doc.reorder_before(dragged, target, true) {
-                app.document.history.push_snapshot(pre);
-                app.invalidate_fallback();
-            }
-        }
-    } else {
-        app.tools.dragged_layer = None;
-    }
-    Task::none()
-}
-pub fn handle_reorder(
-    app: &mut PhotoApp,
-    dragged: Uuid,
-    target: Uuid,
-    before: bool,
-) -> Task<Message> {
-    if app.document.doc.reorder_before(dragged, target, before) {
-        let pre = app.snapshot();
-        app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -1014,13 +1074,15 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         } => Some(handle_destructive_op_computed(
             app, task_id, layer_id, op, result,
         )),
-        Message::SetDraggedLayer(id) => Some(handle_set_dragged(app, id)),
-        Message::DropLayerOn(id) => Some(handle_drop_on(app, id)),
-        Message::ReorderLayer {
-            dragged,
-            target,
-            before,
-        } => Some(handle_reorder(app, dragged, target, before)),
+        Message::LayerDragPressed { id } => Some(handle_layer_drag_pressed(app, id)),
+        Message::LayerDragMoved { position } => Some(handle_layer_drag_moved(app, position)),
+        Message::LayerDragHover { hovered, position } => {
+            Some(handle_layer_drag_hover(app, hovered, position))
+        }
+        Message::LayerDragReleased => Some(handle_layer_drag_released(app)),
+        Message::LayerDragCancelled => Some(handle_layer_drag_cancelled(app)),
+        Message::LayerRowHovered(id) => Some(handle_layer_row_hovered(app, id)),
+        Message::LayerRowUnhovered(id) => Some(handle_layer_row_unhovered(app, id)),
         Message::DuplicateLayer(id) => Some(handle_duplicate(app, id)),
         Message::DeleteLayer(id) => Some(handle_delete(app, id)),
         Message::MoveLayerUp(id) => Some(handle_move_up(app, id)),
@@ -1150,9 +1212,13 @@ pub fn handles(msg: &Message) -> bool {
             | Message::AddEmptyLayer
             | Message::AddSolidColorLayer
             | Message::DestructiveOpComputed { .. }
-            | Message::SetDraggedLayer(_)
-            | Message::DropLayerOn(_)
-            | Message::ReorderLayer { .. }
+            | Message::LayerDragPressed { .. }
+            | Message::LayerDragMoved { .. }
+            | Message::LayerDragHover { .. }
+            | Message::LayerDragReleased
+            | Message::LayerDragCancelled
+            | Message::LayerRowHovered(_)
+            | Message::LayerRowUnhovered(_)
             | Message::DuplicateLayer(_)
             | Message::DeleteLayer(_)
             | Message::MoveLayerUp(_)

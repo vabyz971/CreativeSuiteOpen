@@ -323,9 +323,22 @@ pub enum Message {
     /// Crée le document : fond blanc plein cadre + calque sélectionné
     CreateDocument,
 
-    // Drag & drop calques
-    SetDraggedLayer(Uuid),
-    DropLayerOn(Uuid),
+    // Drag & drop calques : pressé → deadband → drag → cible → relâchement.
+    LayerDragPressed {
+        id: Uuid,
+    },
+    LayerDragMoved {
+        position: (f32, f32),
+    },
+    LayerDragHover {
+        hovered: Option<Uuid>,
+        position: crate::components::layers::DropPosition,
+    },
+    LayerDragReleased,
+    LayerDragCancelled,
+    LayerRowHovered(Uuid),
+    LayerRowUnhovered(Uuid),
+
     // Document
     ShowResizeDialog,
     SetResizeWidth(String),
@@ -333,11 +346,6 @@ pub enum Message {
     ResizeDocument {
         width: u32,
         height: u32,
-    },
-    ReorderLayer {
-        dragged: Uuid,
-        target: Uuid,
-        before: bool,
     },
 
     // Hardware

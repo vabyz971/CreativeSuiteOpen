@@ -14,15 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Engines extraits vers engines/photo-engine (modulaire) — ces modules restent pour compatibilité
-// et délèguent désormais à photo_engine. Voir engines/photo-engine/src/lib.rs
-pub mod gpu {
-    pub use photo_engine::gpu::*;
-}
-pub mod layers;
-pub mod options_bar;
-pub mod properties;
-pub mod toolbar;
-pub mod toolpanel;
-pub mod welcome;
-pub mod workspace;
+//! Panneau Calques découpé par responsabilité :
+//! - [`panel`] : rendu du panneau, itération des lignes, indicateurs de drop ;
+//! - [`row`] : rendu d'une ligne (sélection, visibilité, expansion) ;
+//! - [`drag`] : machine d'état du geste (pressé, déplacement, relâchement) ;
+//! - [`drop_target`] : calcul pur des cibles Before/After/Inside.
+
+pub mod drag;
+pub mod drop_target;
+pub mod panel;
+pub mod row;
+
+pub use drag::{DRAG_DEADBAND, LayerDragRelease, LayerDragState};
+pub use drop_target::{DropPosition, LayerDropTarget, resolve_drop_target};

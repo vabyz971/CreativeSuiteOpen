@@ -154,13 +154,8 @@ impl Document {
 
     /// Réordonne par drag & drop : déplace `dragged` avant ou après `target`.
     pub fn reorder_before(&mut self, dragged: Uuid, target: Uuid, before: bool) -> bool {
-        if dragged == target {
-            return false;
-        }
-        // Empêche de déplacer un groupe dans son propre sous-arbre
-        if let Some(node) = self.find(dragged)
-            && let LayerNode::Group(g) = node
-            && Self::contains_id(&g.children, target)
+        if !self.can_reorder_before(dragged, target)
+            || self.is_noop_reorder(dragged, target, before)
         {
             return false;
         }
@@ -176,6 +171,91 @@ impl Document {
         let at = at.min(list.len());
         list.insert(at, node);
         true
+    }
+
+    /// Le déplacement avant/après est-il structurellement valide ?
+    ///
+    /// Un déplacement adjacent sans effet reste une cible valide : il sera
+    /// simplement ignoré au commit, sans entrée d'historique.
+    #[must_use]
+    pub fn can_reorder_before(&self, dragged: Uuid, target: Uuid) -> bool {
+        if dragged == target {
+            return false;
+        }
+        if self.find(dragged).is_none() || self.find(target).is_none() {
+            return false;
+        }
+        // Empêche de déplacer un groupe dans son propre sous-arbre
+        if let Some(LayerNode::Group(groupe)) = self.find(dragged)
+            && Self::contains_id(&groupe.children, target)
+        {
+            return false;
+        }
+        true
+    }
+
+    /// Déplace `dragged` en tête des enfants de `group`.
+    pub fn move_into(&mut self, dragged: Uuid, group: Uuid) -> bool {
+        if !self.can_move_into(dragged, group) || self.is_noop_move_into(dragged, group) {
+            return false;
+        }
+        let Some(node) = self.remove(dragged) else {
+            return false;
+        };
+        let Some(LayerNode::Group(groupe)) = self.find_mut(group) else {
+            // groupe disparu ? restaure à la fin
+            self.push_layer(node);
+            return false;
+        };
+        groupe.children.insert(0, node);
+        true
+    }
+
+    /// L'insertion en tête de groupe est-elle structurellement valide ?
+    #[must_use]
+    pub fn can_move_into(&self, dragged: Uuid, group: Uuid) -> bool {
+        if dragged == group {
+            return false;
+        }
+        if self.find(dragged).is_none() {
+            return false;
+        }
+        let Some(LayerNode::Group(_groupe)) = self.find(group) else {
+            return false;
+        };
+        if let Some(LayerNode::Group(dragged_groupe)) = self.find(dragged)
+            && Self::contains_id(&dragged_groupe.children, group)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn is_noop_reorder(&self, dragged: Uuid, target: Uuid, before: bool) -> bool {
+        let (Some((drag_parent, drag_idx)), Some((target_parent, target_idx))) = (
+            owner_position(&self.root, dragged, None),
+            owner_position(&self.root, target, None),
+        ) else {
+            return false;
+        };
+        if drag_parent != target_parent {
+            return false;
+        }
+        if before {
+            drag_idx.saturating_add(1) == target_idx
+        } else {
+            drag_idx == target_idx.saturating_add(1)
+        }
+    }
+
+    fn is_noop_move_into(&self, dragged: Uuid, group: Uuid) -> bool {
+        match self.find(group) {
+            Some(LayerNode::Group(groupe)) => groupe
+                .children
+                .first()
+                .is_some_and(|enfant| enfant.id() == dragged),
+            _ => false,
+        }
     }
 
     fn contains_id(nodes: &[LayerNode], id: Uuid) -> bool {
@@ -967,6 +1047,25 @@ fn find_in_mut(nodes: &mut [LayerNode], id: Uuid) -> Option<&mut LayerNode> {
         }
         if let LayerNode::Group(g) = n
             && let Some(found) = find_in_mut(&mut g.children, id)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Parent (`None` = racine) et index d'un nœud, pour détecter les no-ops.
+fn owner_position(
+    nodes: &[LayerNode],
+    id: Uuid,
+    parent: Option<Uuid>,
+) -> Option<(Option<Uuid>, usize)> {
+    for (index, node) in nodes.iter().enumerate() {
+        if node.id() == id {
+            return Some((parent, index));
+        }
+        if let LayerNode::Group(groupe) = node
+            && let Some(found) = owner_position(&groupe.children, id, Some(groupe.id))
         {
             return Some(found);
         }
