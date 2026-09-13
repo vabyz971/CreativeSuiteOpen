@@ -14,15 +14,152 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use crate::components::{layers::panel as layers_panel, properties, toolpanel};
 use crate::{Message, PanelType, Tool};
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{Space, container, image};
+use iced::widget::{Space, container};
 use iced::{Element, Length, Size, Vector};
-use photo_engine::Document;
+use photo_engine::{Document, FilterNode, LayerNode};
 use ui_kit::base_panel;
+use ui_kit::layer_canvas::{AdjustmentOp, DisplayContent, DisplayLayer, DisplayMask, LayerCanvas};
 use ui_kit::theme::colors;
 use uuid::Uuid;
+
+/// Identité de contenu d'un tampon partagé (adresse de l'Arc, conservé
+/// vivant par le cache — même motif que `PreviewCache`).
+fn cle_contenu(data: &Arc<[u8]>) -> u64 {
+    Arc::as_ptr(data).cast::<u8>() as usize as u64
+}
+
+/// Clé stable d'un nœud (FNV sur l'Uuid) pour le cache de groupes.
+fn cle_noeud(id: Uuid) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in id.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Un filtre actif du moteur vers une opération GPU (`type_id` du registre
+/// d'effets). Les types inconnus sont traversants, comme côté moteur
+/// (`filters::render_nodes` ignore les effets introuvables).
+fn operation_ajustement(filtre: &FilterNode) -> Option<AdjustmentOp> {
+    if !filtre.enabled {
+        return None;
+    }
+    let param = |nom: &str, defaut: f32| {
+        filtre
+            .params
+            .get(nom)
+            .and_then(|p| p.as_float())
+            .unwrap_or(defaut)
+    };
+    match filtre.type_id.as_str() {
+        "brightness_contrast" => Some(AdjustmentOp::BrightnessContrast {
+            brightness: param("brightness", 0.0),
+            contrast: param("contrast", 0.0),
+        }),
+        "color_correct" => Some(AdjustmentOp::Saturation {
+            value: param("saturation", 1.0),
+        }),
+        "blur" => Some(AdjustmentOp::Blur {
+            radius: param("radius", 0.0),
+        }),
+        _ => None,
+    }
+}
+
+/// Empile les nœuds en couches affichables (récursif : les groupes portent
+/// leurs enfants). Miroir des règles du compositing CPU : invisibles et
+/// opacités nulles sautés, groupes vides et ajustements sans opération
+/// active ignorés. Les pixels viennent de l'apparence bakée (masques
+/// inclus — même sourcing que l'ancien chemin rapide).
+fn empiler_noeuds(
+    noeuds: &[LayerNode],
+    cache: &crate::ui_handles::PreviewCache,
+) -> Vec<DisplayLayer> {
+    let mut couches = Vec::new();
+    for noeud in noeuds {
+        match noeud {
+            LayerNode::Pixel(l) => {
+                if !l.visible || l.opacity <= 0.01 {
+                    continue;
+                }
+                let Some(buf) = cache.apparence(l.id) else {
+                    continue;
+                };
+                // Dimensions LOGIQUES plein format (l'aperçu est réduit
+                // au-delà de 2048 px) : le shader étire comme iced, et le
+                // placement reste en coordonnées document plein format.
+                let (plein_l, plein_h) = l.dimensions();
+                couches.push(DisplayLayer {
+                    key: cle_contenu(&buf.data),
+                    rgba: Some(Arc::clone(&buf.data)),
+                    width: plein_l,
+                    height: plein_h,
+                    opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
+                    blend: l.blend_mode.id(),
+                    transform: l.transform,
+                    mask: None,
+                    content: DisplayContent::Pixel,
+                });
+            }
+            LayerNode::Group(g) => {
+                if !g.visible || g.opacity <= 0.01 {
+                    continue;
+                }
+                let enfants = empiler_noeuds(&g.children, cache);
+                if enfants.is_empty() {
+                    continue;
+                }
+                // Masques du groupe : couverture taille document (espace
+                // document côté shader), en cache par signature.
+                let masque = cache.couverture_groupe(g.id).map(|couv| DisplayMask {
+                    key: cle_contenu(&couv.data),
+                    rgba: couv.data,
+                    width: couv.width,
+                    height: couv.height,
+                });
+                couches.push(DisplayLayer {
+                    key: cle_noeud(g.id),
+                    rgba: None,
+                    width: 0,
+                    height: 0,
+                    opacity: (g.opacity / 100.0).clamp(0.0, 1.0),
+                    blend: g.blend_mode.id(),
+                    transform: photo_engine::Transform2D::default(),
+                    mask: masque,
+                    content: DisplayContent::Group(enfants),
+                });
+            }
+            LayerNode::Adjustment(a) => {
+                if !a.visible || a.opacity <= 0.01 {
+                    continue;
+                }
+                let ops: Vec<AdjustmentOp> =
+                    a.filters.iter().filter_map(operation_ajustement).collect();
+                if ops.is_empty() {
+                    continue;
+                }
+                couches.push(DisplayLayer {
+                    key: cle_noeud(a.id),
+                    rgba: None,
+                    width: 0,
+                    height: 0,
+                    opacity: (a.opacity / 100.0).clamp(0.0, 1.0),
+                    blend: 0,
+                    transform: photo_engine::Transform2D::default(),
+                    mask: None,
+                    content: DisplayContent::Adjustment(ops),
+                });
+            }
+        }
+    }
+    couches
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn render<'a>(
@@ -40,23 +177,7 @@ pub fn render<'a>(
     layer_item_radius: f32,
     mask_brush_black: bool,
     doc_size: Option<Size>,
-    fallback_handle: Option<image::Handle>,
-    fallback_size: Option<Size>,
-    // Calque en cours de déplacement (mode fallback)
-    drag_layer: Option<Uuid>,
-    // Transform OFFSET au début du geste — pour replacer correctement le
-    // composite masqué (bake du transform de départ) sur le déplacement live.
-    drag_start_offset: Option<(f32, f32)>,
-    // Fond composite pré-calculé sans le calque déplacé
-    drag_background: Option<image::Handle>,
-    drag_background_size: Option<Size>,
-    // Composite court du calque seul AVEC son masque — affiché en
-    // surimpression pendant le drag en mode fallback pour préserver le
-    // rendu du masque. `None` tant que le worker n'a pas répondu.
-    drag_layer_composite: Option<image::Handle>,
-    drag_layer_composite_size: Option<Size>,
     image_path: Option<String>,
-    image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
     brush_color: iced::Color,
     color_picker_open: bool,
@@ -65,12 +186,14 @@ pub fn render<'a>(
     zoom_level: u32,
     canvas_selection: Option<iced::Rectangle>,
     color_profile: String,
-    canvas_viewport: Size,
+    _canvas_viewport: Size,
     // Style du pinceau + aperçu figé du commit en cours (texture)
     brush: ui_kit::image_canvas::BrushStyle,
     pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
-    // Loupe pipette (patch courant, suivi au curseur)
-    loupe: Option<ui_kit::image_canvas::LoupeTex>,
+    // Loupe pipette : patch RGBA + côté (pixels fournis par l'app)
+    loupe: Option<(Arc<[u8]>, u32)>,
+    // Un déplacement de calque est en cours (pill d'outils adaptée).
+    deplacement: bool,
     // Écran d'accueil (aucun document ouvert)
     new_doc_w: &'a str,
     new_doc_h: &'a str,
@@ -85,40 +208,27 @@ pub fn render<'a>(
 
         let (title_text, base_content): (String, Element<'_, Message>) = match panel_type {
             PanelType::Canvas => {
-                // Chemin rapide : chaque calque = une texture canvas, offsets
-                // appliqués au draw → drag/zoom sans AUCUN recomposite.
-                // Fallback : blending inter-calques → composite CPU unique.
-                let needs_fallback = doc.needs_fallback();
+                // Chemin de rendu UNIQUE : chaque entrée = une texture GPU
+                // (pixels bakés), offsets/transforms/fusions/masques appliqués
+                // au draw → drag/zoom/peinture sans AUCUN recomposite CPU.
+                // (L'export exact reste CPU côté moteur.)
                 let preview: Element<'_, Message> = render_canvas_preview(
-                    if needs_fallback {
-                        fallback_handle.clone()
-                    } else {
-                        None
-                    },
-                    if needs_fallback { fallback_size } else { None },
-                    drag_layer,
-                    drag_start_offset,
-                    drag_background.clone(),
-                    drag_background_size,
-                    drag_layer_composite.clone(),
-                    drag_layer_composite_size,
                     doc,
                     preview_cache,
                     doc_size,
-                    image_error.clone(),
                     selected_tool,
                     selected_layer,
-                    tools_visible,
                     canvas_pan,
                     zoom_level,
                     canvas_selection,
-                    canvas_viewport,
                     brush,
+                    pending_preview.clone(),
+                    loupe.clone(),
+                    deplacement,
+                    tools_visible,
                     brush_color,
                     color_picker_open,
                     mask_brush_black,
-                    pending_preview.clone(),
-                    loupe.clone(),
                     new_doc_w,
                     new_doc_h,
                     welcome_error,
@@ -185,31 +295,23 @@ pub fn render<'a>(
 
 #[allow(clippy::too_many_arguments)]
 fn render_canvas_preview<'a>(
-    fallback_handle: Option<image::Handle>,
-    fallback_size: Option<Size>,
-    drag_layer: Option<Uuid>,
-    drag_start_offset: Option<(f32, f32)>,
-    drag_background: Option<image::Handle>,
-    drag_background_size: Option<Size>,
-    drag_layer_composite: Option<image::Handle>,
-    drag_layer_composite_size: Option<Size>,
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     doc_size: Option<Size>,
-    _image_error: Option<String>, // conservé pour futur affichage inline
     selected_tool: Tool,
     selected_layer: Option<Uuid>,
-    tools_visible: bool,
     canvas_pan: Vector,
     zoom_level: u32,
     canvas_selection: Option<iced::Rectangle>,
-    _viewport: Size,
     brush: ui_kit::image_canvas::BrushStyle,
+    pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
+    loupe: Option<(Arc<[u8]>, u32)>,
+    // Un déplacement de calque est en cours (pill d'outils adaptée).
+    deplacement: bool,
+    tools_visible: bool,
     brush_color: iced::Color,
     color_picker_open: bool,
     mask_brush_black: bool,
-    pending_preview: Option<ui_kit::image_canvas::StrokeTex>,
-    loupe: Option<ui_kit::image_canvas::LoupeTex>,
     new_doc_w: &'a str,
     new_doc_h: &'a str,
     welcome_error: Option<&'a str>,
@@ -223,265 +325,45 @@ fn render_canvas_preview<'a>(
         Tool::Brush => ui_kit::image_canvas::CanvasTool::Brush,
         Tool::Eraser => ui_kit::image_canvas::CanvasTool::Eraser,
     };
-    // Calques canvas : texture d'APPARENCE + transform + opacité appliqués
-    // AU DRAW (GPU) → slider d'opacité = zéro régénération de pixels
-    let dragging = drag_layer.is_some();
-    let all_layers: Vec<ui_kit::image_canvas::CanvasLayer> = doc
-        .iter_pixels()
-        .into_iter()
-        .filter(|l| l.visible && l.opacity > 0.01)
-        // Handle issu du cache (identité stable → cache de textures GPU)
-        .filter_map(|l| {
-            let handle = preview_cache.preview(l.id)?.clone();
-            let (w, h) = l.dimensions();
-            Some(ui_kit::image_canvas::CanvasLayer {
-                id: Some(l.id),
-                handle,
-                width: w as f32,
-                height: h as f32,
-                offset_x: l.transform.offset_x,
-                offset_y: l.transform.offset_y,
-                opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
-                rotation_deg: l.transform.rotation_deg,
-                scale_x: l.transform.scale_x,
-                scale_y: l.transform.scale_y,
-                skew_x: l.transform.skew_x,
-                skew_y: l.transform.skew_y,
-            })
-        })
-        .collect();
-    // Chemin de draw : en drag fallback, le calque déplacé est exclu du fond
-    // (il est dessiné par-dessus le fond pré-calculé, voir plus bas).
-    let mut canvas_layers = all_layers.clone();
-    if dragging
-        && drag_background.is_some()
-        && let Some(dl) = drag_layer
-    {
-        canvas_layers.retain(|c| c.id != Some(dl));
-    }
-    // Chemin de pick : TOUJOURS tous les calques (même le déplacé), pour que
-    // la sélection fonctionne aussi en fallback où `layers` = composite seul.
-    let hit_layers = all_layers.clone();
-    // Visualiseur de transformation : le calque sélectionné (overlay dessiné
-    // par-dessus les couches, indépendant du chemin de rendu). Un sous-calque
-    // de filtre résout vers son calque porteur.
+    // Pile d'affichage : pixels bakés + groupes + ajustements, mapping
+    // pur du document (aucune logique de rendu ici — le compositing vit
+    // dans le shader `layer_canvas`).
+    let couches = empiler_noeuds(&doc.root, preview_cache);
+    // Peinture autorisée si la cible (sous-calque → porteur) est visible.
     let canvas_target = selected_layer.and_then(|id| doc.find_filter_parent(id).or(Some(id)));
-    let transform_target = canvas_target
-        .and_then(|id| doc.pixel_layer(id))
-        .filter(|l| l.visible)
-        .and_then(|l| {
-            let handle = preview_cache.preview(l.id)?.clone();
-            let (w, h) = l.dimensions();
-            Some(ui_kit::image_canvas::CanvasLayer {
-                id: Some(l.id),
-                handle,
-                width: w as f32,
-                height: h as f32,
-                offset_x: l.transform.offset_x,
-                offset_y: l.transform.offset_y,
-                opacity: 1.0,
-                rotation_deg: l.transform.rotation_deg,
-                scale_x: l.transform.scale_x,
-                scale_y: l.transform.scale_y,
-                skew_x: l.transform.skew_x,
-                skew_y: l.transform.skew_y,
-            })
-        });
-
-    // Drag en fallback : fond pré-calculé (sans le calque déplacé) inséré
-    // en bas de pile, puis le calque déplacé dessiné par-dessus à sa
-    // position live. ZÉRO recomposite pendant le geste — le blend réel
-    // (Multiply/Screen/…) est recalculé une seule fois au relâchement.
-    let has_drag_bg = drag_background.is_some() && drag_background_size.is_some();
-    if dragging
-        && let Some(bg) = drag_background
-        && let Some(bgsz) = drag_background_size
-    {
-        let (bg_off_x, bg_off_y) = doc_size
-            .map(|d| ((d.width - bgsz.width) / 2.0, (d.height - bgsz.height) / 2.0))
-            .unwrap_or((0.0, 0.0));
-        canvas_layers.insert(
-            0,
-            ui_kit::image_canvas::CanvasLayer {
-                id: None, // fond de drag : jamais sélectionnable
-                handle: bg,
-                width: bgsz.width,
-                height: bgsz.height,
-                offset_x: bg_off_x,
-                offset_y: bg_off_y,
-                opacity: 1.0,
-                rotation_deg: 0.0,
-                scale_x: 1.0,
-                scale_y: 1.0,
-                skew_x: 0.0,
-                skew_y: 0.0,
-            },
-        );
-    }
-    if dragging
-        && has_drag_bg
-        && let Some(l) = drag_layer.and_then(|id| doc.pixel_layer(id))
-        && l.visible
-    {
-        // Fallback drag : on insère le calque par-dessus le fond pré-calculé.
-        // 1) calque masqué + composite dispo → on utilise le composite (le
-        //    masque est respecté, ZÉRO recomposite par frame)
-        // 2) sinon → preview brut à la TAILLE LIVE (scale du transform) :
-        //    approximation du blend final, recalculé au relâchement. Il ne
-        //    faut JAMAIS dessiner la preview non scalée (taille d'origine —
-        //    celle du masque) pour un calque redimensionné.
-        let (handle, w, h, off_x, off_y, scx, scy) = if let (Some(h), Some(sz)) =
-            (drag_layer_composite.as_ref(), drag_layer_composite_size)
-        {
-            // Composite masqué : le buffer est centré sur le document ET
-            // contient le transform de DÉPART déjà cuit (prepare_top +
-            // blend). Pour suivre le geste : offset = centrage + (live −
-            // start), et AUCUN scale/rotation réappliqué (sinon
-            // double-transformation du bake).
-            let (sx, sy) =
-                drag_start_offset.unwrap_or((l.transform.offset_x, l.transform.offset_y));
-            let (base_off_x, base_off_y) = (
-                doc_size.map(|d| (d.width - sz.width) / 2.0).unwrap_or(0.0),
-                doc_size
-                    .map(|d| (d.height - sz.height) / 2.0)
-                    .unwrap_or(0.0),
-            );
-            (
-                h.clone(),
-                sz.width,
-                sz.height,
-                base_off_x + (l.transform.offset_x - sx),
-                base_off_y + (l.transform.offset_y - sy),
-                1.0,
-                1.0,
-            )
-        } else if let Some(handle) = preview_cache.preview(l.id).cloned() {
-            let (lw, lh) = l.dimensions();
-            (
-                handle,
-                lw as f32,
-                lh as f32,
-                l.transform.offset_x,
-                l.transform.offset_y,
-                l.transform.scale_x,
-                l.transform.scale_y,
-            )
-        } else {
-            // Pas de buffer disponible : on laisse l'UI afficher sans le
-            // calque plutôt que de planter.
-            (
-                image::Handle::from_rgba(1, 1, vec![0, 0, 0, 0]),
-                1.0,
-                1.0,
-                0.0,
-                0.0,
-                1.0,
-                1.0,
-            )
-        };
-        canvas_layers.push(ui_kit::image_canvas::CanvasLayer {
-            id: Some(l.id),
-            handle,
-            width: w,
-            height: h,
-            offset_x: off_x,
-            offset_y: off_y,
-            opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
-            rotation_deg: 0.0,
-            scale_x: scx,
-            scale_y: scy,
-            skew_x: 0.0,
-            skew_y: 0.0,
-        });
-    }
-
-    // Fallback fusion non-Normal (HORS drag) : une seule image composite.
-    // Pendant un drag, on utilise le chemin par calque ci-dessus
-    // (fond pré-calculé + calque déplacé).
-    // Le buffer composite est symétrique autour du centre document →
-    // offset = (doc - buffer)/2 pour respecter la convention
-    // « offset (0,0) = coin haut-gauche du document ».
-    let content: Element<'_, Message> = if !dragging
-        && let (Some(handle), Some(sz)) = (fallback_handle, fallback_size)
-    {
-        let (fb_off_x, fb_off_y) = doc_size
-            .map(|d| ((d.width - sz.width) / 2.0, (d.height - sz.height) / 2.0))
-            .unwrap_or((0.0, 0.0));
-        let ls = vec![ui_kit::image_canvas::CanvasLayer {
-            id: None, // composite : jamais sélectionnable individuellement
-            handle,
-            width: sz.width,
-            height: sz.height,
-            offset_x: fb_off_x,
-            offset_y: fb_off_y,
-            opacity: 1.0, // opacité déjà appliquée dans le composite
-            rotation_deg: 0.0,
-            scale_x: 1.0,
-            scale_y: 1.0,
-            skew_x: 0.0,
-            skew_y: 0.0,
-        }];
-        let can_paint = canvas_target
-            .and_then(|id| doc.find(id))
-            .map(|n| n.visible())
-            .unwrap_or(false);
-        let canvas = ui_kit::image_canvas::view_with_tool(
-            doc_size,
-            canvas_pan,
-            zoom,
-            canvas_tool,
-            canvas_selection,
-            ls,
-            hit_layers,
-            transform_target,
-            brush,
-            can_paint,
-            None,
-            loupe,
-        )
-        .map(Message::ImageCanvasEvent);
+    let can_paint = canvas_target
+        .and_then(|id| doc.find(id))
+        .map(|n| n.visible())
+        .unwrap_or(false);
+    let on_event = std::rc::Rc::new(|evt: ui_kit::image_canvas::ImageCanvasEvent| {
+        Message::ImageCanvasEvent(evt)
+    });
+    let canvas = ui_kit::layer_canvas::view(
+        LayerCanvas::new(doc_size.map(|d| (d.width, d.height)), on_event)
+            .with_layers(couches)
+            .with_view(canvas_pan, zoom)
+            .with_tool(canvas_tool)
+            .with_selection(canvas_selection)
+            .with_brush(brush)
+            .with_can_paint(can_paint)
+            .with_pending_preview(pending_preview)
+            .with_loupe_patch(loupe),
+    );
+    let content: Element<'_, Message> = if doc.root.is_empty() && doc_size.is_none() {
+        // Écran d'accueil : créer/ouvrir un document
+        let welcome = crate::components::welcome::render(new_doc_w, new_doc_h, welcome_error);
+        iced::widget::stack![
+            container(canvas).width(Length::Fill).height(Length::Fill),
+            iced::widget::center(welcome),
+        ]
+        .into()
+    } else {
         container(canvas)
             .width(Length::Fill)
             .height(Length::Fill)
             .clip(true)
             .into()
-    } else {
-        let can_paint = canvas_target
-            .and_then(|id| doc.find(id))
-            .map(|n| n.visible())
-            .unwrap_or(false);
-        let canvas = ui_kit::image_canvas::view_with_tool(
-            doc_size,
-            canvas_pan,
-            zoom,
-            canvas_tool,
-            canvas_selection,
-            canvas_layers,
-            hit_layers,
-            transform_target,
-            brush,
-            can_paint,
-            pending_preview,
-            loupe,
-        )
-        .map(Message::ImageCanvasEvent);
-        if doc.root.is_empty() && doc_size.is_none() {
-            // Écran d'accueil : créer/ouvrir un document
-            let welcome = crate::components::welcome::render(new_doc_w, new_doc_h, welcome_error);
-            iced::widget::stack![
-                container(canvas).width(Length::Fill).height(Length::Fill),
-                iced::widget::center(welcome),
-            ]
-            .into()
-        } else {
-            container(canvas)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .clip(true)
-                .into()
-        }
     };
-
     // Barre d'outils FLOTTANTE verticale en HAUT à gauche du canvas
     let floating_tools: Element<'_, Message> = if tools_visible {
         let tools_pill = container(toolpanel::render(
@@ -489,7 +371,7 @@ fn render_canvas_preview<'a>(
             brush_color,
             color_picker_open,
             mask_brush_black,
-            drag_layer.is_some(),
+            deplacement,
         ))
         .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
         .style(|_| {
@@ -522,4 +404,150 @@ fn render_canvas_preview<'a>(
     .height(Length::Fill)
     .clip(true)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn image_pleine(w: u32, h: u32) -> Arc<image::DynamicImage> {
+        Arc::new(image::DynamicImage::ImageRgba8(
+            image::ImageBuffer::from_pixel(w, h, image::Rgba([10, 20, 30, 255])),
+        ))
+    }
+
+    fn calque_pixels(nom: &str) -> photo_engine::PixelLayer {
+        photo_engine::PixelLayer::new(nom, image_pleine(4, 4))
+    }
+
+    fn doc_synchronise(doc: &photo_engine::Document) -> crate::ui_handles::PreviewCache {
+        let mut cache = crate::ui_handles::PreviewCache::default();
+        cache.sync(doc);
+        cache
+    }
+
+    #[test]
+    fn operation_ajustement_mapping() {
+        // brightness_contrast avec paramètres explicites.
+        let mut bc = FilterNode::new("brightness_contrast");
+        bc.params
+            .insert("brightness".to_string(), datatypes::ParamValue::Float(10.0));
+        bc.params
+            .insert("contrast".to_string(), datatypes::ParamValue::Float(-20.0));
+        let Some(AdjustmentOp::BrightnessContrast {
+            brightness,
+            contrast,
+        }) = operation_ajustement(&bc)
+        else {
+            panic!("BC attendu");
+        };
+        assert!((brightness - 10.0).abs() < 1e-6);
+        assert!((contrast + 20.0).abs() < 1e-6);
+        // Défauts moteur quand le paramètre est absent.
+        let sat = operation_ajustement(&FilterNode::new("color_correct"));
+        assert!(matches!(
+            sat,
+            Some(AdjustmentOp::Saturation { value }) if (value - 1.0).abs() < 1e-6
+        ));
+        let flou = operation_ajustement(&FilterNode::new("blur"));
+        assert!(matches!(
+            flou,
+            Some(AdjustmentOp::Blur { radius }) if radius.abs() < 1e-6
+        ));
+        // Inconnu → traversant (comme le moteur) ; désactivé → ignoré.
+        assert!(operation_ajustement(&FilterNode::new("effet_futur")).is_none());
+        let mut eteint = FilterNode::new("brightness_contrast");
+        eteint.enabled = false;
+        assert!(operation_ajustement(&eteint).is_none());
+    }
+
+    #[test]
+    fn empilement_groupe_multiply() {
+        // Scénario 1 (ancien repli CPU) : calque glissé dans un groupe en
+        // Multiply → UNE entrée groupe (fusion 1) avec l'enfant dedans.
+        let mut doc = Document::new(8, 8);
+        let mut groupe =
+            photo_engine::GroupLayer::new("G", vec![LayerNode::Pixel(calque_pixels("P"))]);
+        groupe.blend_mode = photo_engine::BlendMode::Multiply;
+        doc.push_layer(LayerNode::Group(groupe));
+        let mut cache = doc_synchronise(&doc);
+        let couches = empiler_noeuds(&doc.root, &cache);
+        assert_eq!(couches.len(), 1);
+        let DisplayContent::Group(enfants) = &couches[0].content else {
+            panic!("groupe attendu");
+        };
+        assert_eq!(enfants.len(), 1);
+        assert_eq!(couches[0].blend, 1, "Multiply = 1 (BlendMode::id)");
+        assert!(matches!(enfants[0].content, DisplayContent::Pixel));
+        // Stabilité : second passage, même clé (pas de re-téléversement).
+        cache.sync(&doc);
+        let couches2 = empiler_noeuds(&doc.root, &cache);
+        assert_eq!(couches[0].key, couches2[0].key);
+    }
+
+    #[test]
+    fn empilement_masque_bake() {
+        // Scénario 2 : peinture sur calque à masque actif → pixels bakés
+        // (masque inclus), AUCUNE couverture séparée (pas de double
+        // application), clé stable.
+        let mut doc = Document::new(8, 8);
+        let mut l = calque_pixels("M");
+        l.masks.push(photo_engine::LayerMask {
+            id: Uuid::new_v4(),
+            name: String::from("Masque"),
+            image: Arc::new(image::ImageBuffer::from_pixel(
+                4,
+                4,
+                image::Rgba([255, 255, 255, 255]),
+            )),
+            enabled: true,
+            inverted: false,
+            version: 0,
+        });
+        doc.push_layer(LayerNode::Pixel(l));
+        let mut cache = doc_synchronise(&doc);
+        let couches = empiler_noeuds(&doc.root, &cache);
+        assert_eq!(couches.len(), 1);
+        assert!(couches[0].rgba.is_some());
+        assert!(couches[0].mask.is_none(), "masque déjà baké");
+        cache.sync(&doc);
+        let couches2 = empiler_noeuds(&doc.root, &cache);
+        assert_eq!(couches[0].key, couches2[0].key);
+    }
+
+    #[test]
+    fn empilement_ajustement_et_skew() {
+        // Scénario 3 : skew conservé dans le placement ; ajustement actif
+        // → entrée dédiée avec sa chaîne.
+        let mut doc = Document::new(8, 8);
+        let mut l = calque_pixels("S");
+        l.transform.skew_x = 15.0;
+        doc.push_layer(LayerNode::Pixel(l));
+        let bc = FilterNode::new("brightness_contrast");
+        doc.push_layer(LayerNode::Adjustment(photo_engine::AdjustmentLayer::new(
+            "A",
+            vec![bc],
+        )));
+        let cache = doc_synchronise(&doc);
+        let couches = empiler_noeuds(&doc.root, &cache);
+        assert_eq!(couches.len(), 2);
+        assert!((couches[0].transform.skew_x - 15.0).abs() < 1e-6);
+        let DisplayContent::Adjustment(ops) = &couches[1].content else {
+            panic!("ajustement attendu");
+        };
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], AdjustmentOp::BrightnessContrast { .. }));
+        // Invisibles et ajustements vides : ignorés (comme le CPU).
+        let mut doc2 = Document::new(8, 8);
+        let mut invisible = calque_pixels("I");
+        invisible.visible = false;
+        doc2.push_layer(LayerNode::Pixel(invisible));
+        doc2.push_layer(LayerNode::Adjustment(photo_engine::AdjustmentLayer::new(
+            "V",
+            vec![],
+        )));
+        let cache2 = doc_synchronise(&doc2);
+        assert!(empiler_noeuds(&doc2.root, &cache2).is_empty());
+    }
 }

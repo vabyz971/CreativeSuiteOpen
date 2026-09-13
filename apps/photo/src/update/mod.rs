@@ -31,21 +31,20 @@ mod project;
 
 /// Point d'entrée : délègue au dispatch puis synchronise les handles UI
 /// (cache dérivé des buffers purs du moteur — UN seul point de sync).
+/// Chemin de rendu UNIQUE (GPU) : le draw relit le document à chaque frame,
+/// aucune tâche de composite d'affichage n'est nécessaire.
 pub fn update(app: &mut PhotoApp, message: Message) -> Task<Message> {
     let task = dispatch(app, message);
     app.rendering.preview_cache.sync(&app.document.doc);
-    // Le fallback périmé est recalculé HORS thread UI — jamais de gel.
-    let fallback = app.take_fallback_task();
-    Task::batch([task, fallback.unwrap_or_default()])
+    task
 }
 
 fn dispatch(app: &mut PhotoApp, message: Message) -> Task<Message> {
-    // Aiguillage SANS clonage. FallbackComputed, PaintApplied et les
-    // Drag*Computed transportent des buffers image COMPLETS : un clone par
-    // module (x4) était un coût O(buffer) à CHAQUE message, soit un gel du
-    // thread UI à la fin de chaque traitement. `handles()` ne fait que
-    // traiter le discriminant (aucune copie), puis le message est transmis
-    // PAR DÉPLACEMENT au module qui le possède.
+    // Aiguillage SANS clonage. PaintApplied transporte un buffer image
+    // COMPLET : un clone par module était un coût O(buffer) à CHAQUE
+    // message, soit un gel du thread UI à la fin de chaque traitement.
+    // `handles()` ne fait que traiter le discriminant (aucune copie), puis
+    // le message est transmis PAR DÉPLACEMENT au module qui le possède.
     if layers::handles(&message) {
         return layers::handle(app, message).unwrap_or_default();
     }
@@ -471,17 +470,16 @@ mod tests {
         );
     }
 
-    /// Pendant un déplacement (outil Déplacer), AUCUN message ne doit
-    /// déclencher de recomposite : les pré-calculs drag (fond sans le calque
-    /// et composite masqué) ne sont lancés qu'au PREMIER mouvement réel
-    /// (`TransformCursor`). Un simple clic de sélection ne coûte rien.
+    /// Pendant un déplacement, AUCUNE tâche : le chemin GPU unique redessine
+    /// le transform en direct au draw. Un simple clic de sélection ne coûte
+    /// rien ; un geste n'enregistre qu'UNE entrée d'historique.
     #[test]
-    fn drag_masque_zero_recomposite_par_mouvement() {
+    fn deplacement_gpu_zero_tache() {
         let mut app = PhotoApp::default();
         app.document.doc = photo_engine::Document::new(4, 4);
         let id = seed_layer(&mut app, 2, 2);
-        // Masque baké + fusion MULTIPLY → le blend force le fallback CPU
-        // (le masque seul, en Normal, n'impose plus le repli).
+        // Masque + fusion MULTIPLY : l'ancien repli CPU est parti, le GPU
+        // couvre le cas — le geste reste gratuit dans tous les cas.
         let mask_img = image::ImageBuffer::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
         app.document
             .doc
@@ -498,11 +496,10 @@ mod tests {
             });
         app.document.doc.pixel_layer_mut(id).unwrap().blend_mode =
             photo_engine::BlendMode::Multiply;
-        assert!(app.needs_fallback(), "blend non-Normal → fallback");
 
         let _ = update(&mut app, Message::SelectTool(crate::message::Tool::Select));
 
-        // Sélection seule (clic sans mouvement) : AUCUN pré-calcul lancé.
+        // Sélection seule (clic sans mouvement) : geste actif, rien d'autre.
         let _ = update(
             &mut app,
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformStart {
@@ -513,75 +510,59 @@ mod tests {
         );
         assert!(app.tools.move_anchor.is_some(), "geste actif");
         assert!(
-            !app.rendering.drag_bg_job.is_running(),
+            app.rendering.background_tasks.is_empty(),
             "rien de lancé au clic seul"
         );
-        assert!(
-            !app.rendering.fallback_job.needs_recompute()
-                && !app.rendering.fallback_job.in_flight(),
-            "clic seul : fallback intact"
-        );
 
-        // Premier mouvement réel → pré-calculs lancés, une seule fois.
-        let _ = update(
-            &mut app,
-            Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformCursor {
-                doc: (0.1, 0.0),
-                uniform: false,
-                snap: false,
-            }),
-        );
-        assert!(
-            app.rendering.drag_bg_job.is_running(),
-            "fond de drag pré-calculé"
-        );
-        assert!(
-            app.rendering.drag_layer_job.is_running(),
-            "composite masqué pré-calculé"
-        );
-
-        // Mouvements : le transform seul change — JAMAIS de recomposite.
-        for (i, (dx, dy)) in [(1.0, 0.0), (2.0, 0.5), (3.0, 0.75), (3.5, 1.25)]
-            .iter()
-            .enumerate()
-        {
+        // Mouvements : le transform suit en direct, sans tâche ni historique.
+        let avant = app.document.history.undo_len();
+        for (dx, dy) in [(1.0, 0.0), (2.0, 0.5), (3.0, 0.75), (3.5, 1.25)] {
             let _ = update(
                 &mut app,
                 Message::ImageCanvasEvent(
                     ui_kit::image_canvas::ImageCanvasEvent::TransformCursor {
-                        doc: (*dx, *dy),
+                        doc: (dx, dy),
                         uniform: false,
                         snap: false,
                     },
                 ),
             );
+            let t = app.document.doc.pixel_layer(id).unwrap().transform;
             assert!(
-                !app.rendering.fallback_job.needs_recompute(),
-                "move {i} : fallback non invalide"
+                (t.offset_x - dx).abs() < 1e-6 && (t.offset_y - dy).abs() < 1e-6,
+                "le transform suit le curseur en direct",
             );
             assert!(
-                app.take_fallback_task().is_none(),
-                "move {i} : aucune recomposite pendant le geste"
+                app.rendering.background_tasks.is_empty(),
+                "aucune tâche pendant le geste"
+            );
+            assert_eq!(
+                app.document.history.undo_len(),
+                avant,
+                "aucune entrée d'historique pendant le geste"
             );
         }
 
-        // Fin du geste : UNE recomposite (le vrai blend), lancée par boucle.
+        // Fin du geste : UNE entrée ancre→finale, ancre libérée.
         let _ = update(
             &mut app,
             Message::ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent::TransformEnd),
         );
-        assert!(
-            app.rendering.fallback_job.in_flight(),
-            "le relâchement lance exactement UNE recomposite"
+        assert_eq!(app.tools.move_anchor, None, "geste terminé");
+        assert_eq!(
+            app.document.history.undo_len(),
+            avant + 1,
+            "exactement UNE entrée au relâchement"
         );
+        let t = app.document.doc.pixel_layer(id).unwrap().transform;
         assert!(
-            app.take_fallback_task().is_none(),
-            "aucune seconde recomposite lancée"
+            (t.offset_x - 3.5).abs() < 1e-6 && (t.offset_y - 1.25).abs() < 1e-6,
+            "position finale conservée"
         );
     }
 
-    /// Clic simple dans une scène masquée : ni composite, ni invalidation,
-    /// ni entrée d'historique — la sélection ne doit rien coûter.
+    /// Clic simple dans une scène masquée : ni tâche, ni entrée
+    /// d'historique — la sélection ne doit rien coûter.
     #[test]
     fn clic_selection_sans_mouvement_ne_lance_aucune_composite() {
         let mut app = PhotoApp::default();
@@ -603,11 +584,10 @@ mod tests {
             });
         app.document.doc.pixel_layer_mut(id).unwrap().blend_mode =
             photo_engine::BlendMode::Multiply;
-        assert!(app.needs_fallback(), "blend non-Normal → fallback");
 
         // Clic simple : Start (sélection) + End, AUCUN mouvement entre les
-        // deux. Doit être gratuit — ni pré-calcul drag, ni recomposite, ni
-        // entrée d'historique au-delà du seed initial.
+        // deux. Doit être gratuit — ni tâche, ni entrée d'historique
+        // au-delà du seed initial.
         let before = app.document.history.undo_len();
         let _ = update(
             &mut app,
@@ -623,15 +603,9 @@ mod tests {
         );
         assert_eq!(app.tools.move_anchor, None, "geste terminé");
         assert!(
-            !app.rendering.drag_bg_job.is_running(),
-            "aucun pré-calcul lancé"
+            app.rendering.background_tasks.is_empty(),
+            "aucune tâche lancée"
         );
-        assert!(
-            !app.rendering.fallback_job.in_flight()
-                && !app.rendering.fallback_job.needs_recompute(),
-            "aucune recomposite au relâchement"
-        );
-        assert!(app.take_fallback_task().is_none(), "aucune tâche fallback");
         assert_eq!(
             app.document.history.undo_len(),
             before,

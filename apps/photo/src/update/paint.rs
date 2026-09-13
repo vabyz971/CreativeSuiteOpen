@@ -304,7 +304,6 @@ pub fn handle_paint_applied(
         }
     }
     app.tools.pending_paint = None;
-    app.invalidate_fallback();
     Task::none()
 }
 
@@ -436,7 +435,6 @@ pub fn handle_add_mask_computed(
         mask_id,
     });
     app.document.history.push_snapshot(pre);
-    app.invalidate_fallback();
     Task::none()
 }
 
@@ -457,7 +455,6 @@ pub fn handle_remove_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> 
             app.tools.active_mask = None;
         }
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -477,7 +474,7 @@ pub fn handle_toggle_mask_enabled(
         enabled: new,
     };
     // Groupe (pas d'apparence pixels) : application live immédiate, zéro
-    // coût — le seul composite éventuel (fallback) est déjà asynchrone.
+    // coût côté affichage (le draw GPU relit l'arbre).
     if super::layers::warm_carrier(app, layer_id).is_none() {
         if let Some(m) = app.document.doc.mask_of(layer_id, mask_id) {
             let cmd = photo_engine::Command::SetMaskEnabled {
@@ -488,7 +485,6 @@ pub fn handle_toggle_mask_enabled(
             };
             app.document.history.push_command_immediate(cmd.clone());
             let _ = app.document.doc.apply_command(cmd);
-            app.invalidate_fallback();
         }
         return Task::none();
     }
@@ -522,7 +518,6 @@ pub fn handle_invert_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> 
             };
             app.document.history.push_command_immediate(cmd.clone());
             let _ = app.document.doc.apply_command(cmd);
-            app.invalidate_fallback();
         }
         return Task::none();
     }

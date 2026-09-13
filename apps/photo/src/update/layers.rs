@@ -176,7 +176,6 @@ pub fn handle_toggle_visible(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         };
         app.document.history.push_command_immediate(cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
         if !new_visible && app.document.selected_layer == Some(id) {
             app.document.selected_layer = None;
             app.tools.move_anchor = None;
@@ -200,7 +199,6 @@ pub fn handle_set_opacity(app: &mut PhotoApp, id: Uuid, opacity: f32) -> Task<Me
             .history
             .push_command(coalesce_key(id, 1), cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -218,7 +216,6 @@ pub fn handle_set_blend(
         };
         app.document.history.push_command_immediate(cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -272,7 +269,6 @@ pub fn handle_set_offset(
             .history
             .push_command(coalesce_key(id, 2), cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -291,7 +287,6 @@ pub fn handle_set_rotation(app: &mut PhotoApp, id: Uuid, degrees: f32) -> Task<M
             .history
             .push_command(coalesce_key(id, 3), cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -313,7 +308,6 @@ pub fn handle_rotate90(app: &mut PhotoApp, id: Uuid, clockwise: bool) -> Task<Me
         };
         app.document.history.push_command_immediate(cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -416,7 +410,6 @@ pub fn handle_rotate(app: &mut PhotoApp, id: Uuid, delta: f32) -> Task<Message> 
         };
         app.document.history.push_command_immediate(cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -448,7 +441,6 @@ pub fn handle_set_scale_axis(
             .history
             .push_command(coalesce_key(id, 4), cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -474,7 +466,6 @@ pub fn handle_set_skew(
             .history
             .push_command(coalesce_key(id, 4), cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -498,7 +489,6 @@ pub fn handle_reset_transform(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         };
         app.document.history.push_command_immediate(cmd.clone());
         let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -694,7 +684,6 @@ fn handle_layer_drop_commit(
     };
     if moved {
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -746,7 +735,6 @@ pub fn handle_destructive_op_computed(
                 }
                 app.document.history.push_snapshot(pre);
             }
-            app.invalidate_fallback();
         }
         Err(e) => app.canvas.image_error = Some(e),
     }
@@ -760,7 +748,6 @@ pub fn handle_duplicate(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
             rename_duplicate_suffix_filter(&mut app.document.doc, new_id);
             app.document.selected_layer = Some(new_id);
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
         return Task::none();
     }
@@ -771,7 +758,6 @@ pub fn handle_duplicate(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
             rename_duplicate_suffix(&mut app.document.doc, new_id);
             app.document.selected_layer = Some(new_id);
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
     }
     Task::none()
@@ -792,7 +778,6 @@ pub fn handle_delete(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
                 app.rendering.pending_param = None;
             }
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
         return Task::none();
     }
@@ -812,7 +797,6 @@ pub fn handle_delete(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
                 app.rendering.pending_param = None;
             }
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
     }
     Task::none()
@@ -823,14 +807,12 @@ pub fn handle_move_up(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         let pre = app.snapshot();
         if app.document.doc.move_filter(parent, id, true) {
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
         return Task::none();
     }
     if app.document.doc.move_up(id) {
         let pre = app.snapshot();
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -839,14 +821,12 @@ pub fn handle_move_down(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         let pre = app.snapshot();
         if app.document.doc.move_filter(parent, id, false) {
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
         return Task::none();
     }
     if app.document.doc.move_down(id) {
         let pre = app.snapshot();
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -860,7 +840,6 @@ pub fn handle_move_mask(
     let pre = app.snapshot();
     if app.document.doc.move_mask(owner_id, mask_id, up) {
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -869,7 +848,6 @@ pub fn handle_group(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     if let Some(gid) = app.document.doc.group(&[id]) {
         app.document.selected_layer = Some(gid);
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -878,7 +856,6 @@ pub fn handle_ungroup(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
     if let Some(freed) = app.document.doc.ungroup(id) {
         app.document.selected_layer = freed.first().copied();
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -917,7 +894,6 @@ pub fn handle_add_live_filter(app: &mut PhotoApp, id: Uuid, type_id: String) -> 
             }
             app.tools.filter_menu_open = false;
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
     }
     Task::none()
@@ -949,7 +925,6 @@ pub fn handle_remove_live_filter(
             app.rendering.pending_param = None;
         }
         app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
     }
     Task::none()
 }
@@ -1129,9 +1104,6 @@ fn handle_param_warmed(
     if let Ok(warmed) = result {
         app.document.doc.insert_warmed(carrier, warmed);
     }
-    // Cooked in the fallback composite if it is active; on the fast path it
-    // is a simple flag with no cost.
-    app.invalidate_fallback();
     chain_param(app, next)
 }
 
@@ -1169,7 +1141,6 @@ pub fn handle_set_filter_param(
                     .set_filter_param(layer_id, filter_id, key, value);
             }
         }
-        app.invalidate_fallback();
         return Task::none();
     };
     let pending = PendingParam {
@@ -1363,7 +1334,6 @@ fn handle_appearance_warmed(
         }
     }
     app.document.doc.insert_warmed(carrier, warmed);
-    app.invalidate_fallback();
     Task::none()
 }
 
@@ -1408,7 +1378,7 @@ pub fn handle_toggle_filter_enabled(
         enabled: new,
     };
     // Ajustement (pas d'apparence pixels) : application live immédiate,
-    // zéro coût — le seul composite (fallback) est déjà asynchrone.
+    // zéro coût côté affichage (le draw GPU relit l'arbre).
     if warm_carrier(app, layer_id).is_none() {
         let pre = app.snapshot();
         if app
@@ -1422,7 +1392,6 @@ pub fn handle_toggle_filter_enabled(
                 app.document.selected_layer = Some(layer_id);
             }
             app.document.history.push_snapshot(pre);
-            app.invalidate_fallback();
         }
         return Task::none();
     }
@@ -1564,7 +1533,6 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
                     }
                     app.tools.expanded_fx_stack.insert(target);
                     app.document.history.push_snapshot(pre);
-                    app.invalidate_fallback();
                 }
                 app.rendering.background_tasks.finish(task_id);
             }
@@ -1586,7 +1554,6 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
                 let pre = app.snapshot();
                 if app.document.doc.move_up(id) {
                     app.document.history.push_snapshot(pre);
-                    app.invalidate_fallback();
                 }
             }
             app.tools.context_menu_open = None;
@@ -1597,7 +1564,6 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
                 let pre = app.snapshot();
                 if app.document.doc.move_down(id) {
                     app.document.history.push_snapshot(pre);
-                    app.invalidate_fallback();
                 }
             }
             app.tools.context_menu_open = None;

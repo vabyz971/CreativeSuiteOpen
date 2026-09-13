@@ -212,8 +212,6 @@ fn handle_new_project(app: &mut PhotoApp) -> Task<Message> {
     app.document.selected_layer = None;
     app.canvas.canvas_pan = Vector::new(0.0, 0.0);
     app.canvas.zoom_level = 100;
-    app.rendering.fallback_size = None;
-    app.rendering.fallback_handle = None;
     app.canvas.image_path = None;
     app.canvas.image_error = None;
     app.tools.move_anchor = None;
@@ -267,7 +265,6 @@ fn handle_project_opened_ok(
     app.canvas.canvas_selection = None;
     app.tools.welcome_error = None;
     app.document.history.reset();
-    app.invalidate_fallback();
     Task::none()
 }
 
@@ -438,7 +435,6 @@ fn handle_image_decoded_ok(
     let new_id = node.id();
     app.document.doc.push_layer(node);
     app.document.selected_layer = Some(new_id);
-    app.invalidate_fallback();
     Task::none()
 }
 
@@ -536,9 +532,6 @@ fn handle_document_created_ok(
     app.document.history.reset();
     app.tools.move_anchor = None;
     app.tools.transform_anchor = None;
-    app.rendering.fallback_size = None;
-    app.rendering.fallback_handle = None;
-    app.invalidate_fallback();
     Task::none()
 }
 
@@ -576,7 +569,6 @@ fn handle_resize_document(app: &mut PhotoApp, width: u32, height: u32) -> Task<M
     app.document.doc.height = h;
     app.tools.resize_dialog_open = false;
     app.document.history.push_snapshot(pre);
-    app.invalidate_fallback();
     Task::none()
 }
 

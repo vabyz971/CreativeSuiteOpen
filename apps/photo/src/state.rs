@@ -18,14 +18,16 @@
 //! - [`DocumentState`] : arbre de calques, sélection, historique, projet
 //! - [`CanvasState`] : zoom, pan, viewport, état d'image, barre d'outils
 //! - [`ToolState`] : outil actif, pinceau, transformation, masques, dialogues
-//! - [`RenderingState`] : cache de preview, tâches de rendu, fallback, GPU
+//! - [`RenderingState`] : cache de preview, tâches de fond, GPU
 //! - [`WorkspaceState`] : `pane_grid` et focus
 //! - [`WindowState`] : fenêtres secondaires, préférences, raccourcis
 //!
 //! [`PhotoApp`] reste l'entrée unique pour iced — ses méthodes orchestrent
 //! les sous-états sans devenir un god object (un domaine = un struct).
 
-use iced::widget::{image as iced_image, pane_grid};
+use std::sync::Arc;
+
+use iced::widget::pane_grid;
 use iced::{Color, Rectangle, Size, Task, Vector};
 use uuid::Uuid;
 
@@ -131,8 +133,9 @@ pub struct ToolState {
     /// État du menu contextuel sur le calque (clic droit dans panneau calques).
     pub context_menu_open: Option<Uuid>, // calque ciblé, None = fermer
     pub context_menu_pos: (f32, f32), // position souris
-    /// Texture de LOUPE courante de la pipette (patch grossi au curseur).
-    pub pick_loupe: Option<ui_kit::image_canvas::LoupeTex>,
+    /// Patch loupe courant de la pipette : pixels RGBA + côté, fournis au
+    /// chemin GPU unique (grossi ×4 au curseur par le shader).
+    pub pick_loupe: Option<(Arc<[u8]>, u32)>,
     /// Un échantillonnage de patch est en vol (garde anti-empilement).
     pub loupe_sample_pending: bool,
     /// Identifiant du dernier patch demandé — filtre les arrivages périmés.
@@ -176,27 +179,10 @@ impl Default for ToolState {
     }
 }
 
-/// État du pipeline de rendu : cache UI, jobs asynchrones, GPU détecté,
-/// indicateurs d'activité (spinner, menu tâches).
+/// État du pipeline de rendu : cache UI, GPU détecté, indicateurs
+/// d'activité (spinner, menu tâches). Chemin de rendu UNIQUE (GPU) : plus
+/// aucun composite CPU d'affichage — l'export exact reste côté moteur.
 pub struct RenderingState {
-    /// Taille du composite fallback (modes de fusion non-Normal).
-    pub fallback_size: Option<Size>,
-    /// Composite CPU unique — UNIQUEMENT si l'arbre exige du blending
-    /// inter-calques (sinon chemin rapide par calque, zéro recomposite).
-    pub fallback_handle: Option<iced_image::Handle>,
-    /// Fond composite PRÉ-CALCULÉ au début du drag (sans le calque déplacé).
-    /// Pendant le drag : zéro recomposite — on dessine ce fond + le calque
-    /// par-dessus. Le vrai blend est recalculé au relâchement.
-    pub drag_background: Option<iced_image::Handle>,
-    pub drag_background_size: Option<Size>,
-    /// Composite du calque seul (avec son masque) pré-calculé HORS thread UI
-    /// pour les drags en mode fallback.
-    pub drag_layer_composite: Option<iced_image::Handle>,
-    pub drag_layer_composite_size: Option<Size>,
-    /// Pipeline asynchrone (états explicites — voir PR1).
-    pub fallback_job: FallbackJob,
-    pub drag_bg_job: DragBgJob,
-    pub drag_layer_job: DragLayerJob,
     /// Handles iced par calque (cache dérivé des buffers purs du moteur).
     pub preview_cache: crate::ui_handles::PreviewCache,
     pub gpu_info: Option<String>,
@@ -222,15 +208,6 @@ pub struct RenderingState {
 impl Default for RenderingState {
     fn default() -> Self {
         Self {
-            fallback_size: None,
-            fallback_handle: None,
-            drag_background: None,
-            drag_background_size: None,
-            drag_layer_composite: None,
-            drag_layer_composite_size: None,
-            fallback_job: FallbackJob::Idle,
-            drag_bg_job: DragBgJob::Idle,
-            drag_layer_job: DragLayerJob::Idle,
             preview_cache: crate::ui_handles::PreviewCache::default(),
             gpu_info: None,
             // Init GPU différée : `GpuContext::get()` fait
@@ -304,28 +281,6 @@ impl BackgroundTasks {
     }
 }
 
-/// Résolution de vue des buffers de scène (fallback / fond de drag) — alignée
-/// sur la preview 2048 des calques du chemin rapide. Une composite pleine
-/// scène peut dépasser largement (bornes du plan infini, clamp 16384 du
-/// moteur) : l'afficher sans downscale change la résolution perçue et charge
-/// la VRAM. L'export et `sample_color` restent sur la résolution pleine.
-const SCENE_DISPLAY_MAX: u32 = 2048;
-
-/// Plafonne un buffer RGBA d'affichage à [`SCENE_DISPLAY_MAX`] de côté
-/// (échantillonnage Triangle, centré). Buffer déjà dans les limites → 1:1.
-fn fit_scene_display(rgba: Vec<u8>, w: u32, h: u32) -> (Vec<u8>, u32, u32) {
-    if w.max(h) <= SCENE_DISPLAY_MAX {
-        return (rgba, w, h);
-    }
-    let Some(img) = image::RgbaImage::from_vec(w, h, rgba) else {
-        return (Vec::new(), 0, 0);
-    };
-    let nw = ((w as f32 * (SCENE_DISPLAY_MAX as f32 / w.max(h) as f32)).round() as u32).max(1);
-    let nh = ((h as f32 * (SCENE_DISPLAY_MAX as f32 / w.max(h) as f32)).round() as u32).max(1);
-    let resized = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle);
-    (resized.into_raw(), nw, nh)
-}
-
 pub struct PhotoApp {
     pub document: DocumentState,
     pub canvas: CanvasState,
@@ -385,150 +340,6 @@ impl PhotoApp {
             None => Task::none(),
         }
     }
-
-    /// L'arbre exige-t-il la composite CPU ? (groupes en mode non-Normal,
-    /// calques d'ajustement actifs, calques non-Normal) — délégué moteur.
-    pub(crate) fn needs_fallback(&self) -> bool {
-        self.document.doc.needs_fallback()
-    }
-
-    /// Marque le fallback PÉRIMÉ. Zéro travail bloquant : la composite
-    /// sera produite hors thread UI par [`Self::take_fallback_task`] au
-    /// prochain passage de boucle. Si le chemin rapide suffit, on purge
-    /// simplement les handles.
-    pub(crate) fn invalidate_fallback(&mut self) {
-        if self.needs_fallback() {
-            self.rendering.fallback_job.invalidate();
-        } else {
-            self.rendering.fallback_job.reset_to_idle();
-            self.rendering.fallback_handle = None;
-            self.rendering.fallback_size = None;
-        }
-    }
-
-    /// Si une composite est requise et aucune n'est en vol : lance le
-    /// calcul HORS thread UI (jamais sur le thread interface). Le résultat
-    /// revient par [`Message::FallbackComputed`] avec sa génération —
-    /// un résultat périmé est jeté et une nouvelle tournée repart.
-    pub(crate) fn take_fallback_task(&mut self) -> Option<Task<Message>> {
-        if !self.needs_fallback() {
-            return None;
-        }
-        let generation = self.rendering.fallback_job.start_new_run()?;
-
-        let task_id = self
-            .rendering
-            .background_tasks
-            .start("Composite de l'arbre...");
-
-        let mut doc_copy =
-            photo_engine::Document::new(self.document.doc.width, self.document.doc.height);
-        doc_copy.restore_snapshot(self.document.doc.snapshot());
-        doc_copy.warm_cache_from(&self.document.doc);
-
-        Some(Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || match doc_copy.composite_preview() {
-                    Some(img) => {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = rgba.dimensions();
-                        let (data, w2, h2) = fit_scene_display(rgba.into_raw(), w, h);
-                        Ok(Some((data, w2, h2)))
-                    }
-                    None => Ok(None),
-                })
-                .await
-                .map_err(|e| format!("Tâche annulée : {e}"))?
-            },
-            move |result| Message::FallbackComputed {
-                task_id,
-                generation,
-                result,
-            },
-        ))
-    }
-
-    /// Pré-calcule le fond composite SANS le sous-arbre sur le point d'être
-    /// déplacé — HORS thread UI également.
-    pub(crate) fn drag_background_task(&mut self, exclude_id: Uuid) -> Option<Task<Message>> {
-        debug_assert!(self.needs_fallback());
-        if !self.rendering.drag_bg_job.try_start(exclude_id) {
-            return None;
-        }
-        let task_id = self
-            .rendering
-            .background_tasks
-            .start("Fond de glissement...");
-
-        let mut doc_copy =
-            photo_engine::Document::new(self.document.doc.width, self.document.doc.height);
-        doc_copy.restore_snapshot(self.document.doc.snapshot());
-        doc_copy.warm_cache_from(&self.document.doc);
-
-        Some(Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    doc_copy.composite_preview_without(exclude_id).map(|img| {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = rgba.dimensions();
-                        let (data, w2, h2) = fit_scene_display(rgba.into_raw(), w, h);
-                        (data, w2, h2)
-                    })
-                })
-                .await
-                .unwrap_or(None)
-            },
-            move |result| Message::DragBackgroundComputed {
-                task_id,
-                layer_id: exclude_id,
-                result,
-            },
-        ))
-    }
-
-    /// Calcule EN ARRIÈRE-PLAN le composite du calque seul AVEC son masque
-    /// appliqué (mode Normal uniquement — le blend final du calque dans le
-    /// document est recalculé au relâchement via [`Self::invalidate_fallback`]).
-    pub(crate) fn drag_layer_composite_task(&mut self, layer_id: Uuid) -> Option<Task<Message>> {
-        if !self.needs_fallback() {
-            return None;
-        }
-        if !self.rendering.drag_layer_job.try_start() {
-            return None;
-        }
-        let task_id = self
-            .rendering
-            .background_tasks
-            .start("Rendu du calque déplacé...");
-
-        let mut doc_copy =
-            photo_engine::Document::new(self.document.doc.width, self.document.doc.height);
-        doc_copy.restore_snapshot(self.document.doc.snapshot());
-        doc_copy.warm_cache_from(&self.document.doc);
-
-        Some(Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let mut tmp = photo_engine::Document::new(doc_copy.width, doc_copy.height);
-                    tmp.warm_cache_from(&doc_copy);
-                    if let Some(node) = doc_copy.find(layer_id).cloned() {
-                        tmp.root.push(node);
-                        tmp.composite_preview()
-                            .map(|img| (img.to_rgba8().into_raw(), img.width(), img.height()))
-                    } else {
-                        None
-                    }
-                })
-                .await
-                .unwrap_or(None)
-            },
-            move |result| Message::DragLayerCompositeComputed {
-                task_id,
-                layer_id,
-                result,
-            },
-        ))
-    }
 }
 
 impl Default for PhotoApp {
@@ -582,161 +393,4 @@ pub(crate) struct TransformAnchor {
     pub base: crate::layers::Transform2D,
     /// Position curseur document au début du geste.
     pub cursor_doc: (f32, f32),
-}
-
-// ---------------------------------------------------------------------------
-// États explicites des jobs de rendu asynchrones (chantier 8 / 11).
-// ---------------------------------------------------------------------------
-
-/// Composite de fond (blend inter-calques). Compteur monotone inclus pour
-/// jeter un résultat calculé avec une génération antérieure (le document a
-/// changé pendant que la tâche tournait).
-#[derive(Default)]
-pub enum FallbackJob {
-    #[default]
-    Idle,
-    /// Tâche en vol ; un résultat qui reviendrait avec une `generation`
-    /// différente serait périmé. La branche `Dirty` signale qu'une
-    /// recomposite supplémentaire sera nécessaire au retour.
-    Running { generation: u64, dirty: bool },
-}
-
-impl FallbackJob {
-    /// Édition signalée — la composite affichée devient périmée.
-    pub(crate) fn invalidate(&mut self) {
-        match self {
-            Self::Idle => {
-                *self = Self::Running {
-                    generation: 0,
-                    dirty: true,
-                }
-            }
-            Self::Running { dirty, .. } => *dirty = true,
-        }
-    }
-
-    /// Purge l'état (mode rapide actif : pas de composite à refaire).
-    pub(crate) fn reset_to_idle(&mut self) {
-        *self = Self::Idle;
-    }
-
-    /// Lance un nouveau calcul IFF une invalidation est en attente. Retourne
-    /// la génération attribuée, ou `None` si rien à faire.
-    pub(crate) fn start_new_run(&mut self) -> Option<u64> {
-        match self {
-            Self::Idle => None,
-            Self::Running { dirty: false, .. } => None,
-            Self::Running { generation, .. } => {
-                let next = generation.wrapping_add(1);
-                *self = Self::Running {
-                    generation: next,
-                    dirty: false,
-                };
-                Some(next)
-            }
-        }
-    }
-
-    /// Le calcul est-il en vol (sans tenir compte de l'invalidation) ?
-    #[allow(dead_code)]
-    pub(crate) fn in_flight(&self) -> bool {
-        matches!(self, Self::Running { .. })
-    }
-
-    /// Le calcul affiché est-il périmé (édition pendant le vol) ?
-    #[allow(dead_code)]
-    pub(crate) fn needs_recompute(&self) -> bool {
-        match self {
-            Self::Idle => false,
-            Self::Running { dirty, .. } => *dirty,
-        }
-    }
-
-    /// Tâche terminée.
-    pub(crate) fn finish(&mut self, generation: u64) -> Finish {
-        match self {
-            Self::Running {
-                generation: g,
-                dirty,
-            } if *g == generation => {
-                if *dirty {
-                    *self = Self::Running {
-                        generation: *g,
-                        dirty: false,
-                    };
-                    Finish::Retry
-                } else {
-                    *self = Self::Idle;
-                    Finish::Applied
-                }
-            }
-            _ => Finish::Stale,
-        }
-    }
-}
-
-/// Verdict de [`FallbackJob::finish`].
-pub(crate) enum Finish {
-    Applied,
-    Retry,
-    Stale,
-}
-
-/// Pré-calcul du fond SANS le sous-arbre déplacé (drag en mode fallback).
-#[derive(Default)]
-pub enum DragBgJob {
-    #[default]
-    Idle,
-    Running(Uuid),
-}
-
-impl DragBgJob {
-    pub(crate) fn try_start(&mut self, exclude_id: Uuid) -> bool {
-        if matches!(self, Self::Idle) {
-            *self = Self::Running(exclude_id);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(crate) fn finish(&mut self) {
-        *self = Self::Idle;
-    }
-
-    pub(crate) fn is_running(&self) -> bool {
-        matches!(self, Self::Running(_))
-    }
-
-    pub(crate) fn is_running_for(&self, id: Uuid) -> bool {
-        matches!(self, Self::Running(x) if *x == id)
-    }
-}
-
-/// Composite du calque seul AVEC masque — surimpression pendant le drag.
-#[derive(Default)]
-pub enum DragLayerJob {
-    #[default]
-    Idle,
-    Running,
-}
-
-impl DragLayerJob {
-    pub(crate) fn try_start(&mut self) -> bool {
-        if matches!(self, Self::Idle) {
-            *self = Self::Running;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(crate) fn finish(&mut self) {
-        *self = Self::Idle;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn is_running(&self) -> bool {
-        matches!(self, Self::Running)
-    }
 }

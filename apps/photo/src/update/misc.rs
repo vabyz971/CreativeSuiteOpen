@@ -14,9 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Misc handlers (preferences, canvas, hardware, fallback) — extracted from update/mod.rs
+//! Misc handlers (preferences, canvas, hardware) — extracted from update/mod.rs
 
-use iced::{Size, Task, Vector};
+use std::sync::Arc;
+
+use iced::{Task, Vector};
 
 use crate::layers::LayerNode;
 use crate::message::{Message, Tool};
@@ -257,11 +259,8 @@ fn handle_transform_start(
         base,
         cursor_doc: doc,
     });
-    // Les pré-calculs drag (fond sans ce calque + composite masqué) sont
-    // DIFFÉRÉS au premier mouvement réel (TransformCursor) : un simple clic
-    // qui ne sert qu'à SÉLECTIONNER ne déclenche ainsi AUCUNE composite —
-    // sans masque actif nulle part, même pas de fallback. Le blend réel est
-    // recalculé UNE seule fois au relâchement, seulement si le calque a bougé.
+    // Chemin GPU unique : aucun pré-calcul — un simple clic qui ne sert
+    // qu'à SÉLECTIONNER ne déclenche AUCUNE tâche.
     Task::none()
 }
 
@@ -274,30 +273,11 @@ fn handle_transform_cursor(
     let Some(anchor) = app.tools.transform_anchor else {
         return Task::none();
     };
-    // Premier mouvement RÉEL du geste : on lance ONE seule fois les
-    // pré-calculs drag (fond sans ce calque + composite masqué). Pas de
-    // mouvement → un simple clic de sélection ne déclenche AUCUNE composite.
-    let drag_task = if !app.rendering.drag_bg_job.is_running() && app.needs_fallback() {
-        let has_mask = app
-            .document
-            .doc
-            .find(anchor.layer_id)
-            .map(|n| n.masks().iter().any(|m| m.enabled))
-            .unwrap_or(false);
-        let mut task = app.drag_background_task(anchor.layer_id);
-        if has_mask && let Some(t2) = app.drag_layer_composite_task(anchor.layer_id) {
-            task = Some(match task {
-                Some(t1) => Task::batch([t1, t2]),
-                None => t2,
-            });
-        }
-        task.unwrap_or_else(Task::none)
-    } else {
-        Task::none()
-    };
+    // Chemin GPU unique : le déplacement met à jour le transform EN DIRECT
+    // (redessiné au draw, zéro recomposite) — aucun pré-calcul drag.
     let Some(LayerNode::Pixel(l)) = app.document.doc.find_mut(anchor.layer_id) else {
         app.tools.transform_anchor = None;
-        return drag_task;
+        return Task::none();
     };
     let (w0, h0) = l.dimensions();
     let (w0, h0) = (w0 as f32, h0 as f32);
@@ -320,26 +300,14 @@ fn handle_transform_cursor(
         move_grid,
     );
     l.transform = new_t;
-    // Invalide la fallback stale (contient le calque à l'ancienne position).
-    if app.rendering.fallback_handle.is_some() {
-        app.rendering.fallback_handle = None;
-        app.rendering.fallback_size = None;
-    }
-    drag_task
+    Task::none()
 }
 
 fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
     app.tools.transform_anchor = None;
-    app.rendering.drag_bg_job.finish();
-    // Purge immédiate des buffers drag — la prochaine frame affiche le
-    // fallback complet sans artefacts.
-    app.rendering.drag_background = None;
-    app.rendering.drag_background_size = None;
-    app.rendering.drag_layer_composite = None;
-    app.rendering.drag_layer_composite_size = None;
     // Fin de geste : UNE commande ancre→finale (snapshot au début, aucune
-    // pendant le geste). Geste immobile = aucune entrée d'historique et
-    // AUCUNE recomposite — un simple clic de sélection ne doit rien coûter.
+    // pendant le geste). Geste immobile = aucune entrée d'historique —
+    // un simple clic de sélection ne doit rien coûter.
     if let Some((id, anchor_t)) = app.tools.move_anchor.take()
         && let Some(LayerNode::Pixel(l)) = app.document.doc.find(id)
         && l.transform != anchor_t
@@ -350,9 +318,6 @@ fn handle_transform_end(app: &mut PhotoApp) -> Task<Message> {
             new: l.transform,
         };
         app.document.history.push_command_immediate(cmd);
-        if app.needs_fallback() {
-            app.invalidate_fallback();
-        }
     }
     Task::none()
 }
@@ -596,8 +561,8 @@ fn handle_pick_hover(app: &mut PhotoApp, x: f32, y: f32) -> Task<Message> {
     )
 }
 
-/// Réception d'un patch de loupe : construit la texture (Bytes de l'Arc → zéro
-/// copie, même prix que le cache de scène) et la met dans `tools.pick_loupe`.
+/// Réception d'un patch de loupe : pixels conservés (zéro copie via l'Arc)
+/// pour le chemin GPU unique, qui les grossit au curseur.
 fn handle_pick_sample_ready(
     app: &mut PhotoApp,
     resp: u64,
@@ -609,10 +574,7 @@ fn handle_pick_sample_ready(
         return Task::none();
     }
     let side = ui_kit::image_canvas::LOUPE_PATCH_SIDE;
-    app.tools.pick_loupe = result.map(|rgba| {
-        let handle = iced::widget::image::Handle::from_rgba(side, side, rgba);
-        ui_kit::image_canvas::LoupeTex { handle, side }
-    });
+    app.tools.pick_loupe = result.map(|rgba| (Arc::<[u8]>::from(rgba), side));
     Task::none()
 }
 
@@ -643,91 +605,12 @@ fn handle_undo_redo(app: &mut PhotoApp, is_undo: bool) -> Task<Message> {
             }
             app.tools.move_anchor = None;
             app.tools.transform_anchor = None;
-            app.rendering.drag_background = None;
-            app.rendering.drag_background_size = None;
             app.tools.pending_paint = None;
             app.tools.stroke_layer = None;
-            app.invalidate_fallback();
         }
-        Some(UndoAction::Applied(cmd)) if cmd.affects_composite() => {
-            // Targeted invalidation: recomposite ONLY if the global blending
-            // depends on the touched node
-            app.invalidate_fallback();
-        }
+        // Chemin GPU unique : le draw relit le document à chaque frame,
+        // aucune invalidation explicite n'est nécessaire.
         Some(UndoAction::Applied(_)) | None => {}
-    }
-    Task::none()
-}
-
-fn handle_fallback_computed(
-    app: &mut PhotoApp,
-    task_id: u64,
-    generation: u64,
-    result: Result<Option<(Vec<u8>, u32, u32)>, String>,
-) -> Task<Message> {
-    app.rendering.background_tasks.finish(task_id);
-    use crate::state::Finish;
-    // Si la génération ne correspond plus ou qu'une édition a eu lieu pendant
-    // le vol, take_fallback_task doit relancer (l'état du job le sait déjà).
-    if !matches!(
-        app.rendering.fallback_job.finish(generation),
-        Finish::Applied
-    ) {
-        return app.take_fallback_task().unwrap_or_else(Task::none);
-    }
-    match result {
-        Ok(Some((rgba, w, h))) => {
-            app.rendering.fallback_size = Some(Size::new(w as f32, h as f32));
-            app.rendering.fallback_handle =
-                Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
-        }
-        Ok(None) => {
-            app.rendering.fallback_handle = None;
-            app.rendering.fallback_size = None;
-        }
-        Err(e) => app.canvas.image_error = Some(e),
-    }
-    Task::none()
-}
-
-fn handle_drag_background_computed(
-    app: &mut PhotoApp,
-    task_id: u64,
-    layer_id: uuid::Uuid,
-    result: Option<(Vec<u8>, u32, u32)>,
-) -> Task<Message> {
-    app.rendering.background_tasks.finish(task_id);
-    // Le calcul est terminé : on libère l'état job AVANT de vérifier si le
-    // résultat est encore pertinent (le drag peut avoir changé de cible).
-    let still_running_for = app.rendering.drag_bg_job.is_running_for(layer_id);
-    app.rendering.drag_bg_job.finish();
-    // Only applies if we are STILL dragging the same subtree
-    if app.tools.move_anchor.map(|(id, _)| id) == Some(layer_id)
-        && still_running_for
-        && let Some((rgba, w, h)) = result
-    {
-        app.rendering.drag_background = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
-        app.rendering.drag_background_size = Some(Size::new(w as f32, h as f32));
-    }
-    Task::none()
-}
-
-fn handle_drag_layer_composite_computed(
-    app: &mut PhotoApp,
-    task_id: u64,
-    layer_id: uuid::Uuid,
-    result: Option<(Vec<u8>, u32, u32)>,
-) -> Task<Message> {
-    app.rendering.background_tasks.finish(task_id);
-    app.rendering.drag_layer_job.finish();
-    // Valide seulement si on DRAG toujours CE calque — sinon le buffer est
-    // orphelin et écrasé au prochain MoveLayerStart.
-    if app.tools.move_anchor.map(|(id, _)| id) == Some(layer_id)
-        && let Some((rgba, w, h)) = result
-    {
-        app.rendering.drag_layer_composite =
-            Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
-        app.rendering.drag_layer_composite_size = Some(Size::new(w as f32, h as f32));
     }
     Task::none()
 }
@@ -811,25 +694,6 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::PickSampleReady { resp, result } => {
             Some(handle_pick_sample_ready(app, resp, result))
         }
-        Message::FallbackComputed {
-            task_id,
-            generation,
-            result,
-        } => Some(handle_fallback_computed(app, task_id, generation, result)),
-        Message::DragBackgroundComputed {
-            task_id,
-            layer_id,
-            result,
-        } => Some(handle_drag_background_computed(
-            app, task_id, layer_id, result,
-        )),
-        Message::DragLayerCompositeComputed {
-            task_id,
-            layer_id,
-            result,
-        } => Some(handle_drag_layer_composite_computed(
-            app, task_id, layer_id, result,
-        )),
         Message::ZoomInPressed => Some(handle_zoom_in(app)),
         Message::ZoomOutPressed => Some(handle_zoom_out(app)),
         Message::MockAction => Some(Task::none()),
@@ -856,9 +720,7 @@ pub fn handles(msg: &Message) -> bool {
             | Message::Redo
             | Message::PickColor { .. }
             | Message::ColorPicked { .. }
-            | Message::FallbackComputed { .. }
-            | Message::DragBackgroundComputed { .. }
-            | Message::DragLayerCompositeComputed { .. }
+            | Message::PickSampleReady { .. }
             | Message::ZoomInPressed
             | Message::ZoomOutPressed
             | Message::MockAction

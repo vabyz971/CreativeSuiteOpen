@@ -252,25 +252,6 @@ pub enum Message {
     PreferencesMsg(crate::preferences_window::Message),
     /// Rapport matériel calculé hors thread UI
     HardwareDetected(preferences::HardwareReport),
-    /// Composite fallback calculée HORS thread UI (génération : anti-désync)
-    FallbackComputed {
-        task_id: u64,
-        generation: u64,
-        result: Result<Option<(Vec<u8>, u32, u32)>, String>,
-    },
-    /// Fond de drag (composite sans le sous-arbre déplacé) prêt
-    DragBackgroundComputed {
-        task_id: u64,
-        layer_id: Uuid,
-        result: Option<(Vec<u8>, u32, u32)>,
-    },
-    /// Composite du calque seul (avec masque) prêt — affiché en surimpression
-    /// pendant le drag en mode fallback, pour préserver le rendu du masque.
-    DragLayerCompositeComputed {
-        task_id: u64,
-        layer_id: Uuid,
-        result: Option<(Vec<u8>, u32, u32)>,
-    },
     /// Ouvre/ferme le menu des traitements en arrière-plan
     ToggleTaskMenu,
 

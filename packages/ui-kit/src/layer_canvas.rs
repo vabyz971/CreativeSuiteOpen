@@ -94,7 +94,7 @@ pub struct DisplayLayer {
     pub key: u64,
     /// Pixels partagés RGBA8 (`None` pour les groupes et ajustements,
     /// qui n'ont pas de pixels propres).
-    pub rgba: Option<Arc<Vec<u8>>>,
+    pub rgba: Option<Arc<[u8]>>,
     pub width: u32,
     pub height: u32,
     /// Opacity 0..1
@@ -125,7 +125,7 @@ pub struct DisplayLayer {
 pub struct DisplayMask {
     /// Content identity (texture cache key, e.g. Arc pointer)
     pub key: u64,
-    pub rgba: Arc<Vec<u8>>,
+    pub rgba: Arc<[u8]>,
     pub width: u32,
     pub height: u32,
 }
@@ -136,7 +136,7 @@ pub struct DisplayMask {
 pub struct LoupePatch {
     /// Content identity (dérivée du pointeur de l'Arc à la construction).
     pub key: u64,
-    pub rgba: Arc<Vec<u8>>,
+    pub rgba: Arc<[u8]>,
     /// Côté du carré en pixels document.
     pub side: u32,
     /// Centre du patch en coordonnées document.
@@ -310,9 +310,11 @@ impl<Message> LayerCanvas<Message> {
     /// Patch loupe pipette (pixels RGBA8 `side`×`side` fournis par l'app,
     /// échantillonnés sur la composite). Clé dérivée du contenu partagé.
     #[must_use]
-    pub fn with_loupe_patch(mut self, rgba: Option<(Arc<Vec<u8>>, u32)>) -> Self {
+    pub fn with_loupe_patch(mut self, rgba: Option<(Arc<[u8]>, u32)>) -> Self {
         self.loupe_patch = rgba.map(|(pixels, side)| LoupePatch {
-            key: Arc::as_ptr(&pixels) as usize as u64,
+            // Pointeur fin (même motif que `arc_addr` côté app) : le clone
+            // conservé empêche la réutilisation de l'adresse (ABA).
+            key: Arc::as_ptr(&pixels).cast::<u8>() as usize as u64,
             rgba: pixels,
             side: side.max(1),
             center: (0.0, 0.0),
@@ -671,7 +673,7 @@ where
                 let h = 512u32;
                 layers.push(DisplayLayer {
                     key,
-                    rgba: Some(Arc::new(rgba)),
+                    rgba: Some(Arc::<[u8]>::from(rgba)),
                     width: w,
                     height: h,
                     opacity: 1.0,
@@ -1610,7 +1612,8 @@ impl CompositePipeline {
     /// Uniforms de fusion pour un calque de pixels (placement xform inclus).
     /// La vue de masque est résolue par l'appelant (voir `empiler`).
     fn params_pixel(&self, couche: &DisplayLayer, ctx: &ScopeCtx) -> Option<Params> {
-        let tex = self.layer_textures.get(&couche.key)?;
+        // Garde : texture téléversée (le rendu résout la vue lui-même).
+        self.layer_textures.get(&couche.key)?;
         let (xform, xform_off) =
             affine_inverse(&couche.transform, couche.width as f32, couche.height as f32)?;
         let (masque_present, masque_l, masque_h) = match &couche.mask {
@@ -1625,7 +1628,10 @@ impl CompositePipeline {
                 ctx.zoom,
                 couche.opacity.clamp(0.0, 1.0),
             ],
-            mode_sizes: [couche.blend, tex.width, tex.height, 0],
+            // Dimensions LOGIQUES (plein format) : la texture téléversée
+            // peut être réduite (aperçu > 2048 px), l'échantillonnage
+            // [0,1] étire comme iced — jamais les dims du buffer.
+            mode_sizes: [couche.blend, couche.width.max(1), couche.height.max(1), 0],
             off_sel: [0.0, 0.0, 0.0, 0.0],
             sel_size: [0.0, 0.0, 0.0, 0.0],
             mask_info: [masque_present, masque_l, masque_h, 0],
@@ -2026,7 +2032,7 @@ mod tests {
     fn layer(key: u64, mask_key: Option<u64>) -> DisplayLayer {
         DisplayLayer {
             key,
-            rgba: Some(Arc::new(vec![0u8; 16])),
+            rgba: Some(Arc::<[u8]>::from(vec![0u8; 16])),
             width: 2,
             height: 2,
             opacity: 1.0,
@@ -2034,7 +2040,7 @@ mod tests {
             transform: Transform2D::default(),
             mask: mask_key.map(|key| DisplayMask {
                 key,
-                rgba: Arc::new(vec![255u8; 16]),
+                rgba: Arc::<[u8]>::from(vec![255u8; 16]),
                 width: 2,
                 height: 2,
             }),
