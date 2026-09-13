@@ -525,6 +525,8 @@ fn handle_color_picked(
     if let Some(color) = color {
         app.tools.brush_color = color;
     }
+    // Clic validé : la loupe disparaît avec la pipette.
+    app.tools.pick_loupe = None;
     // Revient à l'outil précédent (comportement pipette standard).
     app.tools.selected_tool = app
         .tools

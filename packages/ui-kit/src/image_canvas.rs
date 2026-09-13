@@ -1175,8 +1175,9 @@ const SCALE_OFFSET: f32 = 0.12;
 pub(crate) const PICK_HOVER_STEP: f32 = 4.0;
 /// Grossissement écran d'un pixel doc dans la loupe pipette
 const LOUPE_SCALE: f32 = 4.0;
-/// Côté (px doc) du patch échantillonné par la loupe
-pub const LOUPE_PATCH_SIDE: u32 = 33;
+/// Côté (px doc) du patch échantillonné par la loupe : 15 px à ×8 = 120 px
+/// écran, chaque pixel document bien visible (visée précise).
+pub const LOUPE_PATCH_SIDE: u32 = 15;
 
 /// Point dans un quadrilatère convexe (test de signe des produits
 /// vectoriels, tolérant aux deux orientations). Partagé avec `layer_canvas`

@@ -151,7 +151,7 @@ pub struct HitLayer {
 }
 
 /// Patch loupe pipette : carré `side`×`side` (pixels doc 1:1, RGBA8),
-/// grossi ×4 à l'écran par le shader de présentation.
+/// grossi ×8 à l'écran par le shader de présentation (pixels visibles).
 #[derive(Clone, Debug)]
 pub struct LoupePatch {
     /// Content identity (dérivée du pointeur de l'Arc à la construction).

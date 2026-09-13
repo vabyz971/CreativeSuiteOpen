@@ -185,15 +185,21 @@ fn fs_present(in: VOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // Loupe pipette : patch grossi x4 ancré en haut à droite du curseur.
+    // Loupe pipette : patch grossi x8 ancré en haut à droite du curseur
+    // (pixels document bien visibles) + réticule central de visée.
     if (bp.loupe.w > 0.5) {
         let side_doc = max(bp.loupe.z, 1.0);
-        let size_scr = side_doc * zoom * 4.0;
+        let size_scr = side_doc * zoom * 8.0;
         let cur_scr = (bp.loupe.xy - bp.screen_doc.zw * 0.5) * zoom + pan + bp.screen_doc.xy * 0.5;
         let origin = cur_scr + vec2<f32>(16.0, -size_scr - 16.0);
         if (all(screen_px >= origin) && all(screen_px <= origin + vec2<f32>(size_scr))) {
             let p_uv = (screen_px - origin) / size_scr;
-            col = textureSampleLevel(top_tex, top_samp, p_uv, 0.0).rgb;
+            var loupe_col = textureSampleLevel(top_tex, top_samp, p_uv, 0.0).rgb;
+            let centre = origin + vec2<f32>(size_scr * 0.5);
+            if (abs(screen_px.x - centre.x) < 1.0 || abs(screen_px.y - centre.y) < 1.0) {
+                loupe_col = mix(loupe_col, vec3<f32>(1.0) - loupe_col, 0.8);
+            }
+            col = loupe_col;
         }
     }
 

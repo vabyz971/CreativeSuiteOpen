@@ -347,6 +347,11 @@ pub fn handle_select_tool(app: &mut PhotoApp, tool: crate::message::Tool) -> Tas
     } else {
         app.tools.previous_tool = None;
     }
+    // Quitter la pipette (clic validé ou changement explicite) : la loupe
+    // ne doit pas rester affichée sur le canvas.
+    if tool != crate::message::Tool::Eyedropper {
+        app.tools.pick_loupe = None;
+    }
     app.tools.selected_tool = tool;
     app.canvas.canvas_selection = None;
     app.tools.move_anchor = None;
