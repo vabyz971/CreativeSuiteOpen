@@ -95,8 +95,16 @@ pub struct DisplayLayer {
     /// Pixels partagés RGBA8 (`None` pour les groupes et ajustements,
     /// qui n'ont pas de pixels propres).
     pub rgba: Option<Arc<[u8]>>,
+    /// Dimensions LOGIQUES plein format (placement + normalisation UV).
     pub width: u32,
+    /// Dimensions LOGIQUES plein format (placement + normalisation UV).
     pub height: u32,
+    /// Dimensions RÉELLES du tampon `rgba` (≤ logiques : l'aperçu est
+    /// réduit au-delà de 2048 px). L'upload utilise TOUJOURS ces dims —
+    /// jamais les logiques — et l'échantillonnage [0,1] étire comme iced.
+    pub tex_width: u32,
+    /// Dimensions RÉELLES du tampon `rgba` (voir `tex_width`).
+    pub tex_height: u32,
     /// Opacity 0..1
     pub opacity: f32,
     /// Blend mode (0 Normal ... 5 Lighten)
@@ -676,6 +684,9 @@ where
                     rgba: Some(Arc::<[u8]>::from(rgba)),
                     width: w,
                     height: h,
+                    // Tuiles toujours pleines : tampon = logique.
+                    tex_width: w,
+                    tex_height: h,
                     opacity: 1.0,
                     blend: 0,
                     transform: Transform2D {
@@ -959,6 +970,13 @@ impl Params {
 
 /// Ajustement neutre (identité) pour les passes couleur.
 const AJUST_NEUTRE: [f32; 4] = [0.0, 1.0, 1.0, 0.0];
+
+/// Le tampon couvre-t-il la texture déclarée ? Garde anti-panic de
+/// l'upload (un aperçu réduit + des dims logiques plein format donnerait
+/// une lecture hors limites — voir `televerser_portee`).
+fn tampon_valide(longueur: usize, tex_l: u32, tex_h: u32) -> bool {
+    longueur >= tex_l.max(1) as usize * tex_h.max(1) as usize * 4
+}
 
 /// Contexte d'une portée composite : dimensions document + cadrage écran.
 #[derive(Clone, Copy)]
@@ -1521,14 +1539,26 @@ impl CompositePipeline {
     ) {
         for l in layers {
             if let Some(rgba) = l.rgba.as_ref() {
+                // Garde anti-panic : le tampon doit couvrir la texture
+                // déclarée (tampon réduit + dims logiques = combinaison
+                // invalide, calque ignoré au lieu de planter le rendu).
+                if !tampon_valide(rgba.len(), l.tex_width, l.tex_height) {
+                    eprintln!(
+                        "layer-canvas : tampon {} octets pour texture {}x{} — calque ignoré",
+                        rgba.len(),
+                        l.tex_width,
+                        l.tex_height
+                    );
+                    continue;
+                }
                 pipe.layer_textures.entry(l.key).or_insert_with(|| {
                     Self::upload_texture(
                         device,
                         queue,
                         "layer-canvas-layer",
                         rgba,
-                        l.width,
-                        l.height,
+                        l.tex_width,
+                        l.tex_height,
                     )
                 });
             }
@@ -1550,7 +1580,6 @@ impl CompositePipeline {
         }
     }
 
-    /// Contexte d'une portée composite (espace document + cadrage écran).
     fn write_params(&self, params: &Params) {
         self.queue
             .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(params));
@@ -2035,6 +2064,8 @@ mod tests {
             rgba: Some(Arc::<[u8]>::from(vec![0u8; 16])),
             width: 2,
             height: 2,
+            tex_width: 2,
+            tex_height: 2,
             opacity: 1.0,
             blend: 0,
             transform: Transform2D::default(),
@@ -2054,6 +2085,8 @@ mod tests {
             rgba: None,
             width: 0,
             height: 0,
+            tex_width: 0,
+            tex_height: 0,
             opacity: 1.0,
             blend: 0,
             transform: Transform2D::default(),
@@ -2068,6 +2101,8 @@ mod tests {
             rgba: None,
             width: 0,
             height: 0,
+            tex_width: 0,
+            tex_height: 0,
             opacity: 0.8,
             blend: 0,
             transform: Transform2D::default(),
@@ -2154,6 +2189,18 @@ mod tests {
                 "entry point manquant : {attendu}",
             );
         }
+    }
+
+    #[test]
+    fn tampon_valide_garde() {
+        // Cas nominal : tampon exact.
+        assert!(tampon_valide(2 * 2 * 4, 2, 2));
+        // Aperçu réduit + dims logiques plein format : INVALIDE (c'est ce
+        // qui plantait l'upload des photos > 2048 px).
+        assert!(!tampon_valide(8 * 8 * 4, 100, 100));
+        // Tampon vide ou dims nulles : invalide, jamais de panic.
+        assert!(!tampon_valide(0, 2, 2));
+        assert!(!tampon_valide(0, 0, 0));
     }
 
     #[test]

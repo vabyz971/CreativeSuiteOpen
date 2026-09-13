@@ -94,12 +94,15 @@ fn empiler_noeuds(
                 // Dimensions LOGIQUES plein format (l'aperçu est réduit
                 // au-delà de 2048 px) : le shader étire comme iced, et le
                 // placement reste en coordonnées document plein format.
+                // `tex_*` = dims RÉELLES du tampon (upload exact).
                 let (plein_l, plein_h) = l.dimensions();
                 couches.push(DisplayLayer {
                     key: cle_contenu(&buf.data),
                     rgba: Some(Arc::clone(&buf.data)),
                     width: plein_l,
                     height: plein_h,
+                    tex_width: buf.width,
+                    tex_height: buf.height,
                     opacity: (l.opacity / 100.0).clamp(0.0, 1.0),
                     blend: l.blend_mode.id(),
                     transform: l.transform,
@@ -128,6 +131,8 @@ fn empiler_noeuds(
                     rgba: None,
                     width: 0,
                     height: 0,
+                    tex_width: 0,
+                    tex_height: 0,
                     opacity: (g.opacity / 100.0).clamp(0.0, 1.0),
                     blend: g.blend_mode.id(),
                     transform: photo_engine::Transform2D::default(),
@@ -149,6 +154,8 @@ fn empiler_noeuds(
                     rgba: None,
                     width: 0,
                     height: 0,
+                    tex_width: 0,
+                    tex_height: 0,
                     opacity: (a.opacity / 100.0).clamp(0.0, 1.0),
                     blend: 0,
                     transform: photo_engine::Transform2D::default(),
@@ -514,6 +521,30 @@ mod tests {
         cache.sync(&doc);
         let couches2 = empiler_noeuds(&doc.root, &cache);
         assert_eq!(couches[0].key, couches2[0].key);
+    }
+
+    #[test]
+    fn empilement_grande_image_tex_reduit() {
+        // Photo > 2048 px : l'aperçu est réduit, les dims logiques restent
+        // plein format et `tex_*` suit le tampon (upload exact, pas de
+        // lecture hors limites — régression crash du chemin unique).
+        let mut doc = Document::new(2100, 100);
+        let gros = photo_engine::PixelLayer::new("G", image_pleine(2100, 100));
+        doc.push_layer(LayerNode::Pixel(gros));
+        let cache = doc_synchronise(&doc);
+        let couches = empiler_noeuds(&doc.root, &cache);
+        assert_eq!(couches.len(), 1);
+        let couche = &couches[0];
+        assert_eq!((couche.width, couche.height), (2100, 100));
+        assert!(
+            couche.tex_width <= 2100 && couche.tex_height <= 100,
+            "tampon réduit ou égal, jamais agrandi",
+        );
+        let rgba = couche.rgba.as_ref().expect("pixels");
+        assert_eq!(
+            rgba.len(),
+            couche.tex_width as usize * couche.tex_height as usize * 4
+        );
     }
 
     #[test]
