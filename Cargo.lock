@@ -4520,6 +4520,7 @@ dependencies = [
  "iced_core",
  "iced_futures",
  "math-utils",
+ "naga 27.0.3",
  "pollster 0.3.0",
  "serde",
  "serde_json",

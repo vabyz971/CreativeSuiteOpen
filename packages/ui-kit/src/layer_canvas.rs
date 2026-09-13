@@ -47,26 +47,64 @@ use iced::widget::Shader;
 use iced::widget::shader;
 use iced::{Element, Length, Point, Rectangle, Size, Vector};
 
-use crate::image_canvas::{CanvasTool, ImageCanvasEvent, TransformHandle};
+use crate::image_canvas::{
+    BrushStyle, CanvasTool, ImageCanvasEvent, PICK_HOVER_STEP, StrokeTex, TransformHandle,
+    rasterize_segment,
+};
+use math_utils::Transform2D;
 
 // ---------------------------------------------------------------------------
 // Displayed model
 // ---------------------------------------------------------------------------
+
+/// Une opération d'ajustement ACTIVE d'un calque de filtre, en unités
+/// natives du moteur (mêmes `type_id` / plages que le registre d'effets :
+/// `brightness_contrast`, `color_correct`, `blur`). Seuls les filtres à
+/// effet réel sont représentés (`hue` est un no-op côté moteur).
+#[derive(Clone, Debug)]
+pub enum AdjustmentOp {
+    /// Luminosité [-100 ; 100], contraste [-100 ; 100] (unités CPU).
+    BrightnessContrast { brightness: f32, contrast: f32 },
+    /// Saturation (1.0 = neutre).
+    Saturation { value: f32 },
+    /// Flou gaussien, sigma = rayon en px document (<= 0.1 = neutre).
+    Blur { radius: f32 },
+}
+
+/// Contenu d'un [`DisplayLayer`] : pixel simple, sous-groupe, ou calque
+/// d'ajustement (chaîne de filtres actifs). Un seul variant à la fois —
+/// le CPU ne combine jamais groupe ET ajustement sur le même nœud.
+#[derive(Clone, Debug)]
+pub enum DisplayContent {
+    /// Calque de pixels (texture `rgba`).
+    Pixel,
+    /// Groupe : les enfants composent d'abord dans une texture offscreen
+    /// dédiée (mise en cache par signature), puis le résultat est fondu
+    /// avec l'opacité / fusion / masque du groupe.
+    Group(Vec<DisplayLayer>),
+    /// Ajustement : la chaîne s'applique à l'accumulateur (tout ce qui est
+    /// en dessous), pondérée par l'opacité de l'entrée.
+    Adjustment(Vec<AdjustmentOp>),
+}
 
 /// A layer ready for GPU upload (preconverted shared RGBA8 pixels).
 #[derive(Clone, Debug)]
 pub struct DisplayLayer {
     /// Content identity (texture cache key, e.g. Arc pointer)
     pub key: u64,
-    pub rgba: Arc<Vec<u8>>,
+    /// Pixels partagés RGBA8 (`None` pour les groupes et ajustements,
+    /// qui n'ont pas de pixels propres).
+    pub rgba: Option<Arc<Vec<u8>>>,
     pub width: u32,
     pub height: u32,
     /// Opacity 0..1
     pub opacity: f32,
     /// Blend mode (0 Normal ... 5 Lighten)
     pub blend: u32,
-    pub offset_x: f32,
-    pub offset_y: f32,
+    /// Placement complet (offset, échelle, rotation, skew) — la matrice
+    /// inverse est précalculée côté CPU (`affine_inverse`) et passée au
+    /// shader, qui échantillonne en une fois.
+    pub transform: Transform2D,
     /// Couverture de masque combinée (canal R), optionnelle.
     ///
     /// Échantillonnée AU DRAW dans le shader (`alpha × couverture`) : éditer
@@ -76,7 +114,10 @@ pub struct DisplayLayer {
     /// Contrat d'espace : mêmes dimensions et même rect source que la
     /// texture du calque (le moteur fournit la couverture aux dims de
     /// l'image via `combined_mask_coverage` + rééchantillonnage).
+    /// Pour les groupes : couverture en espace DOCUMENT.
     pub mask: Option<DisplayMask>,
+    /// Contenu : pixel, sous-groupe ou ajustement.
+    pub content: DisplayContent,
 }
 
 /// Couverture de masque prête pour upload GPU (pixels RGBA8 partagés).
@@ -89,6 +130,81 @@ pub struct DisplayMask {
     pub height: u32,
 }
 
+/// Patch loupe pipette : carré `side`×`side` (pixels doc 1:1, RGBA8),
+/// grossi ×4 à l'écran par le shader de présentation.
+#[derive(Clone, Debug)]
+pub struct LoupePatch {
+    /// Content identity (dérivée du pointeur de l'Arc à la construction).
+    pub key: u64,
+    pub rgba: Arc<Vec<u8>>,
+    /// Côté du carré en pixels document.
+    pub side: u32,
+    /// Centre du patch en coordonnées document.
+    pub center: (f32, f32),
+}
+
+/// Inverse affine pour l'échantillonnage shader : décompose
+/// [`Transform2D::local_to_doc`] (scale → skew → rotation autour du centre,
+/// puis offset) en matrice inverse 2×2 + origine + centre local.
+///
+/// Retourne `(xform, xform_off)` avec `xform = [n00, n01, n10, n11]` tel que
+/// `local = N · (doc − origine) + (cx, cy)`.
+/// `None` si dégénéré (échelle nulle…) : le calque ne contribue alors à rien.
+fn affine_inverse(t: &Transform2D, w: f32, h: f32) -> Option<([f32; 4], [f32; 4])> {
+    let kx = t.skew_x.to_radians().tan();
+    let ky = t.skew_y.to_radians().tan();
+    // M = cisaillement × échelle (même ordre que `local_to_doc`).
+    let (m00, m01, m10, m11) = (t.scale_x, kx * t.scale_y, ky * t.scale_x, t.scale_y);
+    // F = rotation × M.
+    let rad = t.rotation_deg.to_radians();
+    let (cos, sin) = (rad.cos(), rad.sin());
+    let (f00, f01) = (cos * m00 - sin * m10, cos * m01 - sin * m11);
+    let (f10, f11) = (sin * m00 + cos * m10, sin * m01 + cos * m11);
+    let det = f00 * f11 - f01 * f10;
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return None;
+    }
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    Some((
+        [f11 / det, -f01 / det, -f10 / det, f00 / det],
+        [
+            cx * t.scale_x + t.offset_x,
+            cy * t.scale_y + t.offset_y,
+            cx,
+            cy,
+        ],
+    ))
+}
+
+/// Uniforms shader pour UNE opération d'ajustement (les autres canaux au
+/// neutre) + rayon de flou éventuel. Conversions CPU → GPU identiques à
+/// `GpuContext` (`engines/photo-engine/src/gpu.rs`) : luminosité ×0.01,
+/// contraste 1+c/100 (négatif) ou 1+c/50 (positif).
+fn adjust_uniforms(op: &AdjustmentOp) -> ([f32; 4], f32) {
+    const NEUTRE: [f32; 4] = [0.0, 1.0, 1.0, 0.0];
+    match *op {
+        AdjustmentOp::BrightnessContrast {
+            brightness,
+            contrast,
+        } => {
+            let facteur = if contrast < 0.0 {
+                1.0 + contrast / 100.0
+            } else {
+                1.0 + contrast / 50.0
+            };
+            ([brightness * 0.01, facteur, 1.0, 0.0], 0.0)
+        }
+        AdjustmentOp::Saturation { value } => ([0.0, 1.0, value, 0.0], 0.0),
+        AdjustmentOp::Blur { radius } => {
+            if radius <= 0.1 {
+                (NEUTRE, 0.0)
+            } else {
+                (NEUTRE, radius)
+            }
+        }
+    }
+}
+
 pub struct LayerCanvas<Message> {
     pub layers: Vec<DisplayLayer>,
     /// Document dimensions in pixels (None = no document)
@@ -97,6 +213,14 @@ pub struct LayerCanvas<Message> {
     pub zoom: f32,
     pub tool: CanvasTool,
     pub selection: Option<Rectangle>,
+    /// Style du pinceau / gomme (aperçu local, comme `image_canvas`).
+    pub brush: BrushStyle,
+    /// Faux si aucun calque peinturable (clic pinceau ignoré).
+    pub can_paint: bool,
+    /// Aperçu figé du commit en cours (texture, fournie par l'app).
+    pub pending_preview: Option<StrokeTex>,
+    /// Patch loupe pipette en cours (pixels fournis par l'app).
+    pub loupe_patch: Option<LoupePatch>,
     /// Convert canvas events to app messages
     pub on_event: std::rc::Rc<dyn Fn(ImageCanvasEvent) -> Message>,
 }
@@ -127,6 +251,15 @@ impl<Message> LayerCanvas<Message> {
             zoom: 1.0,
             tool: CanvasTool::Hand,
             selection: None,
+            brush: BrushStyle {
+                color: [30, 30, 34],
+                radius: 6.0,
+                opacity: 1.0,
+                erase: false,
+            },
+            can_paint: true,
+            pending_preview: None,
+            loupe_patch: None,
             on_event,
         }
     }
@@ -155,6 +288,37 @@ impl<Message> LayerCanvas<Message> {
         self.selection = sel;
         self
     }
+
+    #[must_use]
+    pub fn with_brush(mut self, brush: BrushStyle) -> Self {
+        self.brush = brush;
+        self
+    }
+
+    #[must_use]
+    pub fn with_can_paint(mut self, can: bool) -> Self {
+        self.can_paint = can;
+        self
+    }
+
+    #[must_use]
+    pub fn with_pending_preview(mut self, preview: Option<StrokeTex>) -> Self {
+        self.pending_preview = preview;
+        self
+    }
+
+    /// Patch loupe pipette (pixels RGBA8 `side`×`side` fournis par l'app,
+    /// échantillonnés sur la composite). Clé dérivée du contenu partagé.
+    #[must_use]
+    pub fn with_loupe_patch(mut self, rgba: Option<(Arc<Vec<u8>>, u32)>) -> Self {
+        self.loupe_patch = rgba.map(|(pixels, side)| LoupePatch {
+            key: Arc::as_ptr(&pixels) as usize as u64,
+            rgba: pixels,
+            side: side.max(1),
+            center: (0.0, 0.0),
+        });
+        self
+    }
 }
 
 #[must_use]
@@ -178,6 +342,16 @@ pub struct State {
     selecting: Option<(Point, Point)>,
     modifiers: iced::keyboard::Modifiers,
     prev_bounds: Option<Size>,
+    /// Points du trait en cours (coordonnées document) — aperçu local
+    /// sans aller-retour applicatif, comme `image_canvas`.
+    stroke: Vec<(f32, f32)>,
+    /// Version rastérisée du trait (tuiles espace document).
+    stroke_tex: Option<StrokeTex>,
+    /// Génération du trait : chaque segment rastérisé l'incrémente pour
+    /// invalider les tuiles d'aperçu mises en cache côté GPU.
+    stroke_gen: u64,
+    /// Dernière position doc publiée pour la loupe pipette (quanta).
+    last_pick_doc: Option<(f32, f32)>,
 }
 
 impl<Message> shader::Program<Message> for LayerCanvas<Message>
@@ -262,11 +436,31 @@ where
                     ImageCanvasEvent::SelectRect(None),
                 )));
             }
-            if state.dragging.take().is_some() && self.tool == CanvasTool::Move {
-                return Some(
-                    shader::Action::publish((self.on_event)(ImageCanvasEvent::TransformEnd))
-                        .and_capture(),
-                );
+            if state.dragging.take().is_some() {
+                match self.tool {
+                    CanvasTool::Move => {
+                        return Some(
+                            shader::Action::publish((self.on_event)(
+                                ImageCanvasEvent::TransformEnd,
+                            ))
+                            .and_capture(),
+                        );
+                    }
+                    CanvasTool::Brush | CanvasTool::Eraser => {
+                        let points = std::mem::take(&mut state.stroke);
+                        let tex = state.stroke_tex.take();
+                        let erase = self.tool == CanvasTool::Eraser;
+                        return Some(
+                            shader::Action::publish((self.on_event)(ImageCanvasEvent::BrushEnd {
+                                points,
+                                tex,
+                                erase,
+                            }))
+                            .and_capture(),
+                        );
+                    }
+                    _ => {}
+                }
             }
             return Some(shader::Action::capture());
         }
@@ -296,10 +490,40 @@ where
                     state.selecting = Some((cursor_pos, cursor_pos));
                     Some(shader::Action::capture())
                 }
-                // Brush/eraser not supported by experimental GPU path
-                CanvasTool::Brush | CanvasTool::Eraser => Some(shader::Action::capture()),
-                // Eyedropper not supported by experimental GPU path
-                CanvasTool::Eyedropper => Some(shader::Action::capture()),
+                CanvasTool::Brush | CanvasTool::Eraser => {
+                    if !self.can_paint {
+                        return Some(shader::Action::capture());
+                    }
+                    // Même protocole que `image_canvas` : l'app commit les
+                    // pixels, le canvas ne fait que l'aperçu local.
+                    let (doc_x, doc_y) = self.screen_to_doc(cursor_pos, bounds);
+                    state.stroke = vec![(doc_x, doc_y)];
+                    state.stroke_tex = None;
+                    state.dragging = Some((cursor_pos, self.pan));
+                    let erase = self.tool == CanvasTool::Eraser;
+                    Some(
+                        shader::Action::publish((self.on_event)(ImageCanvasEvent::BrushStart {
+                            x: doc_x,
+                            y: doc_y,
+                            erase,
+                        }))
+                        .and_capture(),
+                    )
+                }
+                CanvasTool::Eyedropper => {
+                    // Échantillonnage composite côté app (worker, voir
+                    // `handle_pick_color`) : le canvas ne fait que relayer
+                    // le point document, comme `image_canvas`.
+                    let (doc_x, doc_y) = self.screen_to_doc(cursor_pos, bounds);
+                    state.last_pick_doc = Some((doc_x, doc_y));
+                    Some(
+                        shader::Action::publish((self.on_event)(ImageCanvasEvent::ColorPick {
+                            x: doc_x,
+                            y: doc_y,
+                        }))
+                        .and_capture(),
+                    )
+                }
             },
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some((start, orig_pan)) = state.dragging {
@@ -320,10 +544,60 @@ where
                                 snap: state.modifiers.shift(),
                             },
                         )));
+                    } else if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) {
+                        // Aperçu purement local : rastérise le segment dans
+                        // les tuiles (logique partagée `rasterize_segment`),
+                        // sans aller-retour applicatif.
+                        let (doc_x, doc_y) = self.screen_to_doc(cursor_pos, bounds);
+                        let last = *state.stroke.last().unwrap_or(&(doc_x, doc_y));
+                        let dist = ((doc_x - last.0).powi(2) + (doc_y - last.1).powi(2)).sqrt();
+                        // Échantillonnage : un point tous les ~1/3 de rayon.
+                        if dist >= (self.brush.radius * 0.35).max(1.0) {
+                            state.stroke.push((doc_x, doc_y));
+                            rasterize_segment(
+                                &mut state.stroke_tex,
+                                last,
+                                (doc_x, doc_y),
+                                &self.brush,
+                            );
+                            state.stroke_gen = state.stroke_gen.wrapping_add(1);
+                        }
+                        return Some(shader::Action::request_redraw().and_capture());
                     }
                 }
                 if let Some((start, _)) = state.selecting {
                     state.selecting = Some((start, cursor_pos));
+                    return Some(shader::Action::request_redraw().and_capture());
+                }
+                // Survol pinceau/gomme : redessine pour déplacer l'anneau.
+                if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) {
+                    return Some(shader::Action::request_redraw().and_capture());
+                }
+                // Pipette + loupe : un patch par quantum de mouvement doc
+                // (`PICK_HOVER_STEP`, même cadence que `image_canvas`) ;
+                // l'app échantillonne dans un worker et renvoie une texture.
+                if self.tool == CanvasTool::Eyedropper
+                    && state.dragging.is_none()
+                    && state.selecting.is_none()
+                {
+                    let (doc_x, doc_y) = self.screen_to_doc(cursor_pos, bounds);
+                    let loin = state
+                        .last_pick_doc
+                        .map(|(ancien_x, ancien_y)| {
+                            (doc_x - ancien_x).powi(2) + (doc_y - ancien_y).powi(2)
+                                >= PICK_HOVER_STEP.powi(2)
+                        })
+                        .unwrap_or(true);
+                    if loin {
+                        state.last_pick_doc = Some((doc_x, doc_y));
+                        return Some(
+                            shader::Action::publish((self.on_event)(ImageCanvasEvent::PickHover {
+                                x: doc_x,
+                                y: doc_y,
+                            }))
+                            .and_capture(),
+                        );
+                    }
                     return Some(shader::Action::request_redraw().and_capture());
                 }
                 None
@@ -362,18 +636,90 @@ where
 
     fn draw(
         &self,
-        _state: &Self::State,
-        _cursor: iced::mouse::Cursor,
+        state: &Self::State,
+        cursor: iced::mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
+        // Tuiles d'aperçu du trait (geste en cours + commit figé) : elles
+        // deviennent des calques overlay épinglés en haut de pile, avec des
+        // clés de génération — le pipeline les téléverse et les fusionne
+        // comme des pixels ordinaires, puis les évince avec la pile.
+        const SEL_DIRECT: u64 = 0x9E37_79B9_7F4A_7C15;
+        const SEL_FIGE: u64 = 0xBF58_476D_1CE4_E5B9;
+        let mut layers = self.layers.clone();
+        if let Some(tex) = state.stroke_tex.as_ref().or(self.pending_preview.as_ref()) {
+            let en_cours = state.stroke_tex.is_some();
+            for (i, (ox, oy, rgba)) in tex.tiles_cloned().into_iter().enumerate() {
+                let key = if en_cours {
+                    SEL_DIRECT
+                        .wrapping_add(state.stroke_gen)
+                        .wrapping_add(i as u64)
+                        .wrapping_add((ox.to_bits() as u64) << 32 | oy.to_bits() as u64)
+                } else {
+                    // Aperçu figé : clé = contenu (même objet → même clé,
+                    // pas de re-téléversement ; nouvel objet → nouvelle clé).
+                    let mut h = SEL_FIGE ^ rgba.len() as u64;
+                    for b in rgba.iter().step_by(997) {
+                        h = h.wrapping_mul(0x100000001b3) ^ u64::from(*b);
+                    }
+                    h.wrapping_add(i as u64)
+                        .wrapping_add((ox.to_bits() as u64) << 32 | oy.to_bits() as u64)
+                };
+                // Tuiles toujours pleines TILE×TILE (cf. `StrokeTex` :
+                // allocation fixe, tampons rognés à l'intérieur).
+                let w = 512u32;
+                let h = 512u32;
+                layers.push(DisplayLayer {
+                    key,
+                    rgba: Some(Arc::new(rgba)),
+                    width: w,
+                    height: h,
+                    opacity: 1.0,
+                    blend: 0,
+                    transform: Transform2D {
+                        offset_x: ox,
+                        offset_y: oy,
+                        ..Transform2D::default()
+                    },
+                    mask: None,
+                    content: DisplayContent::Pixel,
+                });
+            }
+        }
+        // Anneau curseur pinceau/gomme (doc + rayon px doc).
+        let curseur = if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) {
+            cursor.position_in(bounds).map(|p| {
+                let (doc_x, doc_y) = self.screen_to_doc(p, bounds);
+                let sorte = if self.tool == CanvasTool::Eraser {
+                    2
+                } else {
+                    1
+                };
+                (doc_x, doc_y, self.brush.radius.max(0.5), sorte)
+            })
+        } else {
+            None
+        };
+        // Loupe pipette : patch fourni par l'app, centré sur le dernier
+        // point de survol publié.
+        let loupe = self.loupe_patch.as_ref().and_then(|patch| {
+            state.last_pick_doc.map(|centre| LoupePatch {
+                key: patch.key,
+                rgba: Arc::clone(&patch.rgba),
+                side: patch.side,
+                center: centre,
+            })
+        });
         CompositePrimitive {
-            layers: self.layers.clone(),
+            layers,
             doc_size: self.doc_size.unwrap_or((800.0, 600.0)),
             has_doc: self.doc_size.is_some(),
             pan: self.pan,
             zoom: self.zoom,
             viewport: (bounds.width.max(1.0), bounds.height.max(1.0)),
             selection: self.selection,
+            curseur,
+            loupe,
         }
     }
 
@@ -409,33 +755,81 @@ where
 // ---------------------------------------------------------------------------
 
 /// Config hash: if unchanged, blend passes are skipped.
+/// Récursif : inclut transform, contenu (groupe / ajustement) et masques —
+/// tout changement d'un seul nœud invalide le composite GPU.
 fn config_hash(layers: &[DisplayLayer], doc: (f32, f32)) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
-    let feed = |v: u64, h: &mut u64| {
-        *h ^= v;
-        *h = h.wrapping_mul(0x100000001b3);
-    };
-    feed(u64::from(doc.0.to_bits()), &mut h);
-    feed(u64::from(doc.1.to_bits()), &mut h);
-    feed(layers.len() as u64, &mut h);
+    nourrir_couche(&mut h, layers, doc);
+    h
+}
+
+fn nourrir(h: &mut u64, v: u64) {
+    *h ^= v;
+    *h = h.wrapping_mul(0x100000001b3);
+}
+
+fn nourrir_couche(h: &mut u64, layers: &[DisplayLayer], doc: (f32, f32)) {
+    nourrir(h, u64::from(doc.0.to_bits()));
+    nourrir(h, u64::from(doc.1.to_bits()));
+    nourrir(h, layers.len() as u64);
     for l in layers {
-        feed(l.key, &mut h);
-        feed(u64::from(l.opacity.to_bits()), &mut h);
-        feed(u64::from(l.blend), &mut h);
-        feed(u64::from(l.offset_x.to_bits()), &mut h);
-        feed(u64::from(l.offset_y.to_bits()), &mut h);
-        feed(u64::from(l.width), &mut h);
-        feed(u64::from(l.height), &mut h);
+        nourrir(h, l.key);
+        nourrir(h, u64::from(l.opacity.to_bits()));
+        nourrir(h, u64::from(l.blend));
+        let t = &l.transform;
+        for v in [
+            t.offset_x,
+            t.offset_y,
+            t.rotation_deg,
+            t.scale_x,
+            t.scale_y,
+            t.skew_x,
+            t.skew_y,
+        ] {
+            nourrir(h, u64::from(v.to_bits()));
+        }
+        nourrir(h, u64::from(l.width));
+        nourrir(h, u64::from(l.height));
         match &l.mask {
             Some(m) => {
-                feed(m.key, &mut h);
-                feed(u64::from(m.width), &mut h);
-                feed(u64::from(m.height), &mut h);
+                nourrir(h, m.key);
+                nourrir(h, u64::from(m.width));
+                nourrir(h, u64::from(m.height));
             }
-            None => feed(0, &mut h),
+            None => nourrir(h, 0),
+        }
+        match &l.content {
+            DisplayContent::Pixel => nourrir(h, 0),
+            DisplayContent::Group(enfants) => {
+                nourrir(h, 1);
+                nourrir_couche(h, enfants, doc);
+            }
+            DisplayContent::Adjustment(ops) => {
+                nourrir(h, 2);
+                nourrir(h, ops.len() as u64);
+                for op in ops {
+                    match *op {
+                        AdjustmentOp::BrightnessContrast {
+                            brightness,
+                            contrast,
+                        } => {
+                            nourrir(h, 10);
+                            nourrir(h, u64::from(brightness.to_bits()));
+                            nourrir(h, u64::from(contrast.to_bits()));
+                        }
+                        AdjustmentOp::Saturation { value } => {
+                            nourrir(h, 11);
+                            nourrir(h, u64::from(value.to_bits()));
+                        }
+                        AdjustmentOp::Blur { radius } => {
+                            nourrir(h, 12);
+                            nourrir(h, u64::from(radius.to_bits()));
+                        }
+                    }
+                }
+            }
         }
     }
-    h
 }
 
 #[derive(Debug, Clone)]
@@ -447,6 +841,10 @@ pub struct CompositePrimitive {
     pub zoom: f32,
     pub viewport: (f32, f32),
     pub selection: Option<Rectangle>,
+    /// Anneau curseur pinceau/gomme : (doc x, doc y, rayon px doc, 1/2).
+    pub curseur: Option<(f32, f32, f32, u32)>,
+    /// Patch loupe pipette (centré sur le survol).
+    pub loupe: Option<LoupePatch>,
 }
 
 impl shader::Primitive for CompositePrimitive {
@@ -494,23 +892,90 @@ struct Params {
     pan_zoom: [f32; 4],
     /// x = blend mode, y/z = top texture dims, w = image flag present
     mode_sizes: [u32; 4],
-    /// xy = layer offset (px document), zw = selection position
+    /// xy = réservé (placement = xform), zw = selection position
     off_sel: [f32; 4],
     /// xy = selection size (x > 0 = active)
     sel_size: [f32; 4],
-    /// x = 1 si masque présent, y/z = dims texture masque
+    /// x = 1 si masque, y/z = dims texture masque, w = 1 si masque doc
     mask_info: [u32; 4],
+    /// Matrice inverse 2x2 (n00, n01, n10, n11) — voir `affine_inverse`.
+    xform: [f32; 4],
+    /// xy = origine doc, zw = centre local (cx, cy).
+    xform_off: [f32; 4],
+    /// x = luminosité, y = contraste, z = saturation, w = réservé.
+    adjust: [f32; 4],
+    /// x = rayon flou px doc, y = axe (0 = H, 1 = V), zw réservés.
+    blur_px: [f32; 4],
+    /// xy = curseur doc, z = rayon px doc, w : 0 inactif, 1/2 pinceau/gomme.
+    curseur: [f32; 4],
+    /// xy = centre doc patch, z = côté px doc, w = 1 si loupe active.
+    loupe: [f32; 4],
+}
+
+impl Params {
+    /// Uniforms neutres pour la passe de présentation (ni placement, ni
+    /// ajustement, ni curseur) — seuls viewport, sélection, curseur et
+    /// loupe varient.
+    fn neutres(prim: &CompositePrimitive) -> Self {
+        let (pos_sel, taille_sel) = match prim.selection {
+            Some(r) => ([r.x, r.y, 0.0, 0.0], [r.width, r.height, 0.0, 0.0]),
+            None => ([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]),
+        };
+        Self {
+            screen_doc: [
+                prim.viewport.0,
+                prim.viewport.1,
+                prim.doc_size.0,
+                prim.doc_size.1,
+            ],
+            pan_zoom: [prim.pan.x, prim.pan.y, prim.zoom, 1.0],
+            mode_sizes: [0, 0, 0, u32::from(prim.has_doc)],
+            off_sel: pos_sel,
+            sel_size: taille_sel,
+            mask_info: [0, 1, 1, 0],
+            xform: [1.0, 0.0, 0.0, 1.0],
+            xform_off: [0.0, 0.0, 0.0, 0.0],
+            adjust: [0.0, 1.0, 1.0, 0.0],
+            blur_px: [0.0, 0.0, 0.0, 0.0],
+            curseur: prim
+                .curseur
+                .map(|(x, y, r, s)| [x, y, r, s as f32])
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            loupe: prim
+                .loupe
+                .as_ref()
+                .map(|p| (p.center.0, p.center.1, p.side as f32))
+                .map(|(x, y, c)| [x, y, c, 1.0])
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
+/// Ajustement neutre (identité) pour les passes couleur.
+const AJUST_NEUTRE: [f32; 4] = [0.0, 1.0, 1.0, 0.0];
+
+/// Contexte d'une portée composite : dimensions document + cadrage écran.
+#[derive(Clone, Copy)]
+struct ScopeCtx {
+    doc: (f32, f32),
+    viewport: (f32, f32),
+    pan: Vector,
+    zoom: f32,
+}
+
 pub struct CompositePipeline {
     device: wgpu::Device,
     queue: wgpu::Queue,
 
     blend_pipeline: wgpu::RenderPipeline,
+    /// Passe d'ajustement couleur (une opération : BC ou saturation).
+    adjust_pipeline: wgpu::RenderPipeline,
+    /// Flou séparable (H puis V) pour les calques d'ajustement.
+    blur_pipeline: wgpu::RenderPipeline,
     present_pipeline: wgpu::RenderPipeline,
     params_buf: wgpu::Buffer,
     bgl_all: wgpu::BindGroupLayout,
@@ -524,6 +989,17 @@ pub struct CompositePipeline {
     white_tex: LayerTex,
     /// Ping-pong accumulators (document space)
     accum: Option<Accum>,
+    /// Scratch document-size (copie d'accumulateur pour le mix des
+    /// ajustements). Créé dans `prepare`, jamais dans le thread de rendu.
+    scratch: Option<RenderTex>,
+    /// Composites de groupes (espace document), clé = identité du groupe,
+    /// invalidés par la signature récursive du sous-arbre — même principe
+    /// que `Renderer::appearance` côté moteur : seul un groupe modifié
+    /// est recomposé. `Mutex` (et verrouillages courts) car `render()` ne
+    /// prend que `&self` et le trait `Pipeline` exige `Sync`.
+    group_cache: std::sync::Mutex<HashMap<u64, CachedGroup>>,
+    /// Patch loupe pipette en cours (clé + texture).
+    loupe_tex: Option<(u64, LayerTex)>,
     /// Hash of last GPU recomposite (atomic: `render()` takes &self)
     last_hash: std::sync::atomic::AtomicU64,
 }
@@ -532,6 +1008,24 @@ struct LayerTex {
     view: wgpu::TextureView,
     width: u32,
     height: u32,
+}
+
+/// Texture possédée lisible ET cible de rendu (groupes, scratch).
+struct RenderTex {
+    #[allow(dead_code)]
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
+    size: (u32, u32),
+}
+
+/// Composite d'un groupe mis en cache : paire ping-pong + signature du
+/// sous-arbre. `current` en `Cell` (mutation sans emprunt pendant la
+/// récursion de rendu).
+struct CachedGroup {
+    hash: u64,
+    size: (u32, u32),
+    views: [RenderTex; 2],
+    current: std::cell::Cell<usize>,
 }
 
 struct Accum {
@@ -621,6 +1115,38 @@ impl shader::Pipeline for CompositePipeline {
             cache: None,
         });
 
+        // Passes d'ajustement : même layout et même cible que le blend
+        // (Rgba8 doc) — seuls les entry points changent.
+        let mk_pass = |label: &str, entry: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pll),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(entry),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let adjust_pipeline = mk_pass("layer-canvas-adjust", "fs_adjust");
+        let blur_pipeline = mk_pass("layer-canvas-blur", "fs_blur");
+
         let plp = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("layer-canvas-present-layout"),
             bind_group_layouts: &[&bgl_all],
@@ -677,6 +1203,8 @@ impl shader::Pipeline for CompositePipeline {
             device: device.clone(),
             queue: queue.clone(),
             blend_pipeline,
+            adjust_pipeline,
+            blur_pipeline,
             present_pipeline,
             params_buf,
             bgl_all,
@@ -685,6 +1213,9 @@ impl shader::Pipeline for CompositePipeline {
             mask_textures: HashMap::new(),
             white_tex,
             accum: None,
+            scratch: None,
+            group_cache: std::sync::Mutex::new(HashMap::new()),
+            loupe_tex: None,
             last_hash: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -867,31 +1398,140 @@ impl CompositePipeline {
         }
     }
 
+    /// Scratch document-size (copie d'accumulateur pour le mix final des
+    /// calques d'ajustement). Recréé si la taille change (comme l'accum).
+    fn ensure_scratch(&mut self, size: (u32, u32)) {
+        let need = size != self.scratch.as_ref().map_or((0, 0), |s| s.size);
+        if need {
+            self.scratch = Some(Self::create_render_tex(
+                &self.device,
+                "layer-canvas-scratch",
+                size.0,
+                size.1,
+            ));
+            self.last_hash
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Crée une texture possédée cible de rendu + lecture (groupes, scratch).
+    fn create_render_tex(device: &wgpu::Device, label: &str, w: u32, h: u32) -> RenderTex {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: w.max(1),
+                height: h.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        RenderTex {
+            tex,
+            view,
+            size: (w.max(1), h.max(1)),
+        }
+    }
+
     fn prepare(&mut self, prim: &CompositePrimitive, device: &wgpu::Device, queue: &wgpu::Queue) {
         let doc = (
             prim.doc_size.0.round().max(1.0) as u32,
             prim.doc_size.1.round().max(1.0) as u32,
         );
         self.ensure_accum(doc);
+        self.ensure_scratch(doc);
 
-        // Upload new layer versions + eviction of obsolete ones
-        let live: Vec<u64> = prim.layers.iter().map(|l| l.key).collect();
-        for l in &prim.layers {
-            self.layer_textures.entry(l.key).or_insert_with(|| {
-                Self::upload_texture(
-                    device,
-                    queue,
-                    "layer-canvas-layer",
-                    &l.rgba,
-                    l.width,
-                    l.height,
-                )
-            });
-            // Couverture de masque : téléversée séparément, clé = identité
-            // du contenu — peindre un masque ne touche jamais la texture
-            // du calque.
+        // Upload récursif des nouvelles versions + éviction des obsolètes
+        // (groupes inclus : leurs enfants ont leurs propres textures).
+        let mut vivants: Vec<u64> = Vec::new();
+        let mut masques_vivants: Vec<u64> = Vec::new();
+        let mut groupes_vivants: Vec<u64> = Vec::new();
+        Self::collecter_cles(
+            &prim.layers,
+            &mut vivants,
+            &mut masques_vivants,
+            &mut groupes_vivants,
+        );
+        Self::televerser_portee(device, queue, &prim.layers, self);
+        self.layer_textures.retain(|k, _| vivants.contains(k));
+        self.mask_textures
+            .retain(|k, _| masques_vivants.contains(k));
+        if let Ok(cache) = self.group_cache.get_mut() {
+            cache.retain(|k, _| groupes_vivants.contains(k));
+        }
+
+        // Patch loupe : re-téléversé seulement si le contenu change.
+        match &prim.loupe {
+            Some(patch) => {
+                let change = self.loupe_tex.as_ref().map(|(cle, _)| *cle) != Some(patch.key);
+                if change {
+                    self.loupe_tex = Some((
+                        patch.key,
+                        Self::upload_texture(
+                            device,
+                            queue,
+                            "layer-canvas-loupe",
+                            &patch.rgba,
+                            patch.side,
+                            patch.side,
+                        ),
+                    ));
+                }
+            }
+            None => self.loupe_tex = None,
+        }
+    }
+
+    /// Clés vivantes d'une portée (pixels, masques, groupes), récursive.
+    fn collecter_cles(
+        layers: &[DisplayLayer],
+        vivants: &mut Vec<u64>,
+        masques: &mut Vec<u64>,
+        groupes: &mut Vec<u64>,
+    ) {
+        for l in layers {
+            if l.rgba.is_some() {
+                vivants.push(l.key);
+            }
+            if let Some(m) = &l.mask {
+                masques.push(m.key);
+            }
+            if let DisplayContent::Group(enfants) = &l.content {
+                groupes.push(l.key);
+                Self::collecter_cles(enfants, vivants, masques, groupes);
+            }
+        }
+    }
+
+    /// Téléverse pixels et masques d'une portée (récursif pour les groupes).
+    /// Couverture de masque téléversée séparément, clé = identité du
+    /// contenu — peindre un masque ne touche jamais la texture du calque.
+    fn televerser_portee(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layers: &[DisplayLayer],
+        pipe: &mut CompositePipeline,
+    ) {
+        for l in layers {
+            if let Some(rgba) = l.rgba.as_ref() {
+                pipe.layer_textures.entry(l.key).or_insert_with(|| {
+                    Self::upload_texture(
+                        device,
+                        queue,
+                        "layer-canvas-layer",
+                        rgba,
+                        l.width,
+                        l.height,
+                    )
+                });
+            }
             if let Some(mask) = &l.mask {
-                self.mask_textures.entry(mask.key).or_insert_with(|| {
+                pipe.mask_textures.entry(mask.key).or_insert_with(|| {
                     Self::upload_texture(
                         device,
                         queue,
@@ -902,22 +1542,411 @@ impl CompositePipeline {
                     )
                 });
             }
+            if let DisplayContent::Group(enfants) = &l.content {
+                Self::televerser_portee(device, queue, enfants, pipe);
+            }
         }
-        self.layer_textures.retain(|k, _| live.contains(k));
-        let live_masks: Vec<u64> = prim
-            .layers
-            .iter()
-            .filter_map(|l| l.mask.as_ref().map(|m| m.key))
-            .collect();
-        self.mask_textures.retain(|k, _| live_masks.contains(k));
-
-        // Recomposite decided in render(): compare current hash
-        let _ = config_hash(&prim.layers, prim.doc_size);
     }
 
+    /// Contexte d'une portée composite (espace document + cadrage écran).
     fn write_params(&self, params: &Params) {
         self.queue
             .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(params));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn passe(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        etiquette: &str,
+        pipeline: &wgpu::RenderPipeline,
+        src: &wgpu::TextureView,
+        dessus: Option<&wgpu::TextureView>,
+        masque: Option<&wgpu::TextureView>,
+        dst: &wgpu::TextureView,
+        params: &Params,
+    ) {
+        self.write_params(params);
+        let groupe = self.scene_bg(src, dessus, masque);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(etiquette),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                depth_slice: None,
+                view: dst,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &groupe, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Efface une vue (les textures wgpu naissent avec un contenu indéfini).
+    fn effacer(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("layer-canvas-clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                depth_slice: None,
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
+
+    /// Uniforms de fusion pour un calque de pixels (placement xform inclus).
+    /// La vue de masque est résolue par l'appelant (voir `empiler`).
+    fn params_pixel(&self, couche: &DisplayLayer, ctx: &ScopeCtx) -> Option<Params> {
+        let tex = self.layer_textures.get(&couche.key)?;
+        let (xform, xform_off) =
+            affine_inverse(&couche.transform, couche.width as f32, couche.height as f32)?;
+        let (masque_present, masque_l, masque_h) = match &couche.mask {
+            Some(m) => (1, m.width, m.height),
+            None => (0, 1, 1),
+        };
+        Some(Params {
+            screen_doc: [ctx.viewport.0, ctx.viewport.1, ctx.doc.0, ctx.doc.1],
+            pan_zoom: [
+                ctx.pan.x,
+                ctx.pan.y,
+                ctx.zoom,
+                couche.opacity.clamp(0.0, 1.0),
+            ],
+            mode_sizes: [couche.blend, tex.width, tex.height, 0],
+            off_sel: [0.0, 0.0, 0.0, 0.0],
+            sel_size: [0.0, 0.0, 0.0, 0.0],
+            mask_info: [masque_present, masque_l, masque_h, 0],
+            xform,
+            xform_off,
+            adjust: AJUST_NEUTRE,
+            blur_px: [0.0, 0.0, 0.0, 0.0],
+            curseur: [0.0, 0.0, 0.0, 0.0],
+            loupe: [0.0, 0.0, 0.0, 0.0],
+        })
+    }
+
+    /// Fusionne `dessus` sur `src` vers `dst` (passe blend générique).
+    #[allow(clippy::too_many_arguments)]
+    fn fusionner(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        dessus: &wgpu::TextureView,
+        dessus_l: u32,
+        dessus_h: u32,
+        masque: Option<(&wgpu::TextureView, u32, u32, bool)>,
+        dst: &wgpu::TextureView,
+        opacite: f32,
+        fusion: u32,
+        xform: [f32; 4],
+        xform_off: [f32; 4],
+        ctx: &ScopeCtx,
+    ) {
+        let (present, ml, mh, en_doc, vue) = match masque {
+            Some((v, l, h, doc)) => (1, l, h, u32::from(doc), Some(v)),
+            None => (0, 1, 1, 0, None),
+        };
+        let params = Params {
+            screen_doc: [ctx.viewport.0, ctx.viewport.1, ctx.doc.0, ctx.doc.1],
+            pan_zoom: [ctx.pan.x, ctx.pan.y, ctx.zoom, opacite.clamp(0.0, 1.0)],
+            mode_sizes: [fusion, dessus_l, dessus_h, 0],
+            off_sel: [0.0, 0.0, 0.0, 0.0],
+            sel_size: [0.0, 0.0, 0.0, 0.0],
+            mask_info: [present, ml, mh, en_doc],
+            xform,
+            xform_off,
+            adjust: AJUST_NEUTRE,
+            blur_px: [0.0, 0.0, 0.0, 0.0],
+            curseur: [0.0, 0.0, 0.0, 0.0],
+            loupe: [0.0, 0.0, 0.0, 0.0],
+        };
+        self.passe(
+            encoder,
+            "layer-canvas-blend-pass",
+            &self.blend_pipeline,
+            src,
+            Some(dessus),
+            vue,
+            dst,
+            &params,
+        );
+    }
+
+    /// Composite une portée en ping-pong entre `vues` (espace document).
+    /// Retourne l'index de la vue contenant le résultat. Groupes et
+    /// ajustements sont traités récursivement (voir `groupe_composite`).
+    fn empiler(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        couches: &[DisplayLayer],
+        vues: [&wgpu::TextureView; 2],
+        ctx: &ScopeCtx,
+    ) -> usize {
+        self.effacer(encoder, vues[0]);
+        let mut cur = 0;
+        for couche in couches {
+            match &couche.content {
+                DisplayContent::Pixel => {
+                    if couche.rgba.is_none() {
+                        continue;
+                    }
+                    let Some(params) = self.params_pixel(couche, ctx) else {
+                        continue;
+                    };
+                    let Some(tex) = self.layer_textures.get(&couche.key) else {
+                        continue;
+                    };
+                    if tex.width == 0 || tex.height == 0 {
+                        continue;
+                    }
+                    let masque = couche.mask.as_ref().and_then(|m| {
+                        self.mask_textures
+                            .get(&m.key)
+                            .map(|t| (&t.view, m.width, m.height, false))
+                    });
+                    let dessus = tex.view.clone();
+                    let src = vues[cur].clone();
+                    let dst = vues[cur ^ 1].clone();
+                    // `params_pixel` a déjà tout calculé ; on rejoue la
+                    // passe via `fusionner`-léger : on réutilise `passe`.
+                    let (present, ml, mh, en_doc, vue) = match masque {
+                        Some((v, l, h, doc)) => (1, l, h, u32::from(doc), Some(v)),
+                        None => (0, 1, 1, 0, None),
+                    };
+                    let mut p = params;
+                    p.mask_info = [present, ml, mh, en_doc];
+                    self.passe(
+                        encoder,
+                        "layer-canvas-blend-pass",
+                        &self.blend_pipeline,
+                        &src,
+                        Some(&dessus),
+                        vue,
+                        &dst,
+                        &p,
+                    );
+                    cur ^= 1;
+                }
+                DisplayContent::Group(enfants) => {
+                    if enfants.is_empty() {
+                        continue;
+                    }
+                    let Some(vue_groupe) = self.groupe_composite(encoder, couche, enfants, ctx)
+                    else {
+                        continue;
+                    };
+                    // Le cache est déjà en espace document : xform identité,
+                    // masque du groupe échantillonné en espace document.
+                    let masque = couche.mask.as_ref().and_then(|m| {
+                        self.mask_textures
+                            .get(&m.key)
+                            .map(|t| (&t.view, m.width, m.height, true))
+                    });
+                    let doc_l = ctx.doc.0.round().max(1.0) as u32;
+                    let doc_h = ctx.doc.1.round().max(1.0) as u32;
+                    let src = vues[cur].clone();
+                    let dst = vues[cur ^ 1].clone();
+                    self.fusionner(
+                        encoder,
+                        &src,
+                        &vue_groupe,
+                        doc_l,
+                        doc_h,
+                        masque,
+                        &dst,
+                        couche.opacity,
+                        couche.blend,
+                        [1.0, 0.0, 0.0, 1.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                        ctx,
+                    );
+                    cur ^= 1;
+                }
+                DisplayContent::Adjustment(ops) => {
+                    if ops.is_empty() {
+                        continue;
+                    }
+                    let Some(scratch) = self.scratch.as_ref() else {
+                        continue;
+                    };
+                    // 1. Copie de l'original (passe neutre = identité).
+                    let neutres = Params {
+                        screen_doc: [ctx.viewport.0, ctx.viewport.1, ctx.doc.0, ctx.doc.1],
+                        pan_zoom: [ctx.pan.x, ctx.pan.y, ctx.zoom, 1.0],
+                        mode_sizes: [0, 0, 0, 0],
+                        off_sel: [0.0, 0.0, 0.0, 0.0],
+                        sel_size: [0.0, 0.0, 0.0, 0.0],
+                        mask_info: [0, 1, 1, 0],
+                        xform: [1.0, 0.0, 0.0, 1.0],
+                        xform_off: [0.0, 0.0, 0.0, 0.0],
+                        adjust: AJUST_NEUTRE,
+                        blur_px: [0.0, 0.0, 0.0, 0.0],
+                        curseur: [0.0, 0.0, 0.0, 0.0],
+                        loupe: [0.0, 0.0, 0.0, 0.0],
+                    };
+                    let original = vues[cur].clone();
+                    let copie = scratch.view.clone();
+                    self.passe(
+                        encoder,
+                        "layer-canvas-adjust-copy",
+                        &self.adjust_pipeline,
+                        &original,
+                        None,
+                        None,
+                        &copie,
+                        &neutres,
+                    );
+                    // 2. Chaîne d'opérations en ping-pong sur la paire.
+                    for op in ops {
+                        let (ajust, flou) = adjust_uniforms(op);
+                        if flou > 0.0 {
+                            for axe in [0.0, 1.0] {
+                                let mut p = neutres;
+                                p.blur_px = [flou, axe, 0.0, 0.0];
+                                let src = vues[cur].clone();
+                                let dst = vues[cur ^ 1].clone();
+                                self.passe(
+                                    encoder,
+                                    "layer-canvas-blur-pass",
+                                    &self.blur_pipeline,
+                                    &src,
+                                    None,
+                                    None,
+                                    &dst,
+                                    &p,
+                                );
+                                cur ^= 1;
+                            }
+                        } else if ajust != AJUST_NEUTRE {
+                            let mut p = neutres;
+                            p.adjust = ajust;
+                            let src = vues[cur].clone();
+                            let dst = vues[cur ^ 1].clone();
+                            self.passe(
+                                encoder,
+                                "layer-canvas-adjust-pass",
+                                &self.adjust_pipeline,
+                                &src,
+                                None,
+                                None,
+                                &dst,
+                                &p,
+                            );
+                            cur ^= 1;
+                        }
+                    }
+                    // 3. Mix : base = original (scratch), dessus = filtré,
+                    // poids = opacité (sémantique `apply_adjustment` CPU).
+                    let doc_l = ctx.doc.0.round().max(1.0) as u32;
+                    let doc_h = ctx.doc.1.round().max(1.0) as u32;
+                    let filtre = vues[cur].clone();
+                    let dst = vues[cur ^ 1].clone();
+                    self.fusionner(
+                        encoder,
+                        &copie,
+                        &filtre,
+                        doc_l,
+                        doc_h,
+                        None,
+                        &dst,
+                        couche.opacity,
+                        0,
+                        [1.0, 0.0, 0.0, 1.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                        ctx,
+                    );
+                    cur ^= 1;
+                }
+            }
+        }
+        cur
+    }
+
+    /// Composite d'un groupe dans sa texture dédiée (mise en cache par
+    /// signature récursive du sous-arbre). Seul un groupe MODIFIÉ est
+    /// recomposé — même principe que `Renderer::appearance` côté moteur.
+    /// Retourne la vue contenant le composite du groupe.
+    fn groupe_composite(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        groupe: &DisplayLayer,
+        enfants: &[DisplayLayer],
+        ctx: &ScopeCtx,
+    ) -> Option<wgpu::TextureView> {
+        let taille = (
+            ctx.doc.0.round().max(1.0) as u32,
+            ctx.doc.1.round().max(1.0) as u32,
+        );
+        let mut h: u64 = 0xcbf29ce484222325;
+        nourrir_couche(&mut h, enfants, ctx.doc);
+        let signature = h;
+        // Cache hit : même clé, même signature, même taille.
+        if let Ok(cache) = self.group_cache.try_lock()
+            && let Some(hit) = cache.get(&groupe.key)
+            && hit.hash == signature
+            && hit.size == taille
+        {
+            return Some(hit.views[hit.current.get()].view.clone());
+        }
+        // Miss : paire dédiée (créée ou redimensionnée hors verrou tenu),
+        // puis composition récursive des enfants dedans.
+        let (v0, v1) = {
+            let mut cache = self.group_cache.try_lock().ok()?;
+            let entree = cache.entry(groupe.key).or_insert_with(|| CachedGroup {
+                hash: u64::MAX,
+                size: taille,
+                views: [
+                    Self::create_render_tex(&self.device, "layer-canvas-group", taille.0, taille.1),
+                    Self::create_render_tex(&self.device, "layer-canvas-group", taille.0, taille.1),
+                ],
+                current: std::cell::Cell::new(0),
+            });
+            if entree.size != taille {
+                *entree = CachedGroup {
+                    hash: u64::MAX,
+                    size: taille,
+                    views: [
+                        Self::create_render_tex(
+                            &self.device,
+                            "layer-canvas-group",
+                            taille.0,
+                            taille.1,
+                        ),
+                        Self::create_render_tex(
+                            &self.device,
+                            "layer-canvas-group",
+                            taille.0,
+                            taille.1,
+                        ),
+                    ],
+                    current: std::cell::Cell::new(0),
+                };
+            }
+            (entree.views[0].view.clone(), entree.views[1].view.clone())
+        };
+        let vues = [&v0, &v1];
+        let final_idx = self.empiler(encoder, enfants, vues, ctx);
+        if let Ok(mut cache) = self.group_cache.try_lock()
+            && let Some(entree) = cache.get_mut(&groupe.key)
+        {
+            entree.hash = signature;
+            entree.current.set(final_idx);
+            return Some(entree.views[final_idx].view.clone());
+        }
+        None
     }
 
     fn render(
@@ -927,135 +1956,40 @@ impl CompositePipeline {
         target: &wgpu::TextureView,
     ) {
         use std::sync::atomic::Ordering;
-        if self.accum.is_none() {
+        let Some(accum) = self.accum.as_ref() else {
             return;
-        }
+        };
 
         // --- BLEND PASSES (offscreen, ping-pong) ---
         // Recomposite only if stack changed since last frame
         let hash = config_hash(&prim.layers, prim.doc_size);
         if hash != self.last_hash.load(Ordering::Relaxed) {
-            let accum = self.accum.as_ref().expect("accum initialized in prepare");
-            let mut cur = accum.current.load(Ordering::Relaxed);
-
-            // Wgpu textures start with undefined content.
-            // Clear initial base to transparent before first blend,
-            // otherwise first layer would be mixed with random pixels.
-            {
-                let base_init = self.accum.as_ref().expect("accum initialized").views[cur].clone();
-                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("layer-canvas-clear-base"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        depth_slice: None,
-                        view: &base_init,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-            }
-
-            for layer in &prim.layers {
-                let Some(tex) = self.layer_textures.get(&layer.key) else {
-                    continue;
-                };
-
-                // Ping-pong: src = previous result, dst = target for this layer
-                let accum_ref = self.accum.as_ref().expect("accum initialized");
-                let src_view = accum_ref.views[cur].clone();
-                let dst_view = accum_ref.views[cur ^ 1].clone();
-
-                let scene_bg = self.scene_bg(
-                    &src_view,
-                    Some(&tex.view),
-                    layer
-                        .mask
-                        .as_ref()
-                        .and_then(|m| self.mask_textures.get(&m.key))
-                        .map(|t| &t.view),
-                );
-
-                let (mask_present, mask_w, mask_h) = layer
-                    .mask
-                    .as_ref()
-                    .map(|m| (1, m.width, m.height))
-                    .unwrap_or((0, 1, 1));
-                let params = Params {
-                    screen_doc: [
-                        prim.viewport.0,
-                        prim.viewport.1,
-                        prim.doc_size.0,
-                        prim.doc_size.1,
-                    ],
-                    pan_zoom: [
-                        prim.pan.x,
-                        prim.pan.y,
-                        prim.zoom,
-                        layer.opacity.clamp(0.0, 1.0),
-                    ],
-                    mode_sizes: [layer.blend, tex.width, tex.height, 0],
-                    off_sel: [layer.offset_x, layer.offset_y, 0.0, 0.0],
-                    sel_size: [0.0, 0.0, 0.0, 0.0],
-                    mask_info: [mask_present, mask_w, mask_h, 0],
-                };
-                self.write_params(&params);
-
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("layer-canvas-blend-pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            depth_slice: None,
-                            view: &dst_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
-                    pass.set_pipeline(&self.blend_pipeline);
-                    pass.set_bind_group(0, &scene_bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }
-
-                cur ^= 1;
-            }
-            if let Some(a) = self.accum.as_ref() {
-                a.current.store(cur, Ordering::Relaxed);
-            }
+            let ctx = ScopeCtx {
+                doc: prim.doc_size,
+                viewport: prim.viewport,
+                pan: prim.pan,
+                zoom: prim.zoom,
+            };
+            let vues = [&accum.views[0], &accum.views[1]];
+            let final_idx = self.empiler(encoder, &prim.layers, vues, &ctx);
+            accum.current.store(final_idx, Ordering::Relaxed);
             self.last_hash.store(hash, Ordering::Relaxed);
         }
 
         // --- PRESENTATION PASS (screen) ---
-        let acc = self.accum.as_ref().expect("accum initialized for present");
+        let Some(acc) = self.accum.as_ref() else {
+            return;
+        };
         let final_view = acc.views[acc.current.load(Ordering::Relaxed)].clone();
-        let acc_bg = self.scene_bg(&final_view, None, None);
+        let vue_loupe = prim.loupe.as_ref().and_then(|patch| {
+            self.loupe_tex
+                .as_ref()
+                .filter(|(cle, _)| *cle == patch.key)
+                .map(|(_, tex)| &tex.view)
+        });
+        let fond = self.scene_bg(&final_view, vue_loupe, None);
 
-        let (sel_pos, sel_size) = match prim.selection {
-            Some(r) => ([r.x, r.y, 0.0, 0.0], [r.width, r.height, 0.0, 0.0]),
-            None => ([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]),
-        };
-        let params = Params {
-            screen_doc: [
-                prim.viewport.0,
-                prim.viewport.1,
-                prim.doc_size.0,
-                prim.doc_size.1,
-            ],
-            pan_zoom: [prim.pan.x, prim.pan.y, prim.zoom, 1.0],
-            mode_sizes: [0, 0, 0, u32::from(prim.has_doc)],
-            off_sel: sel_pos,
-            sel_size,
-            mask_info: [0, 1, 1, 0],
-        };
+        let params = Params::neutres(prim);
         self.write_params(&params);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1079,7 +2013,7 @@ impl CompositePipeline {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.present_pipeline);
-        pass.set_bind_group(0, &acc_bg, &[]);
+        pass.set_bind_group(0, &fond, &[]);
         pass.draw(0..3, 0..1);
     }
 }
@@ -1092,19 +2026,47 @@ mod tests {
     fn layer(key: u64, mask_key: Option<u64>) -> DisplayLayer {
         DisplayLayer {
             key,
-            rgba: Arc::new(vec![0u8; 16]),
+            rgba: Some(Arc::new(vec![0u8; 16])),
             width: 2,
             height: 2,
             opacity: 1.0,
             blend: 0,
-            offset_x: 0.0,
-            offset_y: 0.0,
+            transform: Transform2D::default(),
             mask: mask_key.map(|key| DisplayMask {
                 key,
                 rgba: Arc::new(vec![255u8; 16]),
                 width: 2,
                 height: 2,
             }),
+            content: DisplayContent::Pixel,
+        }
+    }
+
+    fn groupe(key: u64, enfants: Vec<DisplayLayer>) -> DisplayLayer {
+        DisplayLayer {
+            key,
+            rgba: None,
+            width: 0,
+            height: 0,
+            opacity: 1.0,
+            blend: 0,
+            transform: Transform2D::default(),
+            mask: None,
+            content: DisplayContent::Group(enfants),
+        }
+    }
+
+    fn ajustement(key: u64, ops: Vec<AdjustmentOp>) -> DisplayLayer {
+        DisplayLayer {
+            key,
+            rgba: None,
+            width: 0,
+            height: 0,
+            opacity: 0.8,
+            blend: 0,
+            transform: Transform2D::default(),
+            mask: None,
+            content: DisplayContent::Adjustment(ops),
         }
     }
 
@@ -1116,5 +2078,159 @@ mod tests {
         let avec = config_hash(&[layer(1, Some(2))], (8.0, 8.0));
         assert_ne!(sans, avec);
         assert_eq!(avec, config_hash(&[layer(1, Some(2))], (8.0, 8.0)));
+    }
+
+    #[test]
+    fn hash_change_avec_skew() {
+        // Inclinaison ⇒ placement différent ⇒ recomposite (ancien angle
+        // mort du chemin GPU, qui ignorait le skew).
+        let droit = layer(1, None);
+        let mut incline = layer(1, None);
+        incline.transform.skew_x = 15.0;
+        assert_ne!(
+            config_hash(&[droit], (8.0, 8.0)),
+            config_hash(&[incline], (8.0, 8.0)),
+        );
+    }
+
+    #[test]
+    fn hash_change_avec_groupe_et_ajustement() {
+        // Groupe : toucher un enfant invalide ; ajustement : toucher la
+        // chaîne invalide. Stabilité sinon (cache par signature).
+        let g1 = groupe(7, vec![layer(1, None)]);
+        let g2 = groupe(7, vec![layer(2, None)]);
+        assert_ne!(
+            config_hash(std::slice::from_ref(&g1), (8.0, 8.0)),
+            config_hash(&[g2], (8.0, 8.0)),
+        );
+        assert_eq!(
+            config_hash(std::slice::from_ref(&g1), (8.0, 8.0)),
+            config_hash(&[g1], (8.0, 8.0)),
+        );
+        let a1 = ajustement(
+            9,
+            vec![AdjustmentOp::BrightnessContrast {
+                brightness: 10.0,
+                contrast: 5.0,
+            }],
+        );
+        let a2 = ajustement(
+            9,
+            vec![AdjustmentOp::BrightnessContrast {
+                brightness: 11.0,
+                contrast: 5.0,
+            }],
+        );
+        assert_ne!(
+            config_hash(std::slice::from_ref(&a1), (8.0, 8.0)),
+            config_hash(&[a2], (8.0, 8.0)),
+        );
+        assert_eq!(
+            config_hash(std::slice::from_ref(&a1), (8.0, 8.0)),
+            config_hash(&[a1], (8.0, 8.0)),
+        );
+    }
+
+    #[test]
+    fn shader_wgsl_valide() {
+        // Garde-fou permanent : le fichier fut un temps corrompu (code
+        // Rust autour du WGSL) sans qu'aucun test ne le voie — le parseur
+        // est exactement celui du wgpu d'iced (naga épinglé en dev-dep).
+        let module = naga::front::wgsl::parse_str(SHADER).expect("layer_blend.wgsl doit parser");
+        let mut validateur = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        validateur.validate(&module).expect("module WGSL invalide");
+        for attendu in ["vs_main", "fs_blend", "fs_adjust", "fs_blur", "fs_present"] {
+            assert!(
+                module.entry_points.iter().any(|e| e.name == attendu),
+                "entry point manquant : {attendu}",
+            );
+        }
+    }
+
+    #[test]
+    fn affine_inverse_aller_retour() {
+        // L'inverse CPU doit annuler EXACTEMENT `local_to_doc` (même ordre
+        // scale → skew → rotation, mêmes `tan()`), y compris avec skew.
+        let cas = [
+            Transform2D::default(),
+            Transform2D {
+                offset_x: 12.0,
+                offset_y: -7.0,
+                ..Transform2D::default()
+            },
+            Transform2D {
+                skew_x: 15.0,
+                skew_y: -10.0,
+                ..Transform2D::default()
+            },
+            Transform2D {
+                scale_x: 1.5,
+                scale_y: 0.75,
+                rotation_deg: 30.0,
+                skew_x: 12.0,
+                skew_y: 5.0,
+                offset_x: -3.0,
+                offset_y: 9.0,
+            },
+        ];
+        for t in cas {
+            let (w, h) = (100.0, 60.0);
+            let Some((n, o)) = affine_inverse(&t, w, h) else {
+                panic!("cas inversible déclaré dégénéré");
+            };
+            for (x, y) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h), (33.0, 21.0)] {
+                let (dx, dy) = t.local_to_doc(w, h, x, y);
+                let ex = dx - o[0];
+                let ey = dy - o[1];
+                let rx = n[0] * ex + n[1] * ey + o[2];
+                let ry = n[2] * ex + n[3] * ey + o[3];
+                assert!(
+                    (rx - x).abs() < 1e-3 && (ry - y).abs() < 1e-3,
+                    "aller-retour hors tolérance pour {t:?} en ({x}, {y}) : ({rx}, {ry})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn affine_inverse_degenere() {
+        // Échelle nulle ⇒ pas d'inverse : le calque est ignoré au lieu
+        // d'échantillonner n'importe quoi.
+        let t = Transform2D {
+            scale_x: 0.0,
+            ..Transform2D::default()
+        };
+        assert!(affine_inverse(&t, 10.0, 10.0).is_none());
+    }
+
+    #[test]
+    fn uniforms_ajustement_conversions() {
+        // Mêmes conversions CPU → GPU que `GpuContext` : luminosité ×0.01,
+        // contraste 1+c/100 (négatif) ou 1+c/50 (positif).
+        let (u, flou) = adjust_uniforms(&AdjustmentOp::BrightnessContrast {
+            brightness: 20.0,
+            contrast: -50.0,
+        });
+        assert!((u[0] - 0.2).abs() < 1e-6);
+        assert!((u[1] - 0.5).abs() < 1e-6);
+        assert_eq!(u[2], 1.0);
+        assert_eq!(flou, 0.0);
+        let (u, _) = adjust_uniforms(&AdjustmentOp::BrightnessContrast {
+            brightness: 0.0,
+            contrast: 50.0,
+        });
+        assert!((u[1] - 2.0).abs() < 1e-6);
+        let (u, _) = adjust_uniforms(&AdjustmentOp::Saturation { value: 1.5 });
+        assert_eq!(u, [0.0, 1.0, 1.5, 0.0]);
+        let (u, flou) = adjust_uniforms(&AdjustmentOp::Blur { radius: 5.0 });
+        assert_eq!(u, AJUST_NEUTRE);
+        assert_eq!(flou, 5.0);
+        // Flou négligeable ⇒ neutre (même garde que le CPU, radius <= 0.1).
+        let (u, flou) = adjust_uniforms(&AdjustmentOp::Blur { radius: 0.05 });
+        assert_eq!(u, AJUST_NEUTRE);
+        assert_eq!(flou, 0.0);
     }
 }

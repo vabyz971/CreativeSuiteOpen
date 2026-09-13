@@ -1,4 +1,3 @@
-const SHADER: &str = r"
 struct VOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -8,9 +7,15 @@ struct Params {
     screen_doc: vec4<f32>,   // xy = viewport widget px, zw = document px
     pan_zoom: vec4<f32>,     // xy = pan, z = zoom, w = layer opacity
     mode_sizes: vec4<u32>,   // x = blend mode, y/z = top texture dims, w = image flag
-    off_sel: vec4<f32>,      // xy = decalage layer, zw = position selection
+    off_sel: vec4<f32>,      // xy = réservé (placement = xform), zw = position selection
     sel_size: vec4<f32>,     // xy = size selection (x > 0 = active)
-    mask_info: vec4<u32>,    // x = 1 si masque, y/z = dims texture masque
+    mask_info: vec4<u32>,    // x = 1 si masque, y/z = dims texture masque, w = 1 si masque en espace document
+    xform: vec4<f32>,        // matrice inverse 2x2 (n00, n01, n10, n11) : (doc - origine) -> local recentré
+    xform_off: vec4<f32>,    // xy = origine doc, zw = centre local (cx, cy)
+    adjust: vec4<f32>,       // x = luminosité normalisée, y = facteur contraste, z = saturation, w = réservé
+    blur_px: vec4<f32>,      // x = rayon px doc, y = axe (0 = H, 1 = V), zw réservés
+    cursor: vec4<f32>,       // xy = curseur pinceau (doc), z = rayon px doc, w : 0 inactif, 1 pinceau, 2 gomme
+    loupe: vec4<f32>,        // xy = centre doc du patch, z = côté px doc, w = 1 si active
 };
 
 @vertex
@@ -43,25 +48,37 @@ fn blend_channel(b: f32, t: f32, mode: u32) -> f32 {
 @group(0) @binding(5) var mask_tex: texture_2d<f32>;
 @group(0) @binding(6) var mask_samp: sampler;
 
+// Coordonnées source du calque pour un point document : la matrice inverse
+// (uniformes xform / xform_off, précalculée côté CPU depuis Transform2D)
+// applique offset + échelle + rotation + skew en une fois.
+fn layer_px(doc_px: vec2<f32>) -> vec2<f32> {
+    let dl = doc_px - bp.xform_off.xy;
+    let lx = bp.xform.x * dl.x + bp.xform.y * dl.y + bp.xform_off.z;
+    let ly = bp.xform.z * dl.x + bp.xform.w * dl.y + bp.xform_off.w;
+    return vec2<f32>(lx, ly);
+}
+
 @fragment
 fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
     let b = textureSampleLevel(base_tex, base_samp, uv, 0.0);
     // Coordonnees pixel document de ce fragment
     let doc_px = uv * bp.screen_doc.zw;
-    // Echantillonne le layer a (doc_px - offset), normalise par SES dimensions
-    let t_px = doc_px - bp.off_sel.xy;
+    let t_px = layer_px(doc_px);
     let t_uv = t_px / vec2<f32>(f32(bp.mode_sizes.y), f32(bp.mode_sizes.z));
     var t = vec4<f32>(0.0);
     if (t_uv.x >= 0.0 && t_uv.x <= 1.0 && t_uv.y >= 0.0 && t_uv.y <= 1.0) {
         t = textureSampleLevel(top_tex, top_samp, t_uv, 0.0);
     }
-    // Masque échantillonné AU DRAW (même espace source que le calque) :
-    // peindre un masque ne régénère jamais la texture du calque.
+    // Masque échantillonné AU DRAW : peindre un masque ne régénère jamais
+    // la texture du calque. Espace source du calque par défaut ; espace
+    // document pour les masques de groupe (mask_info.w = 1).
     // Hors bornes, l'échantillonneur clamp (comme le rééchantillonnage CPU).
     var cov = 1.0;
     if (bp.mask_info.x == 1u) {
-        let m_uv = t_px / vec2<f32>(f32(bp.mask_info.y), f32(bp.mask_info.z));
+        var m_px = t_px;
+        if (bp.mask_info.w == 1u) { m_px = doc_px; }
+        let m_uv = m_px / vec2<f32>(f32(bp.mask_info.y), f32(bp.mask_info.z));
         cov = textureSampleLevel(mask_tex, mask_samp, m_uv, 0.0).r;
     }
     let ta = t.a * cov * bp.pan_zoom.w;
@@ -80,36 +97,100 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
     return clamp(out, vec4<f32>(0.0), vec4<f32>(1.0));
 }
 
-@group(0) @binding(0) var acc_tex: texture_2d<f32>;
-@group(0) @binding(1) var acc_samp: sampler;
-@group(0) @binding(4) var<uniform> pp: Params;
+// Passe d'ajustement : UNE opération couleur (luminosité/contraste OU
+// saturation, les autres au neutre) appliquée à l'accumulateur. Mêmes maths
+// que le chemin CPU (contraste autour de 0.5 puis luminosité ; gris
+// Rec.601 pour la saturation).
+@fragment
+fn fs_adjust(in: VOut) -> @location(0) vec4<f32> {
+    var c = textureSampleLevel(base_tex, base_samp, in.uv, 0.0);
+    c = vec4<f32>((c.rgb - vec3<f32>(0.5)) * bp.adjust.y + vec3<f32>(0.5) + vec3<f32>(bp.adjust.x), c.a);
+    let gray = dot(c.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    c = vec4<f32>(mix(vec3<f32>(gray), c.rgb, bp.adjust.z), c.a);
+    return clamp(c, vec4<f32>(0.0), vec4<f32>(1.0));
+}
 
+// Flou gaussien séparable (sigma = rayon) : une passe H (blur_px.y = 0)
+// puis une passe V (= 1). Noyau discrétisé sur 33 prises max ; au-delà de
+// 16 px de chaque côté on sous-échantillonne (approximation documentée,
+// l'export exact reste CPU).
+@fragment
+fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
+    let texel = 1.0 / bp.screen_doc.zw;
+    let radius = max(bp.blur_px.x, 0.5);
+    var dir = vec2<f32>(texel.x, 0.0);
+    if (bp.blur_px.y > 0.5) { dir = vec2<f32>(0.0, texel.y); }
+    let taps_f = min(ceil(radius), 16.0);
+    let taps = i32(taps_f);
+    let step_len = max(radius / max(taps_f, 1.0), 1.0);
+    var acc = vec4<f32>(0.0);
+    var wsum = 0.0;
+    for (var i: i32 = -16; i <= 16; i++) {
+        if (i > taps || i < -taps) { continue; }
+        let d = f32(i) * step_len;
+        let w = exp(-0.5 * (d / radius) * (d / radius));
+        acc += textureSampleLevel(base_tex, base_samp, in.uv + dir * d, 0.0) * w;
+        wsum += w;
+    }
+    return acc / max(wsum, 0.0001);
+}
+
+// Présentation écran : `base_tex` reçoit la texture accumulée finale,
+// `top_tex` le patch loupe éventuel (ou une texture neutre si inactive).
+// Un seul uniform et un seul layout pour toutes les passes.
 const GRID_BG = vec3<f32>(0.0549, 0.0549, 0.0549);   // theme::SURFACE_CONTAINER_LOWEST #0E0E0E
 const GRID_DOT = vec3<f32>(0.2078, 0.2078, 0.2039);  // theme::SURFACE_CONTAINER_HIGHEST #353534
 
 @fragment
 fn fs_present(in: VOut) -> @location(0) vec4<f32> {
-    let screen_px = in.uv * pp.screen_doc.xy;
-    let pan = pp.pan_zoom.xy;
-    let zoom = pp.pan_zoom.z;
+    let screen_px = in.uv * bp.screen_doc.xy;
+    let pan = bp.pan_zoom.xy;
+    let zoom = bp.pan_zoom.z;
 
     // Solid background — checker removed for performance and resize stability
     var col = GRID_BG;
 
+    // Coordonnées document du fragment (centre doc = milieu du widget + pan)
+    let doc_px = (screen_px - bp.screen_doc.xy / 2.0 - pan) / zoom + bp.screen_doc.zw / 2.0;
+
     // Image composite (espace document), si document present
-    if (pp.mode_sizes.w == 1u) {
-        let doc_px = (screen_px - pp.screen_doc.xy / 2.0 - pan) / zoom + pp.screen_doc.zw / 2.0;
-        if (doc_px.x >= 0.0 && doc_px.y >= 0.0 && doc_px.x <= pp.screen_doc.z && doc_px.y <= pp.screen_doc.w) {
-            let auv = doc_px / pp.screen_doc.zw;
-            let img = textureSampleLevel(acc_tex, acc_samp, auv, 0.0);
+    if (bp.mode_sizes.w == 1u) {
+        if (doc_px.x >= 0.0 && doc_px.y >= 0.0 && doc_px.x <= bp.screen_doc.z && doc_px.y <= bp.screen_doc.w) {
+            let auv = doc_px / bp.screen_doc.zw;
+            let img = textureSampleLevel(base_tex, base_samp, auv, 0.0);
             col = mix(col, img.rgb, img.a);
         }
     }
 
+    // Anneau curseur pinceau / gomme (rayon en px document, tracé net).
+    if (bp.cursor.w > 0.5) {
+        let d = distance(doc_px, bp.cursor.xy);
+        let wpx = 1.5 / max(zoom, 0.001);
+        if (abs(d - bp.cursor.z) < wpx) {
+            col = mix(col, vec3<f32>(1.0), 0.9);
+        }
+        // Point central (pinceau seul, pas la gomme)
+        if (bp.cursor.w < 1.5 && d < wpx) {
+            col = vec3<f32>(1.0);
+        }
+    }
+
+    // Loupe pipette : patch grossi x4 ancré en haut à droite du curseur.
+    if (bp.loupe.w > 0.5) {
+        let side_doc = max(bp.loupe.z, 1.0);
+        let size_scr = side_doc * zoom * 4.0;
+        let cur_scr = (bp.loupe.xy - bp.screen_doc.zw * 0.5) * zoom + pan + bp.screen_doc.xy * 0.5;
+        let origin = cur_scr + vec2<f32>(16.0, -size_scr - 16.0);
+        if (all(screen_px >= origin) && all(screen_px <= origin + vec2<f32>(size_scr))) {
+            let p_uv = (screen_px - origin) / size_scr;
+            col = textureSampleLevel(top_tex, top_samp, p_uv, 0.0).rgb;
+        }
+    }
+
     // Rectangle de selection (coords ecran)
-    if (pp.sel_size.x > 0.0) {
-        let smin = min(pp.off_sel.zw, pp.off_sel.zw + pp.sel_size.xy);
-        let smax = max(pp.off_sel.zw, pp.off_sel.zw + pp.sel_size.xy);
+    if (bp.sel_size.x > 0.0) {
+        let smin = min(bp.off_sel.zw, bp.off_sel.zw + bp.sel_size.xy);
+        let smax = max(bp.off_sel.zw, bp.off_sel.zw + bp.sel_size.xy);
         if (all(screen_px >= smin) && all(screen_px <= smax)) {
             col = mix(col, vec3<f32>(0.2, 0.5, 0.9), 0.15);
         }
@@ -122,258 +203,3 @@ fn fs_present(in: VOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(col, 1.0);
 }
-";
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Params {
-    /// xy = viewport widget px, zw = document px
-    screen_doc: [f32; 4],
-    /// xy = pan, z = zoom, w = layer opacity
-    pan_zoom: [f32; 4],
-    /// x = blend mode, y/z = top texture dims, w = image flag present
-    mode_sizes: [u32; 4],
-    /// xy = layer offset (px document), zw = selection position
-    off_sel: [f32; 4],
-    /// xy = selection size (x > 0 = active)
-    sel_size: [f32; 4],
-}
-
-// ---------------------------------------------------------------------------
-// Pipeline
-// ---------------------------------------------------------------------------
-
-pub struct CompositePipeline {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-
-    blend_pipeline: wgpu::RenderPipeline,
-    present_pipeline: wgpu::RenderPipeline,
-    params_buf: wgpu::Buffer,
-    bgl_all: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-
-    /// Persistent layer textures, key = content identity
-    layer_textures: HashMap<u64, LayerTex>,
-    /// Ping-pong accumulators (document space)
-    accum: Option<Accum>,
-    /// Hash of last GPU recomposite (atomic: `render()` takes &self)
-    last_hash: std::sync::atomic::AtomicU64,
-}
-
-struct LayerTex {
-    view: wgpu::TextureView,
-    width: u32,
-    height: u32,
-}
-
-struct Accum {
-    views: [wgpu::TextureView; 2],
-    /// Index of texture containing last composite
-    current: std::sync::atomic::AtomicUsize,
-    size: (u32, u32),
-}
-
-impl shader::Pipeline for CompositePipeline {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self
-    where
-        Self: Sized,
-    {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("layer-canvas"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-
-        // Layout unique : base tex+sampler, top tex+sampler, uniform
-        let tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let samp_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-        };
-        let bgl_all = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("layer-canvas-all"),
-            entries: &[
-                tex_entry(0),
-                samp_entry(1),
-                tex_entry(2),
-                samp_entry(3),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("layer-canvas-blend-layout"),
-            bind_group_layouts: &[&bgl_all],
-            push_constant_ranges: &[],
-        });
-        let blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("layer-canvas-blend"),
-            layout: Some(&pll),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_blend"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let plp = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("layer-canvas-present-layout"),
-            bind_group_layouts: &[&bgl_all],
-            push_constant_ranges: &[],
-        });
-        let present_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("layer-canvas-present"),
-            layout: Some(&plp),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_present"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("layer-canvas-linear"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("layer-canvas-params"),
-            size: std::mem::size_of::<Params>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        Self {
-            device: device.clone(),
-            queue: queue.clone(),
-            blend_pipeline,
-            present_pipeline,
-            params_buf,
-            bgl_all,
-            sampler,
-            layer_textures: HashMap::new(),
-            accum: None,
-            last_hash: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    fn trim(&mut self) {}
-}
-
-impl CompositePipeline {
-    /// Full bind group: tex0 + sampler in base slots, `top` reused
-    /// in top slots (unused by present shader).
-    fn scene_bg(
-        &self,
-        view: &wgpu::TextureView,
-        top_view: Option<&wgpu::TextureView>,
-    ) -> wgpu::BindGroup {
-        let fallback = view;
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("layer-canvas-scene-bg"),
-            layout: &self.bgl_all,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(top_view.unwrap_or(fallback)),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.params_buf.as_entire_binding(),
-                },
-            ],
-        })
-    }
-
-    fn ensure_accum(&mut self, size: (u32, u32)) {
-        let need = size != self.accum.as_ref().map_or((0, 0), |a| a.size);
-        if need {
-            let mk = || {
-                let tex = self.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("layer-canvas-accum"),
-                    size: wgpu::Extent3d {
-                        width: size.0.max(1),
-                        height: size.1.max(1),
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-                tex.create_view(&wgpu::TextureViewDescriptor::default())
-            };
-            self.accum = Some(Accum {
-                views: [mk(), mk()],
-                current: std::sync::atomic::AtomicUsize::new(0),
-                size,
-            });
-            // Force un recomposite GPU

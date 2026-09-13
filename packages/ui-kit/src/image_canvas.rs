@@ -272,7 +272,13 @@ impl StrokeTex {
         }
     }
 
-    /// Iterate touched tiles: (document origin x, y, RGBA pixels).
+    /// Itère les tuiles touchées : (origine document x, y, pixels RGBA).
+    /// Clone destiné à l'upload GPU du chemin `layer_canvas` (aperçu de
+    /// trait sans retour applicatif) — usage transitoire pendant le geste.
+    pub(crate) fn tiles_cloned(&self) -> Vec<(f32, f32, Vec<u8>)> {
+        self.tiles().map(|(x, y, px)| (x, y, px.to_vec())).collect()
+    }
+
     fn tiles(&self) -> impl Iterator<Item = (f32, f32, &[u8])> {
         self.tiles.iter().map(|t| {
             (
@@ -1164,8 +1170,9 @@ const HANDLE_HIT: f32 = 8.0;
 const HANDLE_HALF: f32 = 5.0;
 /// Distance de la poignée d'échelle : 0.12× la demi-diagonale, au-delà du coin
 const SCALE_OFFSET: f32 = 0.12;
-/// Quantum de mouvement doc avant de publier un `PickHover` (évite la rafale)
-const PICK_HOVER_STEP: f32 = 4.0;
+/// Quantum de mouvement doc avant de publier un `PickHover` (évite la rafale).
+/// Partagé avec `layer_canvas` (même cadence pipette sur les deux chemins).
+pub(crate) const PICK_HOVER_STEP: f32 = 4.0;
 /// Grossissement écran d'un pixel doc dans la loupe pipette
 const LOUPE_SCALE: f32 = 4.0;
 /// Côté (px doc) du patch échantillonné par la loupe
@@ -1907,10 +1914,11 @@ pub fn view_with_tool<'a>(
 // Stroke preview rasterization (per 512×512 tile)
 // ---------------------------------------------------------------------------
 
-/// Rasterize segment `from -> to` (document coordinates) into preview.
-/// Missing tiles are created on the fly; existing ones are never
-/// moved (whole grid) → zero preview drift.
-fn rasterize_segment(
+/// Rastérise le segment `from -> to` (coordonnées document) dans l'aperçu.
+/// Les tuiles manquantes sont créées à la volée ; les existantes ne sont
+/// jamais déplacées (grille entière) → aperçu sans dérive.
+/// `pub(crate)` : réutilisé tel quel par le chemin GPU `layer_canvas`.
+pub(crate) fn rasterize_segment(
     tex: &mut Option<StrokeTex>,
     from: (f32, f32),
     to: (f32, f32),

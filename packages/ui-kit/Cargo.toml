@@ -24,3 +24,7 @@ serde_json = { workspace = true }
 datatypes = { path = "../../core/datatypes" }
 math-utils = { path = "../math-utils" }
 uuid.workspace = true
+
+# Même version que le wgpu d'iced : valide le WGSL réellement compilé.
+[dev-dependencies]
+naga = { version = "=27.0.3", features = ["wgsl-in"] }
