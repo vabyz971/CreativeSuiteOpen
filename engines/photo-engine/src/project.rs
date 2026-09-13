@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Format projet natif `.csophoto` — indépendant de l'UI, réutilisable
+//! Format projet natif `.cygp` — indépendant de l'UI, réutilisable
 //! par les autres apps de la suite (compositing vidéo de calques…).
 //!
 //! FORMAT_VERSION 4 : les filtres d'un calque pixels sont des sous-calques
@@ -46,20 +46,21 @@ use crate::document::{
 /// `live_filters` (v3, migrée à la lecture).
 pub const FORMAT_VERSION: u32 = 4;
 
-/// Extension canonique des projets photo : `cso` (CreativeSuiteOpen) + `photo`.
-pub const PROJECT_EXTENSION: &str = "csophoto";
+/// Extension canonique des projets photo Cygnus.
+pub const PROJECT_EXTENSION: &str = "cygp";
 
-/// Ancienne extension (pré-convention `cso*`) encore acceptée EN LECTURE.
-pub const LEGACY_PROJECT_EXTENSION: &str = "csphoto";
+/// Anciennes extensions encore acceptées EN LECTURE : `.csophoto`, puis
+/// `.csphoto` (pré-convention `cso*`).
+pub const LEGACY_PROJECT_EXTENSIONS: [&str; 2] = ["csophoto", "csphoto"];
 
 /// L'extension du fichier correspond-elle à un projet photo (canonique
-/// `.csophoto` ou héritée `.csphoto`) ? Insensible à la casse.
+/// `.cygp` ou héritée `.csophoto`/`.csphoto`) ? Insensible à la casse.
 #[must_use]
 pub fn is_project_path(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => {
             let ext = ext.to_ascii_lowercase();
-            ext == PROJECT_EXTENSION || ext == LEGACY_PROJECT_EXTENSION
+            ext == PROJECT_EXTENSION || LEGACY_PROJECT_EXTENSIONS.contains(&ext.as_str())
         }
         None => false,
     }
@@ -386,7 +387,7 @@ fn node_from_dto(dto: LayerNodeDto, legacy_v3: bool) -> Result<LayerNode, String
     })
 }
 
-/// Document rechargé depuis un `.csophoto`.
+/// Document rechargé depuis un `.cygp`.
 pub struct LoadedProject {
     pub document: Document,
     /// Chemin du fichier chargé (devient le chemin d'enregistrement courant)
@@ -419,7 +420,7 @@ impl std::fmt::Debug for LoadedProject {
     }
 }
 
-/// Enregistre l'arbre de calques dans un fichier `.csophoto` (v2).
+/// Enregistre l'arbre de calques dans un fichier `.cygp` (v4).
 ///
 /// # Errors
 /// Erreur d'encodage PNG d'un calque, de sérialisation JSON ou d'écriture
@@ -437,7 +438,7 @@ pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
     std::fs::write(path, json).map_err(|e| format!("Écriture de {}: {e}", path.display()))
 }
 
-/// Charge un `.csophoto`. v4 lue nativement, v3 migrée (filtres simples →
+/// Charge un `.cygp`. v4 lue nativement, v3 migrée (filtres simples →
 /// sous-calques neutres) ; toute autre version est refusée.
 ///
 /// # Errors
@@ -542,11 +543,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_nanos();
-        std::env::temp_dir().join(format!("cso-{tag}-{}.csophoto", nanos))
+        std::env::temp_dir().join(format!("cyg-{tag}-{}.cygp", nanos))
     }
 
     #[test]
-    fn aller_retour_projet_v2_conserve_arbre_et_filtres() {
+    fn aller_retour_projet_v4_conserve_arbre_et_filtres() {
         let doc = sample_document();
         let path = temp_path("rt");
         save(&path, &doc).expect("sauvegarde");
@@ -590,9 +591,10 @@ mod tests {
 
     #[test]
     fn detection_extension_projet_canonique_et_heritee() {
-        assert!(is_project_path(Path::new("mon-projet.csophoto")));
-        assert!(is_project_path(Path::new("MON-PROJET.CSOPHOTO")));
-        // Ancienne extension encore reconnue en lecture
+        assert!(is_project_path(Path::new("mon-projet.cygp")));
+        assert!(is_project_path(Path::new("MON-PROJET.CYGP")));
+        // Anciennes extensions encore reconnues en lecture
+        assert!(is_project_path(Path::new("ancien.csophoto")));
         assert!(is_project_path(Path::new("ancien.csphoto")));
         assert!(!is_project_path(Path::new("image.png")));
         assert!(!is_project_path(Path::new("sans-extension")));

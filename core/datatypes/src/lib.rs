@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Shared datatypes for `CreativeSuiteOpen`
+//! Shared datatypes for `Cygnus`
 //! Defines generic node bricks used by Photo, Vector, Video...
 
 use std::collections::HashMap;

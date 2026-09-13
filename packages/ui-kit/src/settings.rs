@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -15,7 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Persisted app options — single JSON structure shared by
-//! all apps. File: `~/.config/creativesuite-open/settings.json`
+//! all apps. File: `~/.config/cygnus/settings.json`
 //!
 //! ```json
 //! {
@@ -67,24 +67,47 @@ fn default_true() -> bool {
     true
 }
 
+fn settings_file(base: &std::path::Path, vendor: &str) -> std::path::PathBuf {
+    base.join(vendor).join("settings.json")
+}
+
 impl AppSettings {
     fn path() -> Option<std::path::PathBuf> {
         let base = std::env::var("XDG_CONFIG_HOME")
             .ok()
             .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.config")))?;
-        Some(
-            std::path::PathBuf::from(base)
-                .join("creativesuite-open")
-                .join("settings.json"),
-        )
+        Some(settings_file(std::path::Path::new(&base), "cygnus"))
     }
 
-    /// Load user options (missing/corrupt file → defaults)
+    fn legacy_path() -> Option<std::path::PathBuf> {
+        let base = std::env::var("XDG_CONFIG_HOME")
+            .ok()
+            .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.config")))?;
+        Some(settings_file(
+            std::path::Path::new(&base),
+            "creativesuite-open",
+        ))
+    }
+
+    /// Load user options (missing/corrupt file → defaults). Un ancien
+    /// fichier CreativeSuiteOpen reste lisible une fois ; la prochaine
+    /// sauvegarde écrit côté Cygnus.
     #[must_use]
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
+        if let Some(path) = Self::path()
+            && path.exists()
+        {
+            return Self::read_or_default(&path);
+        }
+        if let Some(path) = Self::legacy_path()
+            && path.exists()
+        {
+            return Self::read_or_default(&path);
+        }
+        Self::default()
+    }
+
+    fn read_or_default(path: &std::path::Path) -> Self {
         std::fs::read_to_string(path)
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
@@ -102,5 +125,23 @@ impl AppSettings {
         {
             let _ = std::fs::write(path, json);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chemin_settings_pour_nouveau_nom() {
+        let base = std::path::Path::new("/tmp/config");
+        assert_eq!(
+            settings_file(base, "cygnus"),
+            std::path::PathBuf::from("/tmp/config/cygnus/settings.json")
+        );
+        assert_eq!(
+            settings_file(base, "creativesuite-open"),
+            std::path::PathBuf::from("/tmp/config/creativesuite-open/settings.json")
+        );
     }
 }

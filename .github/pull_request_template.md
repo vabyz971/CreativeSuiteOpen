@@ -38,7 +38,7 @@ Vérifié avant ouverture (voir `CONTRIBUTING.md`) :
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` : aucune alerte
 - [ ] `cargo test --workspace` passe (y compris les golden tests de `document.rs`, non affaiblis)
 - [ ] Les règles d'architecture sont respectées (moteurs purs, rendu « state-only », aucune couleur en dur hors `theme.rs`)
-- [ ] Le format `.csophoto` n'est pas cassé — ou `FORMAT_VERSION` incrémenté avec gestion propre des anciennes versions
+- [ ] Le format `.cygp` n'est pas cassé — ou `FORMAT_VERSION` incrémenté avec gestion propre des anciennes versions
 - [ ] Nouveaux items publics documentés
 - [ ] Message de commit conforme (préfixe app/crate, une logique par commit, pas d'emoji)
 

@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -180,7 +180,7 @@ pub enum Message {
         task_id: u64,
         result: Result<DecodedLayer, String>,
     },
-    // Projet .csophoto
+    // Projet .cygp
     /// Chemin choisi pour l'ouverture (projet ou image)
     ProjectOpenPicked(Option<std::path::PathBuf>),
     /// Projet chargé hors thread UI — remplace le document courant

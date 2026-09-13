@@ -1,4 +1,4 @@
-# CreativeSuiteOpen — CI minimale
+# Cygnus — CI minimale
 # Linux : fmt → clippy → tests, sur la plateforme de référence (Linux/Vulkan).
 # Windows/macOS : vérification de compilation uniquement, pour une confiance
 # multiplateforme à coût maîtrisé.

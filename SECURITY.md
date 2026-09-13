@@ -1,6 +1,6 @@
-# Politique de sécurité — CreativeSuiteOpen
+# Politique de sécurité — Cygnus
 
-CreativeSuiteOpen prend la sécurité au sérieux, y compris pour une suite
+Cygnus prend la sécurité au sérieux, y compris pour une suite
 créative open source. Ce document décrit comment signaler une vulnérabilité.
 
 ## Signaler une vulnérabilité
@@ -8,7 +8,7 @@ créative open source. Ce document décrit comment signaler une vulnérabilité.
 **Ne pas ouvrir d'issue publique pour signaler une vulnérabilité** — utilisez de préférence GitHub :
 
 - Ouvrez un *security advisory* privé :
-  https://github.com/vabyz971/CreativeSuiteOpen/security/advisories
+  https://github.com/vabyz971/Cygnus/security/advisories
 - Ou écrivez à l'adresse du responsable via GitHub (l'issue discussion est
   acceptée pour les cas non sensibles).
 
@@ -20,7 +20,7 @@ soit disponible.
 
 - Décodage d'images (PNG/JPEG) à l'ouverture et à l'export — dépend de
   `image` et de ses décodeurs.
-- Parsing du format projet `.csophoto` (JSON versionné + base64) dans
+- Parsing du format projet `.cygp` (JSON versionné + base64) dans
   `photo-engine` (`project.rs`).
 - Rendu GPU (shaders wgpu) — tout usage de mémoire GPU non maîtrisée y est
   rapporté comme une vulnérabilité.

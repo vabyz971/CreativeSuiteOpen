@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Math utils partagés pour la CreativeSuiteOpen
+//! Math utils partagés pour Cygnus
 //!
 //! `Vec2` n'est pas redéfini ici : la source canonique reste
 //! `datatypes::Vec2`, réexportée pour la commodité des appelants.

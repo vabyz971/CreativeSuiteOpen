@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -140,7 +140,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     let central_with_title = iced::widget::column![central];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
     let base_layout = ui_kit::shell::minimalist_layout_menus_only(
-        "Creative Suite Open Photo",
+        "Cygnus Photo",
         menu_buttons,
         central_with_title,
         spinner,

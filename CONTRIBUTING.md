@@ -1,9 +1,6 @@
----
-covers: []
----
-# Contributing to CreativeSuiteOpen
+# Contributing to Cygnus
 
-Thank you for your interest in improving CreativeSuiteOpen! This document covers everything you need to contribute productively: development setup, the architecture rules that keep the codebase healthy, code style, and the pull-request checklist.
+Thank you for your interest in improving Cygnus! This document covers everything you need to contribute productively: development setup, the architecture rules that keep the codebase healthy, code style, and the pull-request checklist.
 
 ## Table of contents
 
@@ -83,7 +80,7 @@ These rules exist because they are what keeps the suite fast and maintainable. A
    - Snapshots for destructive/structural operations (paint, crop, add/remove/reorder).
    - Lightweight commands for micro-editions (opacity, transforms, filter params), coalesced over an 800 ms window.
    - Push the PRE-mutation state, never post.
-8. **Project format `.csophoto` is versioned.** Any incompatible model change requires bumping `FORMAT_VERSION` in `engines/photo-engine/src/project.rs` and handling older versions cleanly.
+8. **Project format `.cygp` is versioned.** Any incompatible model change requires bumping `FORMAT_VERSION` in `engines/photo-engine/src/project.rs` and handling older versions cleanly.
 
 ---
 
@@ -143,7 +140,7 @@ Before opening a PR, verify:
 - [ ] `cargo test --workspace` passes
 - [ ] Architecture rules above are respected (especially state-only rendering and pure engines)
 - [ ] New public items are documented
-- [ ] The `.csophoto` format was not broken — or `FORMAT_VERSION` was bumped with clean handling of older versions
+- [ ] The `.cygp` format was not broken — or `FORMAT_VERSION` was bumped with clean handling of older versions
 - [ ] Commit messages follow the convention
 
 Open a draft PR early if you want feedback mid-work. For significant architecture changes (new engines, new core packages, format changes), open an issue first so we can discuss the design.
