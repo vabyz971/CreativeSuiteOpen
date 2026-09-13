@@ -1999,6 +1999,51 @@ impl CompositePipeline {
         // Recomposite only if stack changed since last frame
         let hash = config_hash(&prim.layers, prim.doc_size);
         if hash != self.last_hash.load(Ordering::Relaxed) {
+            // Diagnostic temporaire (bogues d'affichage) : table de la pile
+            // vue par le GPU — borné aux recomposites, silencieux sinon.
+            eprintln!(
+                "layer-canvas : recomposite doc={}x{} vue={}x{} couches={}",
+                prim.doc_size.0,
+                prim.doc_size.1,
+                prim.viewport.0,
+                prim.viewport.1,
+                prim.layers.len(),
+            );
+            for (i, couche) in prim.layers.iter().enumerate() {
+                let sorte = match &couche.content {
+                    DisplayContent::Pixel => "pixel",
+                    DisplayContent::Group(e) => {
+                        eprintln!("  couche {i} : groupe {} enfants", e.len());
+                        "groupe"
+                    }
+                    DisplayContent::Adjustment(o) => {
+                        eprintln!("  couche {i} : ajustement {} ops", o.len());
+                        "ajustement"
+                    }
+                };
+                if matches!(couche.content, DisplayContent::Pixel) {
+                    let t = &couche.transform;
+                    eprintln!(
+                        "  couche {i} : {sorte} cle={} log={}x{} tex={}x{} octets={} op={} blend={} off=({},{}) echelle=({},{}) rot={} skew=({},{}) masque={}",
+                        couche.key,
+                        couche.width,
+                        couche.height,
+                        couche.tex_width,
+                        couche.tex_height,
+                        couche.rgba.as_ref().map(|r| r.len()).unwrap_or(0),
+                        couche.opacity,
+                        couche.blend,
+                        t.offset_x,
+                        t.offset_y,
+                        t.scale_x,
+                        t.scale_y,
+                        t.rotation_deg,
+                        t.skew_x,
+                        t.skew_y,
+                        couche.mask.is_some(),
+                    );
+                }
+            }
             let ctx = ScopeCtx {
                 doc: prim.doc_size,
                 viewport: prim.viewport,
