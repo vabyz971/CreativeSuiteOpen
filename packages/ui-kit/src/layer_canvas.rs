@@ -942,9 +942,9 @@ impl shader::Primitive for CompositePrimitive {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _bounds: &Rectangle,
-        _viewport: &shader::Viewport,
+        viewport: &shader::Viewport,
     ) {
-        pipeline.prepare(self, device, queue);
+        pipeline.prepare(self, device, queue, viewport.scale_factor());
     }
 
     fn draw(&self, _pipeline: &Self::Pipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
@@ -1002,19 +1002,26 @@ impl Params {
     /// Uniforms neutres pour la passe de présentation (ni placement, ni
     /// ajustement, ni curseur) — seuls viewport, sélection, curseur et
     /// loupe varient.
-    fn neutres(prim: &CompositePrimitive) -> Self {
+    fn neutres(prim: &CompositePrimitive, echelle: f32) -> Self {
+        let echelle = echelle.max(0.01);
         let (pos_sel, taille_sel) = match prim.selection {
-            Some(r) => ([r.x, r.y, 0.0, 0.0], [r.width, r.height, 0.0, 0.0]),
+            Some(r) => (
+                [r.x * echelle, r.y * echelle, 0.0, 0.0],
+                [r.width * echelle, r.height * echelle, 0.0, 0.0],
+            ),
             None => ([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]),
         };
+        // Tout l'espace ÉCRAN est en pixels physiques (cible = surface) :
+        // viewport, pan et zoom (×échelle) ; le document reste inchangé.
+        let zoom_ecran = prim.zoom * echelle;
         Self {
             screen_doc: [
-                prim.viewport.0,
-                prim.viewport.1,
+                prim.viewport.0 * echelle,
+                prim.viewport.1 * echelle,
                 prim.doc_size.0,
                 prim.doc_size.1,
             ],
-            pan_zoom: [prim.pan.x, prim.pan.y, prim.zoom, 1.0],
+            pan_zoom: [prim.pan.x * echelle, prim.pan.y * echelle, zoom_ecran, 1.0],
             mode_sizes: [0, 0, 0, u32::from(prim.has_doc)],
             off_sel: pos_sel,
             sel_size: taille_sel,
@@ -1092,6 +1099,12 @@ pub struct CompositePipeline {
     group_cache: std::sync::Mutex<HashMap<u64, CachedGroup>>,
     /// Patch loupe pipette en cours (clé + texture).
     loupe_tex: Option<(u64, LayerTex)>,
+    /// Facteur d'échelle écran (HiDPI), capturé dans `prepare()` depuis le
+    /// viewport iced : les bornes du widget sont LOGIQUES mais la cible de
+    /// la passe de présentation est PHYSIQUE. Sans cette mise à l'échelle,
+    /// l'image est réduite/décalée dès que le facteur ≠ 1.
+    /// Bits de f32 (atomique : le trait `Pipeline` exige `Sync`).
+    echelle: std::sync::atomic::AtomicU32,
     /// Hash of last GPU recomposite (atomic: `render()` takes &self)
     last_hash: std::sync::atomic::AtomicU64,
 }
@@ -1301,6 +1314,7 @@ impl shader::Pipeline for CompositePipeline {
             scratch: None,
             group_cache: std::sync::Mutex::new(HashMap::new()),
             loupe_tex: None,
+            echelle: std::sync::atomic::AtomicU32::new(1.0_f32.to_bits()),
             last_hash: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -1527,7 +1541,15 @@ impl CompositePipeline {
         }
     }
 
-    fn prepare(&mut self, prim: &CompositePrimitive, device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn prepare(
+        &mut self,
+        prim: &CompositePrimitive,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        echelle: f32,
+    ) {
+        self.echelle
+            .store(echelle.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let doc = (
             prim.doc_size.0.round().max(1.0) as u32,
             prim.doc_size.1.round().max(1.0) as u32,
@@ -2145,7 +2167,10 @@ impl CompositePipeline {
                 .filter(|(cle, _)| *cle == patch.key)
                 .map(|(_, tex)| &tex.view)
         });
-        let params = Params::neutres(prim);
+        let params = Params::neutres(
+            prim,
+            f32::from_bits(self.echelle.load(std::sync::atomic::Ordering::Relaxed)),
+        );
         let fond_params = self.params_frais(&params);
         let fond = self.scene_bg(&final_view, vue_loupe, None, &fond_params);
 
@@ -2320,6 +2345,31 @@ mod tests {
                 "entry point manquant : {attendu}",
             );
         }
+    }
+
+    #[test]
+    fn neutres_echelle_hidpi() {
+        // HiDPI ×2 : tout l'espace ÉCRAN double (viewport, pan, zoom,
+        // sélection), le document reste inchangé.
+        let prim = CompositePrimitive {
+            layers: Vec::new(),
+            doc_size: (100.0, 100.0),
+            has_doc: true,
+            pan: Vector::new(10.0, 20.0),
+            zoom: 1.5,
+            viewport: (200.0, 100.0),
+            selection: Some(Rectangle::new(Point::new(1.0, 2.0), Size::new(3.0, 4.0))),
+            curseur: None,
+            loupe: None,
+        };
+        let p1 = Params::neutres(&prim, 1.0);
+        let p2 = Params::neutres(&prim, 2.0);
+        assert_eq!(p1.screen_doc, [200.0, 100.0, 100.0, 100.0]);
+        assert_eq!(p2.screen_doc, [400.0, 200.0, 100.0, 100.0]);
+        assert_eq!(p1.pan_zoom[..3], [10.0, 20.0, 1.5]);
+        assert_eq!(p2.pan_zoom[..3], [20.0, 40.0, 3.0]);
+        assert_eq!(p2.off_sel, [2.0, 4.0, 0.0, 0.0]);
+        assert_eq!(p2.sel_size, [6.0, 8.0, 0.0, 0.0]);
     }
 
     #[test]
