@@ -35,7 +35,7 @@ mod view;
 pub mod components;
 pub mod layers;
 
-pub use message::{DecodedLayer, Message, OffsetAxis, PanelType, PendingPaint, Tool};
+pub use message::{DecodedLayer, Message, OffsetAxis, PanelType, PendingPaint, StudioMode, Tool};
 pub use state::PhotoApp;
 
 use update::update;

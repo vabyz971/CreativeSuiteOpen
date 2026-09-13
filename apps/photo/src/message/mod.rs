@@ -66,6 +66,8 @@ pub enum Message {
 
     // Outils
     SelectTool(Tool),
+    /// Bascule Pixel / Vecteur / Mise en page (sélecteur de la top bar).
+    SetStudioMode(StudioMode),
     ImageCanvasEvent(ui_kit::image_canvas::ImageCanvasEvent),
 
     // Calques (arbre LayerTree)

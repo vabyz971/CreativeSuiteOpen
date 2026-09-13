@@ -137,13 +137,29 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
 
     let central = iced::widget::column![context_bar, studio_content];
     let central_with_title = iced::widget::column![central];
-    // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
-    let base_layout = ui_kit::shell::minimalist_layout_menus_only(
-        "Cygnus Photo",
-        menu_buttons,
-        central_with_title,
-        spinner,
-    );
+    // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas.
+    // Le sélecteur de studio rejoint les actions globales de la top bar via
+    // `top_bar_with_menus` (même système de layout, pas de doublon) ; le
+    // conteneur central reprend les tokens de `minimalist_layout_menus_only`.
+    let extra_actions = iced::widget::row![
+        components::studio_switcher::render(app.workspace.active_studio),
+        ui_kit::shell::global_actions(spinner),
+    ]
+    .spacing(12)
+    .align_y(iced::Alignment::Center);
+    let top = ui_kit::shell::top_bar_with_menus("Cygnus Photo", menu_buttons, extra_actions);
+    let center = container(central_with_title)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(4)
+        .style(|_| container::Style {
+            background: Some(ui_kit::theme::colors::SURFACE_CONTAINER_LOWEST.into()),
+            ..Default::default()
+        });
+    let base_layout: Element<'_, Message> = iced::widget::column![top, center.height(Length::Fill)]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
 
     // Dialogue redimensionnement document (Édition → Taille du document...)
     if app.tools.resize_dialog_open {

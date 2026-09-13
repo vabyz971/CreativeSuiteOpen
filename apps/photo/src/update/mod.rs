@@ -794,4 +794,32 @@ mod tests {
         assert_eq!(order, vec![id1, id2]);
         assert_eq!(app.document.history.undo_len(), before);
     }
+
+    /// Bascule de studio : Pixel par défaut, le message change le mode sans
+    /// toucher au document (les contenus Vecteur/Layout sont des
+    /// placeholders en phase 4).
+    #[test]
+    fn bascule_studio() {
+        let mut app = PhotoApp::default();
+        assert_eq!(
+            app.workspace.active_studio,
+            crate::message::StudioMode::Pixel
+        );
+        let _ = update(
+            &mut app,
+            Message::SetStudioMode(crate::message::StudioMode::Vector),
+        );
+        assert_eq!(
+            app.workspace.active_studio,
+            crate::message::StudioMode::Vector
+        );
+        let _ = update(
+            &mut app,
+            Message::SetStudioMode(crate::message::StudioMode::Layout),
+        );
+        assert_eq!(
+            app.workspace.active_studio,
+            crate::message::StudioMode::Layout
+        );
+    }
 }

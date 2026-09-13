@@ -149,6 +149,13 @@ fn handle_close_pane(app: &mut PhotoApp, pane: pane_grid::Pane) -> Task<Message>
     Task::none()
 }
 
+/// Bascule de studio : le contenu central suit au prochain `view`
+/// (routage sur `active_studio`, sans autre effet de bord pour l'instant).
+fn handle_set_studio_mode(app: &mut PhotoApp, mode: crate::message::StudioMode) -> Task<Message> {
+    app.workspace.active_studio = mode;
+    Task::none()
+}
+
 pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
     match msg {
         Message::ToggleTaskMenu => Some(handle_toggle_task_menu(app)),
@@ -166,6 +173,7 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::PaneDragged(_) => Some(Task::none()),
         Message::PaneClicked(pane) => Some(handle_pane_clicked(app, pane)),
         Message::ClosePane(pane) => Some(handle_close_pane(app, pane)),
+        Message::SetStudioMode(mode) => Some(handle_set_studio_mode(app, mode)),
         _ => None,
     }
 }
@@ -184,5 +192,6 @@ pub fn handles(msg: &Message) -> bool {
             | Message::PaneDragged(_)
             | Message::PaneClicked(_)
             | Message::ClosePane(_)
+            | Message::SetStudioMode(_)
     )
 }

@@ -22,6 +22,7 @@ pub mod gpu {
 pub mod layers;
 pub mod options_bar;
 pub mod properties;
+pub mod studio_switcher;
 pub mod toolbar;
 pub mod toolpanel;
 pub mod welcome;

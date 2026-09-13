@@ -41,6 +41,9 @@ pub fn render<'a>(
     mask_brush_black: bool,
     moving_layer: bool,
 ) -> Element<'a, Message> {
+    // Barre du mode Pixel : faire varier son contenu selon
+    // `WorkspaceState::active_studio` (outils Vecteur / Mise en page) —
+    // chantier futur, le sélecteur vit dans `studio_switcher`.
     let swatch = iced::widget::button(
         iced::widget::container(
             iced::widget::Space::new()
