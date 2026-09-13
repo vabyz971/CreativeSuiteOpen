@@ -2181,12 +2181,12 @@ impl CompositePipeline {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.055,
-                        g: 0.055,
-                        b: 0.055,
-                        a: 1.0,
-                    }),
+                    // JAMAIS de Clear ici : `target` est la surface PARTAGÉE
+                    // (iced y a déjà dessiné toute l'UI avant les primitives
+                    // custom) et le Clear ignore les ciseaux — il effacerait
+                    // panneaux et contrôles. Le fond est peint par le shader
+                    // (GRID_BG) dans la zone des ciseaux uniquement.
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
