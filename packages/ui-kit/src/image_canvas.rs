@@ -1179,8 +1179,9 @@ const LOUPE_SCALE: f32 = 4.0;
 pub const LOUPE_PATCH_SIDE: u32 = 33;
 
 /// Point dans un quadrilatère convexe (test de signe des produits
-/// vectoriels, tolérant aux deux orientations).
-fn point_in_quad(p: Point, q: [Point; 4]) -> bool {
+/// vectoriels, tolérant aux deux orientations). Partagé avec `layer_canvas`
+/// (pick des calques sur le chemin GPU).
+pub(crate) fn point_in_quad(p: Point, q: [Point; 4]) -> bool {
     let cross = |a: Point, b: Point, c: Point| -> f32 {
         (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
     };

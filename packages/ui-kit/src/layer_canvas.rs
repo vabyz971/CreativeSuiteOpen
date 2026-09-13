@@ -49,9 +49,10 @@ use iced::{Element, Length, Point, Rectangle, Size, Vector};
 
 use crate::image_canvas::{
     BrushStyle, CanvasTool, ImageCanvasEvent, PICK_HOVER_STEP, StrokeTex, TransformHandle,
-    rasterize_segment,
+    point_in_quad, rasterize_segment,
 };
 use math_utils::Transform2D;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Displayed model
@@ -138,6 +139,17 @@ pub struct DisplayMask {
     pub height: u32,
 }
 
+/// Calque cliquable (pick) : placement + dimensions logiques plein format.
+/// Le visualiseur de transformation (boîte + poignées) n'est pas porté sur
+/// le chemin GPU — le pick sert à sélectionner + déplacer au curseur.
+#[derive(Clone, Debug)]
+pub struct HitLayer {
+    pub id: Option<Uuid>,
+    pub transform: Transform2D,
+    pub width: f32,
+    pub height: f32,
+}
+
 /// Patch loupe pipette : carré `side`×`side` (pixels doc 1:1, RGBA8),
 /// grossi ×4 à l'écran par le shader de présentation.
 #[derive(Clone, Debug)]
@@ -215,6 +227,8 @@ fn adjust_uniforms(op: &AdjustmentOp) -> ([f32; 4], f32) {
 
 pub struct LayerCanvas<Message> {
     pub layers: Vec<DisplayLayer>,
+    /// Calques cliquables (haut de pile en dernier) pour l'outil Select.
+    pub hit_layers: Vec<HitLayer>,
     /// Document dimensions in pixels (None = no document)
     pub doc_size: Option<(f32, f32)>,
     pub pan: Vector,
@@ -254,6 +268,7 @@ impl<Message> LayerCanvas<Message> {
     ) -> Self {
         Self {
             layers: Vec::new(),
+            hit_layers: Vec::new(),
             doc_size,
             pan: Vector::new(0.0, 0.0),
             zoom: 1.0,
@@ -276,6 +291,27 @@ impl<Message> LayerCanvas<Message> {
     pub fn with_layers(mut self, layers: Vec<DisplayLayer>) -> Self {
         self.layers = layers;
         self
+    }
+
+    /// Calques cliquables pour le pick (outil Select) — même ordre que
+    /// `layers` (haut de pile en dernier).
+    #[must_use]
+    pub fn with_hit_layers(mut self, layers: Vec<HitLayer>) -> Self {
+        self.hit_layers = layers;
+        self
+    }
+
+    /// Pick : id du calque sous le point document (haut de pile d'abord).
+    /// Même sémantique que `ImageCanvas::pick_layer` (sans la boîte de
+    /// transformation, non portée sur le chemin GPU).
+    fn pick(&self, doc: (f32, f32)) -> Option<Uuid> {
+        let p = Point::new(doc.0, doc.1);
+        self.hit_layers.iter().rev().find_map(|l| {
+            let id = l.id?;
+            let coins = l.transform.doc_corners(l.width, l.height);
+            let quad = coins.map(|(x, y)| Point::new(x, y));
+            point_in_quad(p, quad).then_some(id)
+        })
     }
 
     #[must_use]
@@ -448,7 +484,8 @@ where
             }
             if state.dragging.take().is_some() {
                 match self.tool {
-                    CanvasTool::Move => {
+                    // Move, ou Select après un pick (marquee = selecting).
+                    CanvasTool::Move | CanvasTool::Select => {
                         return Some(
                             shader::Action::publish((self.on_event)(
                                 ImageCanvasEvent::TransformEnd,
@@ -496,9 +533,31 @@ where
                         .and_capture(),
                     )
                 }
-                CanvasTool::Zoom | CanvasTool::Select => {
+                CanvasTool::Zoom => {
                     state.selecting = Some((cursor_pos, cursor_pos));
                     Some(shader::Action::capture())
+                }
+                CanvasTool::Select => {
+                    // Pick : sur un calque → sélection + déplacement direct
+                    // (même protocole que `image_canvas`, sans la boîte de
+                    // transformation) ; dans le vide → marquee.
+                    let doc = self.screen_to_doc(cursor_pos, bounds);
+                    if let Some(id) = self.pick(doc) {
+                        state.dragging = Some((cursor_pos, self.pan));
+                        Some(
+                            shader::Action::publish((self.on_event)(
+                                ImageCanvasEvent::TransformStart {
+                                    id: Some(id),
+                                    kind: TransformHandle::Move,
+                                    doc,
+                                },
+                            ))
+                            .and_capture(),
+                        )
+                    } else {
+                        state.selecting = Some((cursor_pos, cursor_pos));
+                        Some(shader::Action::capture())
+                    }
                 }
                 CanvasTool::Brush | CanvasTool::Eraser => {
                     if !self.can_paint {
@@ -545,8 +604,9 @@ where
                                 orig_pan.y + delta.y,
                             )),
                         )));
-                    } else if self.tool == CanvasTool::Move {
-                        // Curseur en coordonnées doc (pan/zoom pris en compte)
+                    } else if matches!(self.tool, CanvasTool::Move | CanvasTool::Select) {
+                        // Curseur en coordonnées doc (pan/zoom pris en compte).
+                        // Select + drag = suite d'un pick (marquee = selecting).
                         return Some(shader::Action::publish((self.on_event)(
                             ImageCanvasEvent::TransformCursor {
                                 doc: self.screen_to_doc(cursor_pos, bounds),
@@ -750,12 +810,25 @@ where
             return Interaction::Crosshair;
         }
         if cursor.is_over(bounds) {
+            // Sur un calque cliquable (outil Select) : curseur Déplacement.
+            if self.tool == CanvasTool::Select
+                && let Some(pos) = cursor.position_in(bounds)
+            {
+                let doc = self.screen_to_doc(pos, bounds);
+                if self.pick(doc).is_some() {
+                    return Interaction::Move;
+                }
+            }
+            if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) && !self.can_paint {
+                return Interaction::NotAllowed;
+            }
             return match self.tool {
                 CanvasTool::Hand => Interaction::Grab,
                 CanvasTool::Move => Interaction::Move,
+                // Anneau dessiné par le shader : curseur OS masqué.
+                CanvasTool::Brush | CanvasTool::Eraser => Interaction::Hidden,
                 CanvasTool::Zoom => Interaction::ZoomIn,
                 CanvasTool::Select => Interaction::Crosshair,
-                CanvasTool::Brush | CanvasTool::Eraser => Interaction::Crosshair,
                 CanvasTool::Eyedropper => Interaction::Crosshair,
             };
         }
@@ -884,9 +957,9 @@ impl shader::Primitive for CompositePrimitive {
         pipeline: &Self::Pipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        _clip_bounds: &Rectangle<u32>,
+        clip_bounds: &Rectangle<u32>,
     ) {
-        pipeline.render(self, encoder, target);
+        pipeline.render(self, encoder, target, clip_bounds);
     }
 }
 
@@ -1993,6 +2066,7 @@ impl CompositePipeline {
         prim: &CompositePrimitive,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
+        clip_bounds: &Rectangle<u32>,
     ) {
         use std::sync::atomic::Ordering;
         let Some(accum) = self.accum.as_ref() else {
@@ -2097,6 +2171,15 @@ impl CompositePipeline {
         });
         pass.set_pipeline(&self.present_pipeline);
         pass.set_bind_group(0, &fond, &[]);
+        // Ciseaux écran : le triangle couvre tout le widget en clip-space,
+        // mais la cible est la surface ENTIÈRE — sans ciseaux le canvas
+        // repeindrait par-dessus les panneaux voisins.
+        pass.set_scissor_rect(
+            clip_bounds.x,
+            clip_bounds.y,
+            clip_bounds.width.max(1),
+            clip_bounds.height.max(1),
+        );
         pass.draw(0..3, 0..1);
     }
 }
@@ -2249,6 +2332,54 @@ mod tests {
         // Tampon vide ou dims nulles : invalide, jamais de panic.
         assert!(!tampon_valide(0, 2, 2));
         assert!(!tampon_valide(0, 0, 0));
+    }
+
+    fn toile_picking(cibles: Vec<HitLayer>) -> LayerCanvas<String> {
+        LayerCanvas::new(
+            Some((100.0, 100.0)),
+            std::rc::Rc::new(|e: ImageCanvasEvent| format!("{e:?}")),
+        )
+        .with_hit_layers(cibles)
+    }
+
+    fn cible(id: u128, ox: f32, oy: f32) -> HitLayer {
+        HitLayer {
+            id: Some(Uuid::from_u128(id)),
+            transform: Transform2D {
+                offset_x: ox,
+                offset_y: oy,
+                ..Transform2D::default()
+            },
+            width: 10.0,
+            height: 10.0,
+        }
+    }
+
+    #[test]
+    fn pick_dessus_dabord() {
+        // Haut de pile en dernier : le point (6,6) touche les deux, le
+        // second gagne ; (2,2) ne touche que le premier ; (50,50) aucun.
+        let toile = toile_picking(vec![cible(1, 0.0, 0.0), cible(2, 5.0, 5.0)]);
+        assert_eq!(toile.pick((6.0, 6.0)), Some(Uuid::from_u128(2)));
+        assert_eq!(toile.pick((2.0, 2.0)), Some(Uuid::from_u128(1)));
+        assert_eq!(toile.pick((50.0, 50.0)), None);
+    }
+
+    #[test]
+    fn pick_incline_suit_les_coins() {
+        // Calque incliné : le quad suit le skew (le point hors axe mais
+        // dans le parallélogramme est touché).
+        let toile = toile_picking(vec![HitLayer {
+            id: Some(Uuid::from_u128(7)),
+            transform: Transform2D {
+                skew_x: 45.0,
+                ..Transform2D::default()
+            },
+            width: 10.0,
+            height: 10.0,
+        }]);
+        assert_eq!(toile.pick((12.0, 8.0)), Some(Uuid::from_u128(7)));
+        assert_eq!(toile.pick((0.0, 9.0)), None);
     }
 
     #[test]

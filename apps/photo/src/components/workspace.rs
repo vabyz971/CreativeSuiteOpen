@@ -23,7 +23,9 @@ use iced::widget::{Space, container};
 use iced::{Element, Length, Size, Vector};
 use photo_engine::{Document, FilterNode, LayerNode};
 use ui_kit::base_panel;
-use ui_kit::layer_canvas::{AdjustmentOp, DisplayContent, DisplayLayer, DisplayMask, LayerCanvas};
+use ui_kit::layer_canvas::{
+    AdjustmentOp, DisplayContent, DisplayLayer, DisplayMask, HitLayer, LayerCanvas,
+};
 use ui_kit::theme::colors;
 use uuid::Uuid;
 
@@ -70,6 +72,32 @@ fn operation_ajustement(filtre: &FilterNode) -> Option<AdjustmentOp> {
         }),
         _ => None,
     }
+}
+
+/// Calques cliquables plats (tous niveaux, haut de pile en dernier) pour
+/// le pick de l'outil Select — même ensemble que l'ancien chemin rapide.
+fn cibles_pick(noeuds: &[LayerNode]) -> Vec<HitLayer> {
+    let mut cibles = Vec::new();
+    for noeud in noeuds {
+        match noeud {
+            LayerNode::Pixel(l) => {
+                if l.visible && l.opacity > 0.01 {
+                    let (larg, haut) = l.dimensions();
+                    cibles.push(HitLayer {
+                        id: Some(l.id),
+                        transform: l.transform,
+                        width: larg as f32,
+                        height: haut as f32,
+                    });
+                }
+            }
+            LayerNode::Group(g) => {
+                cibles.extend(cibles_pick(&g.children));
+            }
+            LayerNode::Adjustment(_) => {}
+        }
+    }
+    cibles
 }
 
 /// Empile les nœuds en couches affichables (récursif : les groupes portent
@@ -348,6 +376,7 @@ fn render_canvas_preview<'a>(
     let canvas = ui_kit::layer_canvas::view(
         LayerCanvas::new(doc_size.map(|d| (d.width, d.height)), on_event)
             .with_layers(couches)
+            .with_hit_layers(cibles_pick(&doc.root))
             .with_view(canvas_pan, zoom)
             .with_tool(canvas_tool)
             .with_selection(canvas_selection)
