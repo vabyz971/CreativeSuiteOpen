@@ -997,7 +997,6 @@ pub struct CompositePipeline {
     /// Flou séparable (H puis V) pour les calques d'ajustement.
     blur_pipeline: wgpu::RenderPipeline,
     present_pipeline: wgpu::RenderPipeline,
-    params_buf: wgpu::Buffer,
     bgl_all: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 
@@ -1205,12 +1204,6 @@ impl shader::Pipeline for CompositePipeline {
             ..Default::default()
         });
 
-        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("layer-canvas-params"),
-            size: std::mem::size_of::<Params>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let white_tex = Self::upload_texture(
             device,
             queue,
@@ -1226,7 +1219,6 @@ impl shader::Pipeline for CompositePipeline {
             adjust_pipeline,
             blur_pipeline,
             present_pipeline,
-            params_buf,
             bgl_all,
             sampler,
             layer_textures: HashMap::new(),
@@ -1247,11 +1239,15 @@ impl CompositePipeline {
     /// Full bind group: base + top + mask textures, shared sampler, uniforms.
     /// `mask_view = None` → opaque 1×1 fallback (shader skips sampling via
     /// `mask_info.x`, but every binding must be bound).
+    /// Le buffer d'uniforms est FRAIS par passe : les écritures `queue`
+    /// s'exécutent avant la soumission de l'encodeur, donc UN SEUL buffer
+    /// partagé verrait toutes les passes lire les params de la dernière.
     fn scene_bg(
         &self,
         view: &wgpu::TextureView,
         top_view: Option<&wgpu::TextureView>,
         mask_view: Option<&wgpu::TextureView>,
+        params_buf: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         let fallback = view;
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1276,7 +1272,7 @@ impl CompositePipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.params_buf.as_entire_binding(),
+                    resource: params_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
@@ -1580,9 +1576,17 @@ impl CompositePipeline {
         }
     }
 
-    fn write_params(&self, params: &Params) {
-        self.queue
-            .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(params));
+    /// Alloue un buffer d'uniforms FRAIS et l'initialise (voir `scene_bg`
+    /// pour le pourquoi : jamais de buffer partagé entre passes).
+    fn params_frais(&self, params: &Params) -> wgpu::Buffer {
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("layer-canvas-params"),
+            size: std::mem::size_of::<Params>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buf, 0, bytemuck::bytes_of(params));
+        buf
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1597,8 +1601,8 @@ impl CompositePipeline {
         dst: &wgpu::TextureView,
         params: &Params,
     ) {
-        self.write_params(params);
-        let groupe = self.scene_bg(src, dessus, masque);
+        let buf = self.params_frais(params);
+        let groupe = self.scene_bg(src, dessus, masque, &buf);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(etiquette),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2067,10 +2071,9 @@ impl CompositePipeline {
                 .filter(|(cle, _)| *cle == patch.key)
                 .map(|(_, tex)| &tex.view)
         });
-        let fond = self.scene_bg(&final_view, vue_loupe, None);
-
         let params = Params::neutres(prim);
-        self.write_params(&params);
+        let fond_params = self.params_frais(&params);
+        let fond = self.scene_bg(&final_view, vue_loupe, None, &fond_params);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("layer-canvas-present-pass"),
