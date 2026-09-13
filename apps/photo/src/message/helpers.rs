@@ -37,6 +37,19 @@ pub enum PanelType {
     Layers,
 }
 
+/// Studio actif du contenu central : Pixel (photo, moteur actuel),
+/// Vecteur (`vector-engine`, futur) et Mise en page (`layout-engine`, futur).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StudioMode {
+    /// Retouche photo — seul mode fonctionnel pour l'instant.
+    #[default]
+    Pixel,
+    /// Illustration vectorielle — panneau d'attente (phase 4+).
+    Vector,
+    /// Mise en page — panneau d'attente (phase 4+).
+    Layout,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OffsetAxis {
     X,

@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 pub use helpers::{
     AppearanceToggle, DecodedLayer, DestructiveOp, DestructiveResult, MaskTarget, OffsetAxis,
-    PaintedImage, PanelType, PendingPaint, PendingParam, Tool,
+    PaintedImage, PanelType, PendingPaint, PendingParam, StudioMode, Tool,
 };
 
 #[derive(Debug, Clone)]

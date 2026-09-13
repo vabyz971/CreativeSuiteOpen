@@ -2196,6 +2196,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "layout-engine"
+version = "0.1.0"
+dependencies = [
+ "datatypes",
+]
+
+[[package]]
 name = "lebe"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4660,6 +4667,13 @@ dependencies = [
  "aligned-vec",
  "num-traits",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "vector-engine"
+version = "0.1.0"
+dependencies = [
+ "datatypes",
 ]
 
 [[package]]

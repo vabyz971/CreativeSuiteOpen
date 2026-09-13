@@ -225,10 +225,14 @@ impl Default for RenderingState {
     }
 }
 
-/// État du workspace : layout `pane_grid` et focus du panneau actif.
+/// État du workspace : layout `pane_grid`, focus du panneau actif et studio
+/// actif du contenu central. Le mode vit ici (et non dans un `StudioState`
+/// dédié) : un seul champ pour l'instant, et c'est le workspace qui route
+/// déjà le contenu central dans `view`.
 pub struct WorkspaceState {
     pub panes: pane_grid::State<PanelType>,
     pub focus: Option<pane_grid::Pane>,
+    pub active_studio: crate::message::StudioMode,
 }
 
 /// État des fenêtres OS et des préférences multi-fenêtres.
@@ -370,6 +374,7 @@ impl Default for PhotoApp {
             workspace: WorkspaceState {
                 panes,
                 focus: Some(canvas_pane),
+                active_studio: crate::message::StudioMode::default(),
             },
             windows: WindowState {
                 main_window: None,

@@ -84,9 +84,11 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
         app.tools.move_grid_size,
     );
 
-    let central = iced::widget::column![
-        context_bar,
-        components::workspace::render(
+    // Contenu central routé par studio : Pixel garde le workspace photo,
+    // Vecteur / Mise en page affichent un panneau d'attente (moteurs
+    // squelettes, phase 4+).
+    let studio_content: Element<'_, Message> = match app.workspace.active_studio {
+        crate::message::StudioMode::Pixel => components::workspace::render(
             &app.workspace.panes,
             app.workspace.focus,
             &app.document.doc,
@@ -128,8 +130,12 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             &app.tools.new_doc_h,
             app.tools.welcome_error.as_deref(),
             app.rendering.pending_param.as_ref(),
-        )
-    ];
+        ),
+        crate::message::StudioMode::Vector => studio_placeholder("Studio Vecteur — à venir"),
+        crate::message::StudioMode::Layout => studio_placeholder("Studio Mise en page — à venir"),
+    };
+
+    let central = iced::widget::column![context_bar, studio_content];
     let central_with_title = iced::widget::column![central];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
     let base_layout = ui_kit::shell::minimalist_layout_menus_only(
@@ -247,6 +253,18 @@ fn layer_drag_filter(
         iced::Event::Mouse(iced::mouse::Event::CursorLeft) => Some(Message::LayerDragCancelled),
         _ => None,
     }
+}
+
+/// Panneau d'attente d'un studio non implémenté (Vecteur, Mise en page).
+fn studio_placeholder(label: &str) -> Element<'_, Message> {
+    iced::widget::center(
+        iced::widget::text(label)
+            .size(16)
+            .color(ui_kit::theme::colors::TEXT_PRIMARY),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 /// Filtre d'abonnement : PRESSIONS et RELEASES non consommées.
