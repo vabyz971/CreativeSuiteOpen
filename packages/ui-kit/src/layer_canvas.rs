@@ -804,6 +804,7 @@ where
             pan: self.pan,
             zoom: self.zoom,
             viewport: (bounds.width.max(1.0), bounds.height.max(1.0)),
+            origine: (bounds.x, bounds.y),
             selection: self.selection,
             curseur,
             loupe,
@@ -941,6 +942,9 @@ pub struct CompositePrimitive {
     pub pan: Vector,
     pub zoom: f32,
     pub viewport: (f32, f32),
+    /// Position logique du widget dans la fenêtre (pour le viewport
+    /// physique de la passe de présentation).
+    pub origine: (f32, f32),
     pub selection: Option<Rectangle>,
     /// Anneau curseur pinceau/gomme : (doc x, doc y, rayon px doc, 1/2).
     pub curseur: Option<(f32, f32, f32, u32)>,
@@ -2237,9 +2241,23 @@ impl CompositePipeline {
         });
         pass.set_pipeline(&self.present_pipeline);
         pass.set_bind_group(0, &fond, &[]);
-        // Ciseaux écran : le triangle couvre tout le widget en clip-space,
-        // mais la cible est la surface ENTIÈRE — sans ciseaux le canvas
-        // repeindrait par-dessus les panneaux voisins.
+        // Viewport du widget (physique) : SANS lui, le triangle couvrirait
+        // toute la surface en clip-space et les UV s'étaleraient sur la
+        // fenêtre entière — tout le rendu serait décalé alors que le
+        // hit-testing (bornes logiques) resterait juste. Le scissor seul
+        // découpe mais ne remappe pas.
+        let echelle_vue =
+            f32::from_bits(self.echelle.load(std::sync::atomic::Ordering::Relaxed)).max(0.01);
+        pass.set_viewport(
+            prim.origine.0 * echelle_vue,
+            prim.origine.1 * echelle_vue,
+            (prim.viewport.0 * echelle_vue).max(1.0),
+            (prim.viewport.1 * echelle_vue).max(1.0),
+            0.0,
+            1.0,
+        );
+        // Ciseaux écran : la cible est la surface ENTIÈRE — sans ciseaux le
+        // canvas repeindrait par-dessus les panneaux voisins.
         pass.set_scissor_rect(
             clip_bounds.x,
             clip_bounds.y,
@@ -2399,6 +2417,7 @@ mod tests {
             pan: Vector::new(10.0, 20.0),
             zoom: 1.5,
             viewport: (200.0, 100.0),
+            origine: (0.0, 0.0),
             selection: Some(Rectangle::new(Point::new(1.0, 2.0), Size::new(3.0, 4.0))),
             curseur: None,
             loupe: None,
