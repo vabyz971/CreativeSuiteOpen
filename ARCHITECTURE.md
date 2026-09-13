@@ -1,11 +1,11 @@
 ---
 covers: []
 ---
-# Architecture de CreativeSuiteOpen
+# Architecture de Cygnus
 
 ## Vue d'ensemble
 
-CreativeSuiteOpen est une suite créative professionnelle composée de trois applications
+Cygnus est une suite créative professionnelle composée de trois applications
 indépendantes (Photo, Vidéo, Audio) qui partagent un socle commun : moteurs métier,
 graphe nodal générique, widgets et bibliothèques utilitaires.
 
@@ -36,7 +36,7 @@ Moteurs métier spécifiques à chaque domaine, strictement purs :
 aucune connaissance d'iced ou de ses types. Les buffers portés par le modèle
 document restent purs (`RgbaBuf`, `Arc<[u8]>`) ; toute conversion vers une
 texture UI se fait côté app.
-- `photo-engine` : document, compositing CPU/GPU, historique, projet `.csophoto`.
+- `photo-engine` : document, compositing CPU/GPU, historique, projet `.cygp`.
 - `video-engine`, `audio-engine` : fondations.
 
 Ils peuvent dépendre de `core/*` et de `packages/*` (hors UI).

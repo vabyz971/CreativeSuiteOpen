@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -253,29 +253,44 @@ impl Default for Preferences {
     }
 }
 
+fn config_file(base: &std::path::Path, vendor: &str, app: &str) -> PathBuf {
+    base.join(vendor).join(app).join("preferences.json")
+}
+
 impl Preferences {
-    /// Chemin du fichier de configuration (`<config>/CreativeSuiteOpen/<app>/preferences.json`).
+    /// Chemin du fichier de configuration (`<config>/Cygnus/<app>/preferences.json`).
     /// None si la plateforme n'expose pas de dossier de configuration.
     #[must_use]
     pub fn config_path(app: &str) -> Option<PathBuf> {
-        dirs::config_dir().map(|p| {
-            p.join("CreativeSuiteOpen")
-                .join(app)
-                .join("preferences.json")
-        })
+        dirs::config_dir().map(|p| config_file(&p, "Cygnus", app))
+    }
+
+    /// Ancien emplacement conservé en lecture seule pour la migration depuis
+    /// CreativeSuiteOpen : si aucun fichier Cygnus n'existe, on relit
+    /// l'ancien sans l'écraser ; la prochaine sauvegarde écrit côté Cygnus.
+    fn legacy_config_path(app: &str) -> Option<PathBuf> {
+        dirs::config_dir().map(|p| config_file(&p, "CreativeSuiteOpen", app))
     }
 
     /// Charge les préférences ; toute anomalie retombe sur les défauts
     /// (jamais de panic : un fichier corrompu ne doit pas empêcher le boot).
     #[must_use]
     pub fn load(app: &str) -> Self {
-        let Some(path) = Self::config_path(app) else {
-            return Self::default();
-        };
-        if !path.exists() {
-            return Self::default();
+        if let Some(path) = Self::config_path(app)
+            && path.exists()
+        {
+            return Self::read_or_default(&path);
         }
-        match std::fs::read_to_string(&path) {
+        if let Some(path) = Self::legacy_config_path(app)
+            && path.exists()
+        {
+            return Self::read_or_default(&path);
+        }
+        Self::default()
+    }
+
+    fn read_or_default(path: &std::path::Path) -> Self {
+        match std::fs::read_to_string(path) {
             Ok(json) => match serde_json::from_str(&json) {
                 Ok(prefs) => {
                     log::info!("Préférences chargées depuis {}", path.display());
@@ -325,6 +340,19 @@ pub enum PreferencesError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chemin_config_pour_nouveau_nom() {
+        let base = std::path::Path::new("/tmp/config");
+        assert_eq!(
+            config_file(base, "Cygnus", "photo"),
+            PathBuf::from("/tmp/config/Cygnus/photo/preferences.json")
+        );
+        assert_eq!(
+            config_file(base, "CreativeSuiteOpen", "photo"),
+            PathBuf::from("/tmp/config/CreativeSuiteOpen/photo/preferences.json")
+        );
+    }
 
     #[test]
     fn serde_aller_retour_conserve_tout() {

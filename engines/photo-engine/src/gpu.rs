@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // TODO chantier 5: shaders WGSL inline à externaliser en `shaders/*.wgsl` via
 // include_str! (à fusionner avec le futur v2 GPU des masques).
 // Copyright (C) 2026 vabyz971
@@ -72,7 +72,7 @@ impl GpuContext {
         );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("CreativeSuite GPU"),
+                label: Some("Cygnus GPU"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,

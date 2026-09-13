@@ -14,11 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Façade app vers le module document du moteur photo.
-//! Le modèle LayerTree vit dans photo-engine (réutilisable par les autres
-//! apps de la suite) ; l'affichage passe par le canvas GPU.
+//! Panneau Calques découpé par responsabilité :
+//! - [`panel`] : rendu du panneau, itération des lignes, indicateurs de drop ;
+//! - [`row`] : rendu d'une ligne (sélection, visibilité, expansion) ;
+//! - [`drag`] : machine d'état du geste (pressé, déplacement, relâchement) ;
+//! - [`drop_target`] : calcul pur des cibles Before/After/Inside.
 
-pub use photo_engine::document::{
-    AdjustmentLayer, Appearance, BlendMode, FilterLayer, FilterNode, GroupLayer, LayerNode,
-    PixelLayer, Transform2D,
-};
+pub mod drag;
+pub mod drop_target;
+pub mod panel;
+pub mod row;
+
+pub use drag::{DRAG_DEADBAND, LayerDragRelease, LayerDragState};
+pub use drop_target::{DropPosition, LayerDropTarget, resolve_drop_target};

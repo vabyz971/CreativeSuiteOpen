@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -540,11 +540,11 @@ impl PreferencesWindow {
 
     fn view_about(&self) -> Element<'_, Message> {
         column![
-            Self::title("CreativeSuiteOpen — Photo"),
+            Self::title("Cygnus — Photo"),
             field_row("Version", env!("CARGO_PKG_VERSION").to_string()),
             field_row("Licence", "GNU GPL v3".to_string()),
             field_row("Moteur", "Rust + Iced + wgpu".to_string()),
-            text("https://github.com/vabyz971/CreativeSuiteOpen")
+            text("https://github.com/vabyz971/Cygnus")
                 .size(12)
                 .color(colors::ACCENT),
         ]

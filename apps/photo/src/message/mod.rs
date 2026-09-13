@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -180,7 +180,7 @@ pub enum Message {
         task_id: u64,
         result: Result<DecodedLayer, String>,
     },
-    // Projet .csophoto
+    // Projet .cygp
     /// Chemin choisi pour l'ouverture (projet ou image)
     ProjectOpenPicked(Option<std::path::PathBuf>),
     /// Projet chargé hors thread UI — remplace le document courant
@@ -286,6 +286,12 @@ pub enum Message {
     SetBrushColor(iced::Color),
     SetBrushSize(f32),
     SetBrushOpacity(f32),
+    /// Cran de rotation aimantée (degrés) — outil Sélection.
+    SetRotationStep(f32),
+    /// Active/désactive la grille d'aimantation du déplacement — outil Sélection.
+    ToggleMoveGrid(bool),
+    /// Taille de la grille d'aimantation (px document).
+    SetMoveGridSize(f32),
     ToggleColorPicker,
     /// Pipette : demande d'échantillonner la couleur au point document (x,y)
     PickColor {
@@ -317,9 +323,22 @@ pub enum Message {
     /// Crée le document : fond blanc plein cadre + calque sélectionné
     CreateDocument,
 
-    // Drag & drop calques
-    SetDraggedLayer(Uuid),
-    DropLayerOn(Uuid),
+    // Drag & drop calques : pressé → deadband → drag → cible → relâchement.
+    LayerDragPressed {
+        id: Uuid,
+    },
+    LayerDragMoved {
+        position: (f32, f32),
+    },
+    LayerDragHover {
+        hovered: Option<Uuid>,
+        position: crate::components::layers::DropPosition,
+    },
+    LayerDragReleased,
+    LayerDragCancelled,
+    LayerRowHovered(Uuid),
+    LayerRowUnhovered(Uuid),
+
     // Document
     ShowResizeDialog,
     SetResizeWidth(String),
@@ -327,11 +346,6 @@ pub enum Message {
     ResizeDocument {
         width: u32,
         height: u32,
-    },
-    ReorderLayer {
-        dragged: Uuid,
-        target: Uuid,
-        before: bool,
     },
 
     // Hardware

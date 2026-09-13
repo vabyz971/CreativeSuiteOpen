@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -33,7 +33,7 @@ pub fn render<'a>(
     h_value: &'a str,
     error: Option<&'a str>,
 ) -> Element<'a, Message> {
-    let title = text("Creative Suite Open Photo")
+    let title = text("Cygnus Photo")
         .size(20)
         .font(fonts::SANS_SEMIBOLD)
         .color(colors::TEXT_PRIMARY);

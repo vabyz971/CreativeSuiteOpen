@@ -1,0 +1,26 @@
+---
+name: Bug report
+description: Signaler un bug (crash, rendu incorrect, régression…)
+title: "[BUG] — "
+labels: ["bug"]
+assignees: []
+---
+
+**Application concernée** : Photo (recommandé) / Video / Audio
+
+**Environnement**
+- OS / backend graphique (Vulkan, DX12, Metal) : …
+- Version ou commit : …
+
+**Étapes pour reproduire**
+1. Ouvre/dessine/zoome…
+2. …
+3. Résultat observé : …
+
+**Résultat attendu** : …
+
+**Contexte supplémentaire** (logs, projet `.cygp` minimal, captures d'écran) :
+
+---
+
+Avant de soumettre : merci de vérifier qu'il ne s'agit pas d'un doublon d'un rapport existant, et de respecter les règles de `CONTRIBUTING.md` (architecture « state-only », moteurs purs, etc.).

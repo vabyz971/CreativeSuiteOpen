@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -19,7 +19,7 @@
 pub mod gpu {
     pub use photo_engine::gpu::*;
 }
-pub mod layers_panel;
+pub mod layers;
 pub mod options_bar;
 pub mod properties;
 pub mod toolbar;

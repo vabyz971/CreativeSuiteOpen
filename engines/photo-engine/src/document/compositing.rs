@@ -640,17 +640,36 @@ pub fn composite_filter_layer(
 /// identiques requises, sinon garde-fou (pas d'atténuation plutôt qu'un
 /// noir erroné). Sans masque actif : retourne l'image telle quelle.
 fn attenuate_by_masks(img: DynamicImage, masks: &[LayerMask]) -> DynamicImage {
-    let mut it = masks.iter().filter(|m| m.enabled);
-    let Some(first) = it.next() else {
+    let Some(cover) = combined_mask_coverage(masks) else {
         return img;
     };
+    if cover.dimensions() != img.dimensions() {
+        return img;
+    }
+    attenuate_by_coverage(img, &cover)
+}
+
+/// Combine les masques ACTIFS en une couverture unique (multiplication des
+/// couvertures, `inverted` appliqué). `None` = aucun masque actif.
+///
+/// La couverture est une donnée pure, cacheable indépendamment de l'image :
+/// c'est elle qu'un futur chemin shader échantillonnera au draw.
+pub fn combined_mask_coverage(masks: &[LayerMask]) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let mut it = masks.iter().filter(|m| m.enabled);
+    let first = it.next()?;
     let mut cover = mask_coverage(first);
     for m in it {
         cover = multiply_coverage(&cover, &mask_coverage(m));
     }
-    if cover.dimensions() != img.dimensions() {
-        return img;
-    }
+    Some(cover)
+}
+
+/// Multiplie le canal alpha d'une image par une couverture (canal R).
+/// Les dimensions doivent correspondre (garde-fou à l'appelant).
+pub fn attenuate_by_coverage(
+    img: DynamicImage,
+    cover: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+) -> DynamicImage {
     let mut buf = img.to_rgba8();
     let raw = cover.as_raw();
     buf.as_flat_samples_mut()
@@ -686,36 +705,35 @@ fn mask_coverage(mask: &LayerMask) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
 /// Rend les masques de calque homogènes aux masques de sous-calques de
 /// filtre : ils font partie de l'apparence cacheable, plus du repli CPU.
 pub fn apply_layer_masks(image: Arc<DynamicImage>, masks: &[LayerMask]) -> Arc<DynamicImage> {
-    let mut it = masks.iter().filter(|m| m.enabled);
-    let Some(first) = it.next() else {
+    let Some(cover) = combined_mask_coverage(masks) else {
         return image;
     };
-    let mut cover = mask_coverage(first);
-    for m in it {
-        cover = multiply_coverage(&cover, &mask_coverage(m));
-    }
+    apply_coverage(image, &cover)
+}
+
+/// Applique une couverture DÉJÀ combinée à une image.
+///
+/// Garde-fou identique à [`apply_layer_masks`] : couverture de dimensions
+/// différentes → rééchantillonnée aux dimensions de l'image plutôt qu'une
+/// atténuation erronée. Exposée pour que le cache puisse réutiliser une
+/// couverture sans la recombiner (et, à terme, pour l'échantillonner au
+/// draw dans un shader au lieu de la baker ici).
+pub fn apply_coverage(
+    image: Arc<DynamicImage>,
+    cover: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+) -> Arc<DynamicImage> {
     let (iw, ih) = image.dimensions();
-    if cover.dimensions() != (iw, ih) {
-        // Garde-fou : masque de dimensions différentes → rééchantillonné
-        // aux dimensions de l'apparence plutôt qu'une atténuation erronée.
-        cover = image::imageops::resize(
-            &cover,
+    let cover = if cover.dimensions() != (iw, ih) {
+        image::imageops::resize(
+            cover,
             iw.max(1),
             ih.max(1),
             ::image::imageops::FilterType::Triangle,
-        );
-    }
-    let mut buf = image.to_rgba8();
-    let raw = cover.as_raw();
-    buf.as_flat_samples_mut()
-        .samples
-        .par_chunks_exact_mut(4)
-        .enumerate()
-        .for_each(|(i, px)| {
-            let cov = raw[i * 4] as f32 / 255.0;
-            px[3] = (px[3] as f32 * cov).round() as u8;
-        });
-    Arc::new(DynamicImage::ImageRgba8(buf))
+        )
+    } else {
+        cover.clone()
+    };
+    Arc::new(attenuate_by_coverage(image.as_ref().clone(), &cover))
 }
 
 /// Applique une chaîne d'ajustements à l'accumulateur, pondérée par

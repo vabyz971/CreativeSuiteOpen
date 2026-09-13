@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::components::{layers_panel, properties, toolpanel};
+use crate::components::{layers::panel as layers_panel, properties, toolpanel};
 use crate::{Message, PanelType, Tool};
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{Space, container, image};
@@ -31,7 +31,8 @@ pub fn render<'a>(
     doc: &'a Document,
     preview_cache: &'a crate::ui_handles::PreviewCache,
     selected_layer: Option<Uuid>,
-    dragged_layer: Option<Uuid>,
+    layer_drag: &'a crate::components::layers::LayerDragState,
+    hovered_layer_row: Option<Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
     expanded_fx_stack: &'a std::collections::HashSet<Uuid>,
     filter_menu_open: bool,
@@ -141,7 +142,8 @@ pub fn render<'a>(
                     doc,
                     preview_cache,
                     selected_layer,
-                    dragged_layer,
+                    layer_drag,
+                    hovered_layer_row,
                     active_mask,
                     expanded_fx_stack,
                     filter_menu_open,
@@ -213,7 +215,6 @@ fn render_canvas_preview<'a>(
     let zoom = zoom_level as f32 / 100.0;
     let canvas_tool = match selected_tool {
         Tool::Hand => ui_kit::image_canvas::CanvasTool::Hand,
-        Tool::Move => ui_kit::image_canvas::CanvasTool::Move,
         Tool::Zoom => ui_kit::image_canvas::CanvasTool::Zoom,
         Tool::Select => ui_kit::image_canvas::CanvasTool::Select,
         Tool::Eyedropper => ui_kit::image_canvas::CanvasTool::Eyedropper,
@@ -486,6 +487,7 @@ fn render_canvas_preview<'a>(
             brush_color,
             color_picker_open,
             mask_brush_black,
+            drag_layer.is_some(),
         ))
         .padding(iced::Padding::new(3.0).top(3.0).bottom(3.0))
         .style(|_| {

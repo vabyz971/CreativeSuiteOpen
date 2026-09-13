@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -39,14 +39,18 @@ fn node_dimensions(node: &LayerNode) -> (u32, u32) {
     }
 }
 
-/// Open dialog: projects (.csophoto, and legacy .csphoto) AND images.
+/// Open dialog: projects (.cygp, and legacy .csophoto/.csphoto) AND images.
 fn open_document_task() -> Task<Message> {
     Task::perform(
         async {
             rfd::AsyncFileDialog::new()
                 .add_filter(
-                    "Projet CreativeSuite",
-                    &[photo_engine::project::PROJECT_EXTENSION, "csphoto"],
+                    "Projet Cygnus",
+                    &[
+                        photo_engine::project::PROJECT_EXTENSION,
+                        photo_engine::project::LEGACY_PROJECT_EXTENSIONS[0],
+                        photo_engine::project::LEGACY_PROJECT_EXTENSIONS[1],
+                    ],
                 )
                 .add_filter(
                     "Images",
@@ -61,17 +65,14 @@ fn open_document_task() -> Task<Message> {
     )
 }
 
-/// "Save As" dialog (.csophoto).
+/// "Save As" dialog (.cygp).
 fn save_as_dialog_task() -> Task<Message> {
     Task::perform(
         async {
             rfd::AsyncFileDialog::new()
-                .add_filter(
-                    "Projet CreativeSuite",
-                    &[photo_engine::project::PROJECT_EXTENSION],
-                )
+                .add_filter("Projet Cygnus", &[photo_engine::project::PROJECT_EXTENSION])
                 .set_title("Enregistrer le projet")
-                .set_file_name("sans-titre.csophoto")
+                .set_file_name("sans-titre.cygp")
                 .save_file()
                 .await
                 .map(|h| h.path().to_path_buf())

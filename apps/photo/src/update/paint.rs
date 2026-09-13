@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -27,15 +27,31 @@ pub fn handle_brush_start(app: &mut PhotoApp, x: f32, y: f32, erase: bool) -> Ta
     let _ = (x, y, erase);
     if app.tools.pending_paint.is_none()
         && let Some(id) = app.document.selected_layer
-        && app.document.doc.pixel_layer(id).is_some()
-        && app
-            .document
-            .doc
-            .find(id)
-            .map(|n| n.visible())
-            .unwrap_or(false)
     {
-        app.tools.stroke_layer = Some(id);
+        // Cible du trait : le calque pixels sélectionné, ou — si un masque
+        // de sous-calque est actif — le calque PORTEUR (l'espace de peinture
+        // d'un masque de filtre est celui du parent).
+        let target = if app.document.doc.pixel_layer(id).is_some() {
+            Some(id)
+        } else {
+            let mask_ok = app.tools.active_mask.is_some_and(|t| {
+                t.layer_id == id && app.document.doc.mask_of(id, t.mask_id).is_some()
+            });
+            mask_ok
+                .then(|| app.document.doc.find_filter_parent(id))
+                .flatten()
+        };
+        if let Some(tid) = target
+            && app.document.doc.pixel_layer(tid).is_some()
+            && app
+                .document
+                .doc
+                .find(tid)
+                .map(|n| n.visible())
+                .unwrap_or(false)
+        {
+            app.tools.stroke_layer = Some(tid);
+        }
     }
     Task::none()
 }
@@ -229,6 +245,18 @@ pub fn handle_set_brush_opacity(app: &mut PhotoApp, o: f32) -> Task<Message> {
     app.tools.brush_opacity = o;
     Task::none()
 }
+pub fn handle_set_rotation_step(app: &mut PhotoApp, v: f32) -> Task<Message> {
+    app.tools.rotation_step = v.clamp(1.0, 45.0);
+    Task::none()
+}
+pub fn handle_toggle_move_grid(app: &mut PhotoApp, on: bool) -> Task<Message> {
+    app.tools.move_grid_enabled = on;
+    Task::none()
+}
+pub fn handle_set_move_grid_size(app: &mut PhotoApp, v: f32) -> Task<Message> {
+    app.tools.move_grid_size = v.clamp(4.0, 512.0);
+    Task::none()
+}
 pub fn handle_toggle_picker(app: &mut PhotoApp) -> Task<Message> {
     app.tools.color_picker_open = !app.tools.color_picker_open;
     Task::none()
@@ -414,6 +442,9 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::SetBrushOpacity(o) => Some(handle_set_brush_opacity(app, o)),
         Message::ToggleColorPicker => Some(handle_toggle_picker(app)),
         Message::SelectTool(t) => Some(handle_select_tool(app, t)),
+        Message::SetRotationStep(v) => Some(handle_set_rotation_step(app, v)),
+        Message::ToggleMoveGrid(on) => Some(handle_toggle_move_grid(app, on)),
+        Message::SetMoveGridSize(v) => Some(handle_set_move_grid_size(app, v)),
         Message::ToggleToolsPanel => Some(handle_toggle_tools(app)),
         Message::SetActiveMask(target) => Some(handle_set_active_mask(app, target)),
         Message::AddLayerMask(id) => Some(handle_add_mask(app, id)),
@@ -461,5 +492,8 @@ pub fn handles(msg: &Message) -> bool {
             | Message::ToggleLayerMaskEnabled(..)
             | Message::InvertLayerMask(..)
             | Message::ToggleMaskColor
+            | Message::SetRotationStep(_)
+            | Message::ToggleMoveGrid(_)
+            | Message::SetMoveGridSize(_)
     )
 }

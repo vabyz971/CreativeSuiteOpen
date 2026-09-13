@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -49,7 +49,7 @@ fn view(_app: &AudioApp) -> Element<'_, Message> {
 
 pub fn main() -> iced::Result {
     iced::application(AudioApp::default, update, view)
-        .title("Creative Suite Open — Audio")
+        .title("Cygnus — Audio")
         .font(include_bytes!(
             "../../../assets/fonts/MaterialIcons-Regular.ttf"
         ))

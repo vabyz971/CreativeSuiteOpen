@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -58,7 +58,7 @@ pub fn main() -> iced::Result {
     iced::daemon(PhotoApp::new, update, view)
         .title(|app: &PhotoApp, window: iced::window::Id| {
             if app.is_preferences_window(window) {
-                return "Préférences — Creative Suite Open Photo".to_string();
+                return "Préférences — Cygnus Photo".to_string();
             }
             match &app.document.project_path {
                 Some(path) => {
@@ -66,9 +66,9 @@ pub fn main() -> iced::Result {
                         .file_stem()
                         .and_then(|n| n.to_str())
                         .unwrap_or("projet");
-                    format!("Creative Suite Open Photo — {name}")
+                    format!("Cygnus Photo — {name}")
                 }
-                None => "Creative Suite Open Photo".to_string(),
+                None => "Cygnus Photo".to_string(),
             }
         })
         .subscription(subscription)

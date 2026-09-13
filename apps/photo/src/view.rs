@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -79,6 +79,9 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
         app.tools.brush_size,
         app.tools.brush_opacity,
         app.tools.color_picker_open,
+        app.tools.rotation_step,
+        app.tools.move_grid_enabled,
+        app.tools.move_grid_size,
     );
 
     let central = iced::widget::column![
@@ -89,7 +92,8 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             &app.document.doc,
             &app.rendering.preview_cache,
             app.document.selected_layer,
-            app.tools.dragged_layer,
+            &app.tools.layer_drag,
+            app.tools.hovered_layer_row,
             app.tools.active_mask,
             &app.tools.expanded_fx_stack,
             app.tools.filter_menu_open,
@@ -136,7 +140,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
     let central_with_title = iced::widget::column![central];
     // Shell : menus intégrés à la top bar — outils Photo en flottant sur le canvas
     let base_layout = ui_kit::shell::minimalist_layout_menus_only(
-        "Creative Suite Open Photo",
+        "Cygnus Photo",
         menu_buttons,
         central_with_title,
         spinner,
@@ -221,7 +225,35 @@ pub fn subscription(app: &PhotoApp) -> Subscription<Message> {
     };
     let keyboard = iced::event::listen_with(keyboard_filter);
     let closes = iced::window::close_events().map(Message::WindowClosed);
-    Subscription::batch([tick, keyboard, closes])
+    // Pendant un drag calque uniquement : suit le pointeur même hors de la
+    // ligne d'origine, puis reçoit le relâchement n'importe où.
+    let layer_drag = if app.tools.layer_drag.is_active() {
+        iced::event::listen_with(layer_drag_filter)
+    } else {
+        Subscription::none()
+    };
+    Subscription::batch([tick, keyboard, closes, layer_drag])
+}
+
+/// Écoute globale active seulement pendant un drag calque : mouvements pour
+/// la deadband, relâchement gauche pour commit/annulation.
+fn layer_drag_filter(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+            Some(Message::LayerDragMoved {
+                position: (position.x, position.y),
+            })
+        }
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+            Some(Message::LayerDragReleased)
+        }
+        iced::Event::Mouse(iced::mouse::Event::CursorLeft) => Some(Message::LayerDragCancelled),
+        _ => None,
+    }
 }
 
 /// Filtre d'abonnement : PRESSIONS et RELEASES non consommées.

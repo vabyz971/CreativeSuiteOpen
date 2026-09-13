@@ -1,4 +1,4 @@
-// CreativeSuiteOpen — Suite créative professionnelle open source
+// Cygnus — Suite créative professionnelle open source
 // Copyright (C) 2026 vabyz971
 //
 // This program is free software: you can redistribute it and/or modify
@@ -115,7 +115,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_nanos();
-        std::env::temp_dir().join(format!("cso-export-{tag}-{}.{}", nanos, ext))
+        std::env::temp_dir().join(format!("cyg-export-{tag}-{}.{}", nanos, ext))
     }
 
     #[test]
