@@ -16,6 +16,9 @@ struct Params {
     blur_px: vec4<f32>,      // x = rayon px doc, y = axe (0 = H, 1 = V), zw réservés
     cursor: vec4<f32>,       // xy = curseur pinceau (doc), z = rayon px doc, w : 0 inactif, 1 pinceau, 2 gomme
     loupe: vec4<f32>,        // xy = centre doc du patch, z = côté px doc, w = 1 si active
+    cadre_a: vec4<f32>,      // coins 0-1 (doc) du calque sélectionné
+    cadre_b: vec4<f32>,      // coins 2-3 (doc) du calque sélectionné
+    cadre_info: vec4<u32>,   // x = 1 si contour actif
 };
 
 @vertex
@@ -135,6 +138,13 @@ fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
     return acc / max(wsum, 0.0001);
 }
 
+// Distance point-segment (espace document) pour les contours.
+fn dist_seg(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
+    return distance(p, a + ab * t);
+}
+
 // Présentation écran : `base_tex` reçoit la texture accumulée finale,
 // `top_tex` le patch loupe éventuel (ou une texture neutre si inactive).
 // Un seul uniform et un seul layout pour toutes les passes.
@@ -184,6 +194,32 @@ fn fs_present(in: VOut) -> @location(0) vec4<f32> {
         if (all(screen_px >= origin) && all(screen_px <= origin + vec2<f32>(size_scr))) {
             let p_uv = (screen_px - origin) / size_scr;
             col = textureSampleLevel(top_tex, top_samp, p_uv, 0.0).rgb;
+        }
+    }
+
+    // Bordure du document (dimension visible du plan de travail).
+    if (bp.mode_sizes.w == 1u) {
+        let ex = min(doc_px.x, bp.screen_doc.z - doc_px.x);
+        let ey = min(doc_px.y, bp.screen_doc.w - doc_px.y);
+        if (doc_px.x >= 0.0 && doc_px.y >= 0.0 && doc_px.x <= bp.screen_doc.z && doc_px.y <= bp.screen_doc.w
+            && min(ex, ey) * zoom < 1.5) {
+            col = mix(col, GRID_DOT, 0.9);
+        }
+    }
+
+    // Contour du calque sélectionné (quad exact, skew/rotation inclus —
+    // pas les poignées, non portées sur le chemin GPU).
+    if (bp.cadre_info.x == 1u) {
+        let q0 = bp.cadre_a.xy;
+        let q1 = bp.cadre_a.zw;
+        let q2 = bp.cadre_b.xy;
+        let q3 = bp.cadre_b.zw;
+        var d = dist_seg(doc_px, q0, q1);
+        d = min(d, dist_seg(doc_px, q1, q2));
+        d = min(d, dist_seg(doc_px, q2, q3));
+        d = min(d, dist_seg(doc_px, q3, q0));
+        if (d * zoom < 1.5) {
+            col = mix(col, vec3<f32>(0.2, 0.5, 0.9), 0.9);
         }
     }
 

@@ -243,6 +243,8 @@ pub struct LayerCanvas<Message> {
     pub pending_preview: Option<StrokeTex>,
     /// Patch loupe pipette en cours (pixels fournis par l'app).
     pub loupe_patch: Option<LoupePatch>,
+    /// Quad du calque sélectionné (coins doc) pour le contour.
+    pub cadre: Option<[(f32, f32); 4]>,
     /// Convert canvas events to app messages
     pub on_event: std::rc::Rc<dyn Fn(ImageCanvasEvent) -> Message>,
 }
@@ -283,6 +285,7 @@ impl<Message> LayerCanvas<Message> {
             can_paint: true,
             pending_preview: None,
             loupe_patch: None,
+            cadre: None,
             on_event,
         }
     }
@@ -363,6 +366,14 @@ impl<Message> LayerCanvas<Message> {
             side: side.max(1),
             center: (0.0, 0.0),
         });
+        self
+    }
+
+    /// Quad du calque sélectionné (coins doc) — contour seul, sans poignées
+    /// (non portées sur le chemin GPU).
+    #[must_use]
+    pub fn with_cadre(mut self, cadre: Option<[(f32, f32); 4]>) -> Self {
+        self.cadre = cadre;
         self
     }
 }
@@ -509,7 +520,10 @@ where
                     _ => {}
                 }
             }
-            return Some(shader::Action::capture());
+            // Aucun geste armé : ignorer (surtout NE PAS capturer — iced
+            // diffuse les releases à tout l'arbre, et capturer ici volerait
+            // le release des boutons des panneaux voisins).
+            return None;
         }
 
         let cursor_pos = cursor.position_in(bounds)?;
@@ -793,6 +807,7 @@ where
             selection: self.selection,
             curseur,
             loupe,
+            cadre: self.cadre,
         }
     }
 
@@ -931,6 +946,8 @@ pub struct CompositePrimitive {
     pub curseur: Option<(f32, f32, f32, u32)>,
     /// Patch loupe pipette (centré sur le survol).
     pub loupe: Option<LoupePatch>,
+    /// Quad du calque sélectionné (coins doc) — contour seul, sans poignées.
+    pub cadre: Option<[(f32, f32); 4]>,
 }
 
 impl shader::Primitive for CompositePrimitive {
@@ -996,6 +1013,12 @@ struct Params {
     curseur: [f32; 4],
     /// xy = centre doc patch, z = côté px doc, w = 1 si loupe active.
     loupe: [f32; 4],
+    /// Coins 0-1 (doc) du calque sélectionné.
+    cadre_a: [f32; 4],
+    /// Coins 2-3 (doc) du calque sélectionné.
+    cadre_b: [f32; 4],
+    /// x = 1 si contour de sélection actif.
+    cadre_info: [u32; 4],
 }
 
 impl Params {
@@ -1040,6 +1063,15 @@ impl Params {
                 .map(|p| (p.center.0, p.center.1, p.side as f32))
                 .map(|(x, y, c)| [x, y, c, 1.0])
                 .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            cadre_a: prim
+                .cadre
+                .map(|q| [q[0].0, q[0].1, q[1].0, q[1].1])
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            cadre_b: prim
+                .cadre
+                .map(|q| [q[2].0, q[2].1, q[3].0, q[3].1])
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            cadre_info: [u32::from(prim.cadre.is_some()), 0, 0, 0],
         }
     }
 }
@@ -1769,6 +1801,9 @@ impl CompositePipeline {
             blur_px: [0.0, 0.0, 0.0, 0.0],
             curseur: [0.0, 0.0, 0.0, 0.0],
             loupe: [0.0, 0.0, 0.0, 0.0],
+            cadre_a: [0.0, 0.0, 0.0, 0.0],
+            cadre_b: [0.0, 0.0, 0.0, 0.0],
+            cadre_info: [0, 0, 0, 0],
         })
     }
 
@@ -1806,6 +1841,9 @@ impl CompositePipeline {
             blur_px: [0.0, 0.0, 0.0, 0.0],
             curseur: [0.0, 0.0, 0.0, 0.0],
             loupe: [0.0, 0.0, 0.0, 0.0],
+            cadre_a: [0.0, 0.0, 0.0, 0.0],
+            cadre_b: [0.0, 0.0, 0.0, 0.0],
+            cadre_info: [0, 0, 0, 0],
         };
         self.passe(
             encoder,
@@ -1930,6 +1968,9 @@ impl CompositePipeline {
                         blur_px: [0.0, 0.0, 0.0, 0.0],
                         curseur: [0.0, 0.0, 0.0, 0.0],
                         loupe: [0.0, 0.0, 0.0, 0.0],
+                        cadre_a: [0.0, 0.0, 0.0, 0.0],
+                        cadre_b: [0.0, 0.0, 0.0, 0.0],
+                        cadre_info: [0, 0, 0, 0],
                     };
                     let original = vues[cur].clone();
                     let copie = scratch.view.clone();
@@ -2361,6 +2402,7 @@ mod tests {
             selection: Some(Rectangle::new(Point::new(1.0, 2.0), Size::new(3.0, 4.0))),
             curseur: None,
             loupe: None,
+            cadre: Some([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]),
         };
         let p1 = Params::neutres(&prim, 1.0);
         let p2 = Params::neutres(&prim, 2.0);
@@ -2370,6 +2412,9 @@ mod tests {
         assert_eq!(p2.pan_zoom[..3], [20.0, 40.0, 3.0]);
         assert_eq!(p2.off_sel, [2.0, 4.0, 0.0, 0.0]);
         assert_eq!(p2.sel_size, [6.0, 8.0, 0.0, 0.0]);
+        assert_eq!(p2.cadre_a, [0.0, 0.0, 10.0, 0.0]);
+        assert_eq!(p2.cadre_b, [10.0, 10.0, 0.0, 10.0]);
+        assert_eq!(p2.cadre_info, [1, 0, 0, 0]);
     }
 
     #[test]

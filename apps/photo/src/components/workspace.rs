@@ -100,6 +100,18 @@ fn cibles_pick(noeuds: &[LayerNode]) -> Vec<HitLayer> {
     cibles
 }
 
+/// Quad du calque sélectionné (coins doc) pour le contour — pixels
+/// visibles uniquement (même règle que l'ancien visualiseur).
+fn cadre_selection(doc: &Document, selectionne: Option<Uuid>) -> Option<[(f32, f32); 4]> {
+    let id = selectionne?;
+    let l = doc.pixel_layer(id)?;
+    if !l.visible {
+        return None;
+    }
+    let (larg, haut) = l.dimensions();
+    Some(l.transform.doc_corners(larg as f32, haut as f32))
+}
+
 /// Empile les nœuds en couches affichables (récursif : les groupes portent
 /// leurs enfants). Miroir des règles du compositing CPU : invisibles et
 /// opacités nulles sautés, groupes vides et ajustements sans opération
@@ -377,6 +389,7 @@ fn render_canvas_preview<'a>(
         LayerCanvas::new(doc_size.map(|d| (d.width, d.height)), on_event)
             .with_layers(couches)
             .with_hit_layers(cibles_pick(&doc.root))
+            .with_cadre(cadre_selection(doc, selected_layer))
             .with_view(canvas_pan, zoom)
             .with_tool(canvas_tool)
             .with_selection(canvas_selection)
@@ -574,6 +587,22 @@ mod tests {
             rgba.len(),
             couche.tex_width as usize * couche.tex_height as usize * 4
         );
+    }
+
+    #[test]
+    fn cadre_selection_quad() {
+        // Calque sélectionné visible → ses 4 coins doc (identité ici) ;
+        // rien si aucune sélection, calque invisible ou filtre.
+        let mut doc = Document::new(8, 8);
+        let l = calque_pixels("C");
+        let id = l.id;
+        doc.push_layer(LayerNode::Pixel(l));
+        let quad = cadre_selection(&doc, Some(id)).expect("cadre");
+        assert_eq!(quad[0], (0.0, 0.0));
+        assert_eq!(quad[2], (4.0, 4.0));
+        assert!(cadre_selection(&doc, None).is_none());
+        doc.pixel_layer_mut(id).unwrap().visible = false;
+        assert!(cadre_selection(&doc, Some(id)).is_none());
     }
 
     #[test]
