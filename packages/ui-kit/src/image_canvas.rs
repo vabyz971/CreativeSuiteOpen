@@ -703,6 +703,7 @@ impl ImageCanvas {
 }
 
 /// Géométrie écran du visualiseur de transformation.
+/// Partagée avec `layer_canvas` (même boîte, dessinée en shader).
 #[derive(Clone, Copy)]
 pub struct BoxUi {
     /// tl, tr, br, bl (écran)
@@ -719,8 +720,10 @@ pub struct BoxUi {
 }
 
 impl BoxUi {
+    /// Coins écran tl, tr, br, bl → boîte complète. `pub(crate)` : le chemin
+    /// GPU calcule ses poignées dans le même repère.
     #[must_use]
-    fn new(corners: [Point; 4]) -> Self {
+    pub(crate) fn new(corners: [Point; 4]) -> Self {
         let center = Point::new(
             corners.iter().map(|c| c.x).sum::<f32>() / 4.0,
             corners.iter().map(|c| c.y).sum::<f32>() / 4.0,
@@ -1163,13 +1166,14 @@ impl OverlayRaster {
     }
 }
 /// Longueur de la tige de rotation
-const ROT_STEM: f32 = 24.0;
-/// Rayon de hit des poignées (écran)
-const HANDLE_HIT: f32 = 8.0;
-/// Demi-côté des poignées dessinées (écran)
-const HANDLE_HALF: f32 = 5.0;
+/// Tige de rotation (écran). Partagée avec `layer_canvas`.
+pub(crate) const ROT_STEM: f32 = 24.0;
+/// Rayon de hit des poignées (écran). Partagé avec `layer_canvas`.
+pub(crate) const HANDLE_HIT: f32 = 8.0;
+/// Demi-côté des poignées dessinées (écran). Partagé avec `layer_canvas`.
+pub(crate) const HANDLE_HALF: f32 = 5.0;
 /// Distance de la poignée d'échelle : 0.12× la demi-diagonale, au-delà du coin
-const SCALE_OFFSET: f32 = 0.12;
+pub(crate) const SCALE_OFFSET: f32 = 0.12;
 /// Quantum de mouvement doc avant de publier un `PickHover` (évite la rafale).
 /// Partagé avec `layer_canvas` (même cadence pipette sur les deux chemins).
 pub(crate) const PICK_HOVER_STEP: f32 = 4.0;
@@ -1223,7 +1227,8 @@ pub struct State {
 }
 
 /// Curseur correspondant à une poignée de transformation.
-fn transform_cursor(kind: TransformHandle) -> mouse::Interaction {
+/// `pub(crate)` : survol des poignées sur le chemin GPU.
+pub(crate) fn transform_cursor(kind: TransformHandle) -> mouse::Interaction {
     match kind {
         TransformHandle::Move | TransformHandle::Rotate => mouse::Interaction::Move,
         TransformHandle::Corner(Corner::TopLeft) | TransformHandle::Corner(Corner::BottomRight) => {

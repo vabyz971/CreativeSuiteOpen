@@ -48,8 +48,8 @@ use iced::widget::shader;
 use iced::{Element, Length, Point, Rectangle, Size, Vector};
 
 use crate::image_canvas::{
-    BrushStyle, CanvasTool, ImageCanvasEvent, PICK_HOVER_STEP, StrokeTex, TransformHandle,
-    point_in_quad, rasterize_segment,
+    BoxUi, BrushStyle, CanvasTool, Corner, HANDLE_HIT, ImageCanvasEvent, PICK_HOVER_STEP, ROT_STEM,
+    SCALE_OFFSET, StrokeTex, TransformHandle, point_in_quad, rasterize_segment, transform_cursor,
 };
 use math_utils::Transform2D;
 use uuid::Uuid;
@@ -150,6 +150,131 @@ pub struct HitLayer {
     pub height: f32,
 }
 
+/// Cible du visualiseur de transformation (calque sélectionné) : le shader
+/// dessine boîte + poignées, le canvas gère les gestes sur poignées.
+#[derive(Clone, Debug)]
+pub struct TransformTarget {
+    pub id: Option<Uuid>,
+    pub transform: Transform2D,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// Poignées en coordonnées DOCUMENT (miroir exact de `BoxUi`, longueurs
+/// écran divisées par le zoom) pour le dessin shader. Le quad lui-même
+/// vient de `cadre` (pas dupliqué ici).
+#[derive(Clone, Copy, Debug)]
+pub struct DocPoignees {
+    pub rot: (f32, f32),
+    pub scale: (f32, f32),
+    pub skew_x: (f32, f32),
+    pub skew_y: (f32, f32),
+}
+
+/// Identifiant visuel de poignée active (0 = aucune).
+fn id_poignee(kind: TransformHandle) -> u32 {
+    match kind {
+        TransformHandle::Move => 0,
+        TransformHandle::Corner(_) => 1,
+        TransformHandle::Rotate => 2,
+        TransformHandle::SkewX => 3,
+        TransformHandle::SkewY => 4,
+        TransformHandle::Scale => 5,
+    }
+}
+
+/// Police vectorielle 3×5 (lignes haut→bas, bit 2 = gauche) pour écrire les
+/// dimensions du document dans l'overlay — sans dépendance de rastérisation
+/// de texte (le shader ne fait pas de texte).
+const GLYPHES: &[(char, [u8; 5])] = &[
+    ('0', [0b111, 0b101, 0b101, 0b101, 0b111]),
+    ('1', [0b010, 0b110, 0b010, 0b010, 0b111]),
+    ('2', [0b111, 0b001, 0b111, 0b100, 0b111]),
+    ('3', [0b111, 0b001, 0b111, 0b001, 0b111]),
+    ('4', [0b101, 0b101, 0b111, 0b001, 0b001]),
+    ('5', [0b111, 0b100, 0b111, 0b001, 0b111]),
+    ('6', [0b111, 0b100, 0b111, 0b101, 0b111]),
+    ('7', [0b111, 0b001, 0b001, 0b010, 0b010]),
+    ('8', [0b111, 0b101, 0b111, 0b101, 0b111]),
+    ('9', [0b111, 0b101, 0b111, 0b001, 0b111]),
+    ('×', [0b000, 0b101, 0b010, 0b101, 0b000]),
+];
+
+/// Échelle des glyphes (px doc par pixel de glyphe).
+const GLYPHE_ECHELLE: f32 = 2.0;
+/// Avance d'un glyphe (3 px + 1 d'espacement), à l'échelle.
+const GLYPHE_AVANCE: f32 = 8.0;
+
+/// Étiquette "L×H" en tuiles 512 d'espace document, blanc opaque.
+/// Clé stable par dimensions (téléversée une fois, comme le reste).
+fn etiquette_dimensions(doc_l: f32, doc_h: f32) -> Vec<DisplayLayer> {
+    let texte = format!("{}×{}", doc_l as u32, doc_h as u32);
+    let mut tuiles: std::collections::BTreeMap<(i32, i32), Vec<u8>> = Default::default();
+    // Sous le coin bas-gauche du document (hors plan de travail).
+    let (mut x, y) = (4.0, doc_h + 6.0);
+    for caractere in texte.chars() {
+        let Some((_, lignes)) = GLYPHES.iter().find(|(c, _)| *c == caractere) else {
+            x += GLYPHE_AVANCE;
+            continue;
+        };
+        for (ly, ligne) in lignes.iter().enumerate() {
+            for lx in 0..3 {
+                if ligne & (1 << (2 - lx)) == 0 {
+                    continue;
+                }
+                // Pixel de glyphe → carré ECHELLE×ECHELLE en doc.
+                for dy in 0..GLYPHE_ECHELLE as i32 {
+                    for dx in 0..GLYPHE_ECHELLE as i32 {
+                        let px = (x + (lx as f32) * GLYPHE_ECHELLE + dx as f32).floor();
+                        let py = (y + (ly as f32) * GLYPHE_ECHELLE + dy as f32).floor();
+                        let tx = px.div_euclid(512.0) as i32;
+                        let ty = py.div_euclid(512.0) as i32;
+                        let tuile = tuiles
+                            .entry((tx, ty))
+                            .or_insert_with(|| vec![0u8; 512 * 512 * 4]);
+                        let ox = (px - tx as f32 * 512.0) as usize;
+                        let oy = (py - ty as f32 * 512.0) as usize;
+                        let idx = (oy * 512 + ox) * 4;
+                        tuile[idx] = 255;
+                        tuile[idx + 1] = 255;
+                        tuile[idx + 2] = 255;
+                        tuile[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+        x += GLYPHE_AVANCE;
+    }
+    tuiles
+        .into_iter()
+        .map(|((tx, ty), rgba)| {
+            let ox = tx as f32 * 512.0;
+            let oy = ty as f32 * 512.0;
+            // Clé = contenu : stable tant que les dimensions suffisent.
+            let mut cle = 0x51ab_3f2c_9d77_11e5u64 ^ doc_l.to_bits() as u64;
+            cle ^= (doc_h.to_bits() as u64).wrapping_mul(0x100000001b3);
+            cle ^= ((tx as u64) << 32) | (ty as u64);
+            DisplayLayer {
+                key: cle,
+                rgba: Some(Arc::<[u8]>::from(rgba)),
+                width: 512,
+                height: 512,
+                tex_width: 512,
+                tex_height: 512,
+                opacity: 1.0,
+                blend: 0,
+                transform: Transform2D {
+                    offset_x: ox,
+                    offset_y: oy,
+                    ..Transform2D::default()
+                },
+                mask: None,
+                content: DisplayContent::Pixel,
+            }
+        })
+        .collect()
+}
+
 /// Patch loupe pipette : carré `side`×`side` (pixels doc 1:1, RGBA8),
 /// grossi ×8 à l'écran par le shader de présentation (pixels visibles).
 #[derive(Clone, Debug)]
@@ -229,6 +354,8 @@ pub struct LayerCanvas<Message> {
     pub layers: Vec<DisplayLayer>,
     /// Calques cliquables (haut de pile en dernier) pour l'outil Select.
     pub hit_layers: Vec<HitLayer>,
+    /// Cible du visualiseur de transformation (Select/Move).
+    pub transform_target: Option<TransformTarget>,
     /// Document dimensions in pixels (None = no document)
     pub doc_size: Option<(f32, f32)>,
     pub pan: Vector,
@@ -271,6 +398,7 @@ impl<Message> LayerCanvas<Message> {
         Self {
             layers: Vec::new(),
             hit_layers: Vec::new(),
+            transform_target: None,
             doc_size,
             pan: Vector::new(0.0, 0.0),
             zoom: 1.0,
@@ -304,6 +432,14 @@ impl<Message> LayerCanvas<Message> {
         self
     }
 
+    /// Cible du visualiseur de transformation (boîte + poignées dessinées
+    /// en shader, gestes sur poignées gérés).
+    #[must_use]
+    pub fn with_transform_target(mut self, target: Option<TransformTarget>) -> Self {
+        self.transform_target = target;
+        self
+    }
+
     /// Pick : id du calque sous le point document (haut de pile d'abord).
     /// Même sémantique que `ImageCanvas::pick_layer` (sans la boîte de
     /// transformation, non portée sur le chemin GPU).
@@ -314,6 +450,118 @@ impl<Message> LayerCanvas<Message> {
             let coins = l.transform.doc_corners(l.width, l.height);
             let quad = coins.map(|(x, y)| Point::new(x, y));
             point_in_quad(p, quad).then_some(id)
+        })
+    }
+
+    /// Centre écran du widget (même convention que le shader de présentation).
+    fn centre_ecran(&self, bounds: Rectangle) -> Point {
+        Point::new(
+            bounds.width / 2.0 + self.pan.x,
+            bounds.height / 2.0 + self.pan.y,
+        )
+    }
+
+    /// Document → écran (inverse exact du shader `fs_present`).
+    fn doc_vers_ecran(&self, doc: (f32, f32), bounds: Rectangle) -> Point {
+        let centre = self.centre_ecran(bounds);
+        let (hw, hh) = self.doc_size.unwrap_or((0.0, 0.0));
+        Point::new(
+            (doc.0 - hw / 2.0) * self.zoom + centre.x,
+            (doc.1 - hh / 2.0) * self.zoom + centre.y,
+        )
+    }
+
+    /// Coins écran du parallélogramme de la cible.
+    fn coins_cible(&self, bounds: Rectangle) -> Option<[Point; 4]> {
+        let cible = self.transform_target.as_ref()?;
+        let coins = cible.transform.doc_corners(cible.width, cible.height);
+        Some(coins.map(|c| self.doc_vers_ecran(c, bounds)))
+    }
+
+    /// Poignée sous le curseur (ou `Move` si intérieur), même priorité que
+    /// `ImageCanvas::hit_transform_handle` : rotation, échelle, coins,
+    /// inclinaisons, intérieur.
+    fn hit_poignee(&self, pos: Point, bounds: Rectangle) -> Option<TransformHandle> {
+        let coins = self.coins_cible(bounds)?;
+        let ui = BoxUi::new(coins);
+        if ui.rot_pos.distance(pos) <= HANDLE_HIT {
+            return Some(TransformHandle::Rotate);
+        }
+        if ui.scale_pos.distance(pos) <= HANDLE_HIT {
+            return Some(TransformHandle::Scale);
+        }
+        for kind in [
+            Corner::TopLeft,
+            Corner::TopRight,
+            Corner::BottomRight,
+            Corner::BottomLeft,
+        ] {
+            let c = match kind {
+                Corner::TopLeft => ui.corners[0],
+                Corner::TopRight => ui.corners[1],
+                Corner::BottomRight => ui.corners[2],
+                Corner::BottomLeft => ui.corners[3],
+            };
+            if c.distance(pos) <= HANDLE_HIT {
+                return Some(TransformHandle::Corner(kind));
+            }
+        }
+        if ui.right_mid.distance(pos) <= HANDLE_HIT {
+            return Some(TransformHandle::SkewX);
+        }
+        if ui.bottom_mid.distance(pos) <= HANDLE_HIT {
+            return Some(TransformHandle::SkewY);
+        }
+        if point_in_quad(pos, coins) {
+            return Some(TransformHandle::Move);
+        }
+        None
+    }
+
+    /// Curseur dans la boîte de la cible (zone de déplacement).
+    fn dans_boite(&self, pos: Point, bounds: Rectangle) -> bool {
+        self.coins_cible(bounds)
+            .map(|coins| point_in_quad(pos, coins))
+            .unwrap_or(false)
+    }
+
+    /// Poignées en coordonnées DOCUMENT (miroir de `BoxUi::new`, tige en
+    /// px doc) pour le dessin shader.
+    fn poignees_doc(&self) -> Option<DocPoignees> {
+        let cible = self.transform_target.as_ref()?;
+        let coins = cible.transform.doc_corners(cible.width, cible.height);
+        let centre = (
+            coins.iter().map(|c| c.0).sum::<f32>() / 4.0,
+            coins.iter().map(|c| c.1).sum::<f32>() / 4.0,
+        );
+        let milieu = |a: (f32, f32), b: (f32, f32)| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        let haut = milieu(coins[0], coins[1]);
+        let mut dir = (haut.0 - centre.0, haut.1 - centre.1);
+        let len = (dir.0 * dir.0 + dir.1 * dir.1).sqrt();
+        if len > 1e-6 {
+            dir = (dir.0 / len, dir.1 / len);
+        } else {
+            dir = (0.0, -1.0);
+        }
+        let tige = ROT_STEM / self.zoom.max(0.01);
+        let rot = (haut.0 + dir.0 * tige, haut.1 + dir.1 * tige);
+        let br = coins[2];
+        let mut sdir = (br.0 - centre.0, br.1 - centre.1);
+        let slen = (sdir.0 * sdir.0 + sdir.1 * sdir.1).sqrt();
+        if slen > 1e-6 {
+            sdir = (sdir.0 / slen, sdir.1 / slen);
+        } else {
+            sdir = (0.707, 0.707);
+        }
+        let scale = (
+            br.0 + sdir.0 * slen * SCALE_OFFSET,
+            br.1 + sdir.1 * slen * SCALE_OFFSET,
+        );
+        Some(DocPoignees {
+            rot,
+            scale,
+            skew_x: milieu(coins[1], coins[2]),
+            skew_y: milieu(coins[3], coins[2]),
         })
     }
 
@@ -397,6 +645,8 @@ where
 pub struct State {
     dragging: Option<(Point, Vector)>,
     selecting: Option<(Point, Point)>,
+    /// Geste sur poignée actif (visualiseur de transformation).
+    transform_handle: Option<TransformHandle>,
     modifiers: iced::keyboard::Modifiers,
     prev_bounds: Option<Size>,
     /// Points du trait en cours (coordonnées document) — aperçu local
@@ -447,9 +697,16 @@ where
             return None;
         }
 
-        // Release handled even outside bounds (mouse is captured during
-        // drag) — otherwise state stays armed and events keep coming.
+        // Release traité même hors bornes (souris capturée pendant le
+        // drag) — sinon l'état reste armé. Priorité d'origine : poignée,
+        // marquee, déplacement.
         if let Event::Mouse(mouse::Event::ButtonReleased(Button::Left)) = event {
+            if state.transform_handle.take().is_some() {
+                return Some(
+                    shader::Action::publish((self.on_event)(ImageCanvasEvent::TransformEnd))
+                        .and_capture(),
+                );
+            }
             if let Some((start, end)) = state.selecting.take() {
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
                     return Some(shader::Action::publish((self.on_event)(
@@ -495,8 +752,9 @@ where
             }
             if state.dragging.take().is_some() {
                 match self.tool {
-                    // Move, ou Select après un pick (marquee = selecting).
-                    CanvasTool::Move | CanvasTool::Select => {
+                    // Select passe par `transform_handle` (poignées, pick,
+                    // boîte) : ici seul Move utilise `dragging`.
+                    CanvasTool::Move => {
                         return Some(
                             shader::Action::publish((self.on_event)(
                                 ImageCanvasEvent::TransformEnd,
@@ -552,26 +810,64 @@ where
                     Some(shader::Action::capture())
                 }
                 CanvasTool::Select => {
-                    // Pick : sur un calque → sélection + déplacement direct
-                    // (même protocole que `image_canvas`, sans la boîte de
-                    // transformation) ; dans le vide → marquee.
-                    let doc = self.screen_to_doc(cursor_pos, bounds);
-                    if let Some(id) = self.pick(doc) {
-                        state.dragging = Some((cursor_pos, self.pan));
-                        Some(
+                    // Visualiseur de transformation. Ordre de priorité
+                    // (identique à `image_canvas`) :
+                    // 1) POIGNÉES (rotation/coins/inclinaisons/échelle).
+                    // 2) Clic sur UN CALQUE → sélection + déplacement.
+                    // 3) Intérieur de la boîte → déplacement.
+                    // 4) Vide → marquee.
+                    let (doc_x, doc_y) = self.screen_to_doc(cursor_pos, bounds);
+                    if self.transform_target.is_some()
+                        && let Some(kind) = self.hit_poignee(cursor_pos, bounds)
+                        && !matches!(kind, TransformHandle::Move)
+                    {
+                        state.transform_handle = Some(kind);
+                        return Some(
                             shader::Action::publish((self.on_event)(
                                 ImageCanvasEvent::TransformStart {
-                                    id: Some(id),
-                                    kind: TransformHandle::Move,
-                                    doc,
+                                    id: None,
+                                    kind,
+                                    doc: (doc_x, doc_y),
                                 },
                             ))
                             .and_capture(),
-                        )
-                    } else {
-                        state.selecting = Some((cursor_pos, cursor_pos));
-                        Some(shader::Action::capture())
+                        );
                     }
+                    if let Some(id) = self.pick((doc_x, doc_y)) {
+                        state.transform_handle = Some(TransformHandle::Move);
+                        // Même calque que la cible → id: None (pas de
+                        // re-sélection), le geste reste un Déplacement.
+                        let meme = self
+                            .transform_target
+                            .as_ref()
+                            .is_some_and(|t| t.id == Some(id));
+                        let id = if meme { None } else { Some(id) };
+                        return Some(
+                            shader::Action::publish((self.on_event)(
+                                ImageCanvasEvent::TransformStart {
+                                    id,
+                                    kind: TransformHandle::Move,
+                                    doc: (doc_x, doc_y),
+                                },
+                            ))
+                            .and_capture(),
+                        );
+                    }
+                    if self.dans_boite(cursor_pos, bounds) {
+                        state.transform_handle = Some(TransformHandle::Move);
+                        return Some(
+                            shader::Action::publish((self.on_event)(
+                                ImageCanvasEvent::TransformStart {
+                                    id: None,
+                                    kind: TransformHandle::Move,
+                                    doc: (doc_x, doc_y),
+                                },
+                            ))
+                            .and_capture(),
+                        );
+                    }
+                    state.selecting = Some((cursor_pos, cursor_pos));
+                    Some(shader::Action::capture())
                 }
                 CanvasTool::Brush | CanvasTool::Eraser => {
                     if !self.can_paint {
@@ -609,6 +905,16 @@ where
                 }
             },
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // Geste sur poignée (tous outils) : suivi direct.
+                if state.transform_handle.is_some() {
+                    return Some(shader::Action::publish((self.on_event)(
+                        ImageCanvasEvent::TransformCursor {
+                            doc: self.screen_to_doc(cursor_pos, bounds),
+                            uniform: state.modifiers.control(),
+                            snap: state.modifiers.shift(),
+                        },
+                    )));
+                }
                 if let Some((start, orig_pan)) = state.dragging {
                     if self.tool == CanvasTool::Hand {
                         let delta = Vector::new(cursor_pos.x - start.x, cursor_pos.y - start.y);
@@ -773,6 +1079,11 @@ where
                 });
             }
         }
+        // Étiquette des dimensions du document (overlay doc, hors plan).
+        if self.doc_size.is_some() {
+            let (dw, dh) = self.doc_size.unwrap_or((800.0, 600.0));
+            layers.extend(etiquette_dimensions(dw, dh));
+        }
         // Anneau curseur pinceau/gomme (doc + rayon px doc).
         let curseur = if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) {
             cursor.position_in(bounds).map(|p| {
@@ -797,6 +1108,16 @@ where
                 center: centre,
             })
         });
+        // Visualiseur : contour + poignées quand l'outil Select/Move est
+        // actif sur une cible (le shader dessine, positions doc).
+        let visualiseur = matches!(self.tool, CanvasTool::Select | CanvasTool::Move)
+            && self.transform_target.is_some();
+        let poignees = if visualiseur {
+            self.poignees_doc()
+                .map(|p| (p, state.transform_handle.map(id_poignee).unwrap_or(0)))
+        } else {
+            None
+        };
         CompositePrimitive {
             layers,
             doc_size: self.doc_size.unwrap_or((800.0, 600.0)),
@@ -808,7 +1129,8 @@ where
             selection: self.selection,
             curseur,
             loupe,
-            cadre: self.cadre,
+            cadre: if visualiseur { self.cadre } else { None },
+            poignees,
         }
     }
 
@@ -819,6 +1141,9 @@ where
         cursor: iced::mouse::Cursor,
     ) -> iced::mouse::Interaction {
         use iced::mouse::Interaction;
+        if let Some(kind) = state.transform_handle {
+            return transform_cursor(kind);
+        }
         if state.dragging.is_some() {
             return Interaction::Grabbing;
         }
@@ -826,14 +1151,22 @@ where
             return Interaction::Crosshair;
         }
         if cursor.is_over(bounds) {
-            // Sur un calque cliquable (outil Select) : curseur Déplacement.
+            // Sur une poignée (hors Move) : curseur dédié.
+            if self.tool == CanvasTool::Select
+                && self.transform_target.is_some()
+                && let Some(pos) = cursor.position_in(bounds)
+                && let Some(kind) = self.hit_poignee(pos, bounds)
+                && !matches!(kind, TransformHandle::Move)
+            {
+                return transform_cursor(kind);
+            }
+            // Sur un calque (sélectionnable) ou dans la boîte : Déplacement.
             if self.tool == CanvasTool::Select
                 && let Some(pos) = cursor.position_in(bounds)
+                && (self.pick(self.screen_to_doc(pos, bounds)).is_some()
+                    || self.dans_boite(pos, bounds))
             {
-                let doc = self.screen_to_doc(pos, bounds);
-                if self.pick(doc).is_some() {
-                    return Interaction::Move;
-                }
+                return Interaction::Move;
             }
             if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser) && !self.can_paint {
                 return Interaction::NotAllowed;
@@ -952,6 +1285,9 @@ pub struct CompositePrimitive {
     pub loupe: Option<LoupePatch>,
     /// Quad du calque sélectionné (coins doc) — contour seul, sans poignées.
     pub cadre: Option<[(f32, f32); 4]>,
+    /// Poignées en coords doc + id visuel actif (0 = aucune) — dessinées en
+    /// shader quand l'outil Select/Move est actif sur une cible.
+    pub poignees: Option<(DocPoignees, u32)>,
 }
 
 impl shader::Primitive for CompositePrimitive {
@@ -1021,8 +1357,12 @@ struct Params {
     cadre_a: [f32; 4],
     /// Coins 2-3 (doc) du calque sélectionné.
     cadre_b: [f32; 4],
-    /// x = 1 si contour de sélection actif.
+    /// x = contour actif, y = poignée active (0 = aucune, voir `id_poignee`).
     cadre_info: [u32; 4],
+    /// Poignées rotation/échelle (doc) — dessin shader.
+    poig_a: [f32; 4],
+    /// Poignées inclinaisons X/Y (doc) — dessin shader.
+    poig_b: [f32; 4],
 }
 
 impl Params {
@@ -1075,7 +1415,20 @@ impl Params {
                 .cadre
                 .map(|q| [q[2].0, q[2].1, q[3].0, q[3].1])
                 .unwrap_or([0.0, 0.0, 0.0, 0.0]),
-            cadre_info: [u32::from(prim.cadre.is_some()), 0, 0, 0],
+            cadre_info: [
+                u32::from(prim.cadre.is_some()),
+                prim.poignees.map(|(_, actif)| actif).unwrap_or(0),
+                0,
+                0,
+            ],
+            poig_a: prim
+                .poignees
+                .map(|(p, _)| [p.rot.0, p.rot.1, p.scale.0, p.scale.1])
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            poig_b: prim
+                .poignees
+                .map(|(p, _)| [p.skew_x.0, p.skew_x.1, p.skew_y.0, p.skew_y.1])
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
         }
     }
 }
@@ -1808,6 +2161,8 @@ impl CompositePipeline {
             cadre_a: [0.0, 0.0, 0.0, 0.0],
             cadre_b: [0.0, 0.0, 0.0, 0.0],
             cadre_info: [0, 0, 0, 0],
+            poig_a: [0.0, 0.0, 0.0, 0.0],
+            poig_b: [0.0, 0.0, 0.0, 0.0],
         })
     }
 
@@ -1848,6 +2203,8 @@ impl CompositePipeline {
             cadre_a: [0.0, 0.0, 0.0, 0.0],
             cadre_b: [0.0, 0.0, 0.0, 0.0],
             cadre_info: [0, 0, 0, 0],
+            poig_a: [0.0, 0.0, 0.0, 0.0],
+            poig_b: [0.0, 0.0, 0.0, 0.0],
         };
         self.passe(
             encoder,
@@ -1975,6 +2332,8 @@ impl CompositePipeline {
                         cadre_a: [0.0, 0.0, 0.0, 0.0],
                         cadre_b: [0.0, 0.0, 0.0, 0.0],
                         cadre_info: [0, 0, 0, 0],
+                        poig_a: [0.0, 0.0, 0.0, 0.0],
+                        poig_b: [0.0, 0.0, 0.0, 0.0],
                     };
                     let original = vues[cur].clone();
                     let copie = scratch.view.clone();
@@ -2144,51 +2503,6 @@ impl CompositePipeline {
         // Recomposite only if stack changed since last frame
         let hash = config_hash(&prim.layers, prim.doc_size);
         if hash != self.last_hash.load(Ordering::Relaxed) {
-            // Diagnostic temporaire (bogues d'affichage) : table de la pile
-            // vue par le GPU — borné aux recomposites, silencieux sinon.
-            eprintln!(
-                "layer-canvas : recomposite doc={}x{} vue={}x{} couches={}",
-                prim.doc_size.0,
-                prim.doc_size.1,
-                prim.viewport.0,
-                prim.viewport.1,
-                prim.layers.len(),
-            );
-            for (i, couche) in prim.layers.iter().enumerate() {
-                let sorte = match &couche.content {
-                    DisplayContent::Pixel => "pixel",
-                    DisplayContent::Group(e) => {
-                        eprintln!("  couche {i} : groupe {} enfants", e.len());
-                        "groupe"
-                    }
-                    DisplayContent::Adjustment(o) => {
-                        eprintln!("  couche {i} : ajustement {} ops", o.len());
-                        "ajustement"
-                    }
-                };
-                if matches!(couche.content, DisplayContent::Pixel) {
-                    let t = &couche.transform;
-                    eprintln!(
-                        "  couche {i} : {sorte} cle={} log={}x{} tex={}x{} octets={} op={} blend={} off=({},{}) echelle=({},{}) rot={} skew=({},{}) masque={}",
-                        couche.key,
-                        couche.width,
-                        couche.height,
-                        couche.tex_width,
-                        couche.tex_height,
-                        couche.rgba.as_ref().map(|r| r.len()).unwrap_or(0),
-                        couche.opacity,
-                        couche.blend,
-                        t.offset_x,
-                        t.offset_y,
-                        t.scale_x,
-                        t.scale_y,
-                        t.rotation_deg,
-                        t.skew_x,
-                        t.skew_y,
-                        couche.mask.is_some(),
-                    );
-                }
-            }
             let ctx = ScopeCtx {
                 doc: prim.doc_size,
                 viewport: prim.viewport,
@@ -2422,6 +2736,7 @@ mod tests {
             curseur: None,
             loupe: None,
             cadre: Some([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]),
+            poignees: None,
         };
         let p1 = Params::neutres(&prim, 1.0);
         let p2 = Params::neutres(&prim, 2.0);
@@ -2494,6 +2809,97 @@ mod tests {
         }]);
         assert_eq!(toile.pick((12.0, 8.0)), Some(Uuid::from_u128(7)));
         assert_eq!(toile.pick((0.0, 9.0)), None);
+    }
+
+    fn toile_poignees() -> LayerCanvas<String> {
+        LayerCanvas::new(
+            Some((100.0, 100.0)),
+            std::rc::Rc::new(|e: ImageCanvasEvent| format!("{e:?}")),
+        )
+        .with_transform_target(Some(TransformTarget {
+            id: Some(Uuid::from_u128(3)),
+            transform: Transform2D::default(),
+            width: 100.0,
+            height: 100.0,
+        }))
+    }
+
+    #[test]
+    fn hit_poignee_priorites() {
+        // Cible identité 100×100, widget 200×200, pan 0, zoom 1 :
+        // coins écran = coins doc + 50. Priorité d'origine : rotation,
+        // échelle, coins, inclinaisons, intérieur.
+        let toile = toile_poignees();
+        let cadre = Rectangle::new(Point::new(0.0, 0.0), Size::new(200.0, 200.0));
+        // Poignée rotation : haut (100,50) + tige 24 vers le haut.
+        assert_eq!(
+            toile.hit_poignee(Point::new(100.0, 26.0), cadre),
+            Some(TransformHandle::Rotate)
+        );
+        // Échelle : au-delà du coin bas-droite (150,150) + 12 %.
+        let echelle = toile.hit_poignee(Point::new(156.0, 156.0), cadre);
+        assert!(matches!(echelle, Some(TransformHandle::Scale)));
+        // Coins.
+        assert!(matches!(
+            toile.hit_poignee(Point::new(50.0, 50.0), cadre),
+            Some(TransformHandle::Corner(Corner::TopLeft))
+        ));
+        // Inclinaisons : milieux droit et bas.
+        assert_eq!(
+            toile.hit_poignee(Point::new(150.0, 100.0), cadre),
+            Some(TransformHandle::SkewX)
+        );
+        assert_eq!(
+            toile.hit_poignee(Point::new(100.0, 150.0), cadre),
+            Some(TransformHandle::SkewY)
+        );
+        // Intérieur → Move ; dehors → None.
+        assert_eq!(
+            toile.hit_poignee(Point::new(100.0, 100.0), cadre),
+            Some(TransformHandle::Move)
+        );
+        assert_eq!(toile.hit_poignee(Point::new(10.0, 10.0), cadre), None);
+    }
+
+    #[test]
+    fn poignees_doc_miroir() {
+        // Miroir de BoxUi en doc : rotation à 24 px écran au-dessus du
+        // bord haut (zoom 1 ⇒ 24 px doc), échelle à +12 % de diagonale.
+        let toile = toile_poignees();
+        let p = toile.poignees_doc().expect("cible");
+        assert!((p.rot.0 - 50.0).abs() < 1e-3);
+        assert!((p.rot.1 + 24.0).abs() < 1e-3);
+        assert!((p.scale.0 - 106.0).abs() < 1.0);
+        assert!((p.scale.1 - 106.0).abs() < 1.0);
+        assert_eq!(p.skew_x, (100.0, 50.0));
+        assert_eq!(p.skew_y, (50.0, 100.0));
+    }
+
+    #[test]
+    fn etiquette_dimensions_tuiles() {
+        // "1920×1080" : 9 glyphes, encre blanche opaque, clé stable par
+        // dimensions, tuiles 512 pleines (upload exact).
+        let tuiles = etiquette_dimensions(1920.0, 1080.0);
+        assert!(!tuiles.is_empty());
+        let encre: usize = tuiles
+            .iter()
+            .filter_map(|t| t.rgba.as_ref())
+            .map(|r| r.chunks_exact(4).filter(|px| px[3] == 255).count())
+            .sum();
+        assert!(encre > 100, "glyphes visibles");
+        assert!(encre < 512 * 512, "pas de tuile pleine");
+        for t in &tuiles {
+            assert_eq!((t.width, t.height), (512, 512));
+            assert_eq!((t.tex_width, t.tex_height), (512, 512));
+            let rgba = t.rgba.as_ref().expect("pixels");
+            assert!(tampon_valide(rgba.len(), t.tex_width, t.tex_height));
+        }
+        let tuiles2 = etiquette_dimensions(1920.0, 1080.0);
+        assert_eq!(tuiles.len(), tuiles2.len());
+        assert_eq!(tuiles[0].key, tuiles2[0].key, "clé stable");
+        // Dimensions différentes → texte et clés différents.
+        let autres = etiquette_dimensions(800.0, 600.0);
+        assert_ne!(tuiles[0].key, autres[0].key);
     }
 
     #[test]

@@ -18,7 +18,9 @@ struct Params {
     loupe: vec4<f32>,        // xy = centre doc du patch, z = côté px doc, w = 1 si active
     cadre_a: vec4<f32>,      // coins 0-1 (doc) du calque sélectionné
     cadre_b: vec4<f32>,      // coins 2-3 (doc) du calque sélectionné
-    cadre_info: vec4<u32>,   // x = 1 si contour actif
+    cadre_info: vec4<u32>,   // x = contour actif, y = poignée active (0 aucune)
+    poig_a: vec4<f32>,       // poignées rotation/échelle (doc)
+    poig_b: vec4<f32>,       // poignées inclinaisons X/Y (doc)
 };
 
 @vertex
@@ -150,6 +152,8 @@ fn dist_seg(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 // Un seul uniform et un seul layout pour toutes les passes.
 const GRID_BG = vec3<f32>(0.0549, 0.0549, 0.0549);   // theme::SURFACE_CONTAINER_LOWEST #0E0E0E
 const GRID_DOT = vec3<f32>(0.2078, 0.2078, 0.2039);  // theme::SURFACE_CONTAINER_HIGHEST #353534
+const ACCENT = vec3<f32>(0.0, 0.4784, 1.0);          // theme::ACCENT #007AFF
+const SUR_ACCENT = vec3<f32>(1.0, 1.0, 1.0);         // theme::TEXT_ON_ACCENT
 
 @fragment
 fn fs_present(in: VOut) -> @location(0) vec4<f32> {
@@ -213,8 +217,9 @@ fn fs_present(in: VOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // Contour du calque sélectionné (quad exact, skew/rotation inclus —
-    // pas les poignées, non portées sur le chemin GPU).
+    // Contour du calque sélectionné + poignées (coins : disques ;
+    // inclinaisons : losanges ; échelle : carré ; rotation : disque + tige).
+    // Poignée active : remplissage accent, sinon blanc ; anneau accent.
     if (bp.cadre_info.x == 1u) {
         let q0 = bp.cadre_a.xy;
         let q1 = bp.cadre_a.zw;
@@ -225,7 +230,61 @@ fn fs_present(in: VOut) -> @location(0) vec4<f32> {
         d = min(d, dist_seg(doc_px, q2, q3));
         d = min(d, dist_seg(doc_px, q3, q0));
         if (d * zoom < 1.5) {
-            col = mix(col, vec3<f32>(0.2, 0.5, 0.9), 0.9);
+            col = mix(col, ACCENT, 0.9);
+        }
+        let actif = bp.cadre_info.y;
+        // Disques des 4 coins.
+        var dd = distance(doc_px, q0);
+        dd = min(dd, distance(doc_px, q1));
+        dd = min(dd, distance(doc_px, q2));
+        dd = min(dd, distance(doc_px, q3));
+        if (dd * zoom < 5.0) {
+            var rempl = SUR_ACCENT;
+            if (actif == 1u) { rempl = ACCENT; }
+            col = mix(col, rempl, 0.95);
+        }
+        if (abs(dd * zoom - 5.0) < 1.0) {
+            col = mix(col, ACCENT, 0.9);
+        }
+        // Tige de rotation + disque.
+        let haut = (q0 + q1) * 0.5;
+        let rot = bp.poig_a.xy;
+        if (dist_seg(doc_px, haut, rot) * zoom < 1.0) {
+            col = mix(col, ACCENT, 0.9);
+        }
+        if (distance(doc_px, rot) * zoom < 5.0) {
+            var rempl_r = SUR_ACCENT;
+            if (actif == 2u) { rempl_r = ACCENT; }
+            col = mix(col, rempl_r, 0.95);
+        }
+        if (abs(distance(doc_px, rot) * zoom - 5.0) < 1.0) {
+            col = mix(col, ACCENT, 0.9);
+        }
+        // Losanges d'inclinaison.
+        let skx = bp.poig_b.xy;
+        let sky = bp.poig_b.zw;
+        let los_x = abs(doc_px.x - skx.x) + abs(doc_px.y - skx.y);
+        let los_y = abs(doc_px.x - sky.x) + abs(doc_px.y - sky.y);
+        if (los_x * zoom < 5.0) {
+            var rempl_x = SUR_ACCENT;
+            if (actif == 3u) { rempl_x = ACCENT; }
+            col = mix(col, rempl_x, 0.95);
+        }
+        if (los_y * zoom < 5.0) {
+            var rempl_y = SUR_ACCENT;
+            if (actif == 4u) { rempl_y = ACCENT; }
+            col = mix(col, rempl_y, 0.95);
+        }
+        // Carré d'échelle.
+        let ech = bp.poig_a.zw;
+        let carre = max(abs(doc_px.x - ech.x), abs(doc_px.y - ech.y));
+        if (carre * zoom < 7.0) {
+            var rempl_e = SUR_ACCENT;
+            if (actif == 5u) { rempl_e = ACCENT; }
+            col = mix(col, rempl_e, 0.95);
+        }
+        if (abs(carre * zoom - 7.0) < 1.0) {
+            col = mix(col, ACCENT, 0.9);
         }
     }
 

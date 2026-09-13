@@ -24,7 +24,7 @@ use iced::{Element, Length, Size, Vector};
 use photo_engine::{Document, FilterNode, LayerNode};
 use ui_kit::base_panel;
 use ui_kit::layer_canvas::{
-    AdjustmentOp, DisplayContent, DisplayLayer, DisplayMask, HitLayer, LayerCanvas,
+    AdjustmentOp, DisplayContent, DisplayLayer, DisplayMask, HitLayer, LayerCanvas, TransformTarget,
 };
 use ui_kit::theme::colors;
 use uuid::Uuid;
@@ -382,6 +382,19 @@ fn render_canvas_preview<'a>(
         .and_then(|id| doc.find(id))
         .map(|n| n.visible())
         .unwrap_or(false);
+    // Cible du visualiseur de transformation : calque pixels visible.
+    let transform_target = canvas_target
+        .and_then(|id| doc.pixel_layer(id))
+        .filter(|l| l.visible)
+        .map(|l| {
+            let (larg, haut) = l.dimensions();
+            TransformTarget {
+                id: Some(l.id),
+                transform: l.transform,
+                width: larg as f32,
+                height: haut as f32,
+            }
+        });
     let on_event = std::rc::Rc::new(|evt: ui_kit::image_canvas::ImageCanvasEvent| {
         Message::ImageCanvasEvent(evt)
     });
@@ -390,6 +403,7 @@ fn render_canvas_preview<'a>(
             .with_layers(couches)
             .with_hit_layers(cibles_pick(&doc.root))
             .with_cadre(cadre_selection(doc, selected_layer))
+            .with_transform_target(transform_target)
             .with_view(canvas_pan, zoom)
             .with_tool(canvas_tool)
             .with_selection(canvas_selection)
