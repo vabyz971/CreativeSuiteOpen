@@ -46,6 +46,53 @@ use uuid::Uuid;
 
 use crate::document::{Appearance, Document, FilterLayer, LayerMask, PixelLayer};
 
+/// Entrée de cache pré-calculée HORS thread UI, transférable vers le
+/// document vivant.
+///
+/// Cas d'usage : l'activation/désactivation d'un filtre (shader) ou d'un
+/// masque change la signature → `appearance_hit` MISS → `appearance()`
+/// exécuterait `render_chain` + bake + preview/thumb EN PLEINE RÉSOLUTION
+/// sur le thread UI (freeze de plusieurs centaines de ms sur les grandes
+/// images). Au lieu de cela, l'app clone le document, applique le toggle
+/// sur le clone en `spawn_blocking`, exporte l'entrée chaude et l'insère
+/// dans le document vivant à la réception : `PreviewCache::sync()` HIT
+/// alors sans jamais toucher au pool depuis l'UI.
+///
+/// Tous les champs sont des `Arc` (zéro copie pixel) : le transfert
+/// inter-threads est bon marché. `Send` requis pour `Task::perform`,
+/// `Debug` manuel (jamais de dump pixels dans les logs).
+#[derive(Clone)]
+pub struct WarmedAppearance {
+    /// Signature ordonnée de la chaîne de filtres APRES toggle.
+    pub filter_signature: u64,
+    /// Source conservée vivante (validation par identité de pointeur).
+    pub source: Arc<DynamicImage>,
+    /// Image non masquée (chaîne de filtres seule).
+    pub unmasked: Arc<DynamicImage>,
+    /// Signature de la couverture de masques APRES toggle.
+    pub mask_signature: u64,
+    /// Couverture combinée des masques actifs (`None` = aucun).
+    pub mask_cover: Option<Arc<ImageBuffer<Rgba<u8>, Vec<u8>>>>,
+    /// Apparence dérivée complète (image + preview + miniature).
+    pub appearance: Appearance,
+}
+
+impl std::fmt::Debug for WarmedAppearance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarmedAppearance")
+            .field("filter_signature", &self.filter_signature)
+            .field("mask_signature", &self.mask_signature)
+            .field(
+                "preview_dims",
+                &(
+                    self.appearance.preview.width,
+                    self.appearance.preview.height,
+                ),
+            )
+            .finish()
+    }
+}
+
 /// Entrée de cache : apparence dérivée + preuves de validité.
 ///
 /// L'image NON masquée (source × filtres) et la couverture de masques sont
@@ -241,6 +288,39 @@ impl Renderer {
             }
             _ => None,
         }
+    }
+
+    /// Exporte l'entrée chaude d'un calque pour transfert inter-threads
+    /// (voir [`WarmedAppearance`]). Retourne `None` si le calque n'a pas
+    /// d'entrée (jamais calculée) — l'appelant doit d'abord passer par
+    /// [`Self::appearance`] sur le clone chauffé.
+    pub fn export_warmed(&self, layer_id: Uuid) -> Option<WarmedAppearance> {
+        self.entries.get(&layer_id).map(|e| WarmedAppearance {
+            filter_signature: e.filter_signature,
+            source: Arc::clone(&e.source),
+            unmasked: Arc::clone(&e.unmasked),
+            mask_signature: e.mask_signature,
+            mask_cover: e.mask_cover.clone(),
+            appearance: e.appearance.clone(),
+        })
+    }
+
+    /// Insère une entrée pré-calculée hors thread UI. L'insertion est
+    /// structurellement sûre : un futur `appearance_hit` ne HIT que si
+    /// signatures + identité de source correspondent — une entrée périmée
+    /// (édition concurrente) reste simplement inutilisée, jamais fausse.
+    pub fn insert_warmed(&mut self, layer_id: Uuid, warmed: WarmedAppearance) {
+        self.entries.insert(
+            layer_id,
+            CacheEntry {
+                filter_signature: warmed.filter_signature,
+                source: warmed.source,
+                unmasked: warmed.unmasked,
+                mask_signature: warmed.mask_signature,
+                mask_cover: warmed.mask_cover,
+                appearance: warmed.appearance,
+            },
+        );
     }
 
     /// Préremplit ce cache avec les entrées ACTUELLEMENT chaudes d'un autre
@@ -513,6 +593,65 @@ mod tests {
         let rgba = out.image.to_rgba8();
         let p = rgba.get_pixel(0, 0);
         assert_eq!(p[0], 100);
+    }
+
+    #[test]
+    fn apparence_chauffee_inseree_hit_sans_recalcul() {
+        // Simule le toggle async : le worker calcule sur son propre
+        // renderer, le vivant insère l'entrée et HIT sans exécuter.
+        let mut layer = layer_with_filter(30.0);
+        let mut worker = Renderer::default();
+        let _ = worker.appearance(&layer);
+
+        // Toggle côté worker (désactivation du filtre).
+        layer.filter_layers[0].enabled = false;
+        let _ = worker.appearance(&layer);
+        let warmed = worker.export_warmed(layer.id).expect("entrée chaude");
+
+        // Vivant : cache froid, insertion puis HIT strict sans MISS.
+        let mut live = Renderer::default();
+        live.insert_warmed(layer.id, warmed);
+        let hit = live.appearance_hit(&layer);
+        assert!(hit.is_some(), "l'entrée insérée doit HITER");
+        assert_eq!(
+            (live.misses(), live.hits()),
+            (0, 0),
+            "aucune exécution côté vivant"
+        );
+
+        // Entrée périmée (édition concurrente) : pas de faux HIT.
+        layer.filter_layers[0].enabled = true;
+        assert!(live.appearance_hit(&layer).is_none());
+    }
+
+    #[test]
+    fn toggle_masque_sans_touch_hit_apres_insertion() {
+        // Miroir d'`apply_toggle_flag` : worker et vivant basculent le
+        // même bit SANS `touch()` → même version → même signature → HIT.
+        let mut layer = PixelLayer::new("m", solid(100));
+        layer.masks.push(LayerMask::full(2, 2));
+        // Vivant = clone structurel (Arcs partagés, version copiée),
+        // comme un snapshot document.
+        let mut live = layer.clone();
+        let mut worker = Renderer::default();
+        let _ = worker.appearance(&layer);
+
+        layer.masks[0].enabled = false;
+        let _ = worker.appearance(&layer);
+        let warmed = worker.export_warmed(layer.id).expect("entrée chaude");
+
+        live.masks[0].enabled = false;
+        let mut live_r = Renderer::default();
+        live_r.insert_warmed(live.id, warmed);
+        assert!(
+            live_r.appearance_hit(&live).is_some(),
+            "même version des deux côtés → HIT"
+        );
+
+        // Contrôle : un `touch()` intercalé (peinture) fait diverger →
+        // MISS sain, jamais de faux HIT sur des pixels périmés.
+        live.masks[0].touch();
+        assert!(live_r.appearance_hit(&live).is_none());
     }
 
     #[test]

@@ -867,6 +867,19 @@ impl Document {
         self.appearance(id).map(|a| a.image)
     }
 
+    /// Exporte l'entrée d'apparence chaude d'un calque pixels (transfert
+    /// vers le document vivant après calcul en `spawn_blocking` — voir
+    /// [`crate::renderer::WarmedAppearance`]).
+    pub fn export_warmed(&self, id: Uuid) -> Option<crate::renderer::WarmedAppearance> {
+        self.cache.borrow().export_warmed(id)
+    }
+
+    /// Insère une entrée pré-calculée hors thread UI : le prochain
+    /// `appearance_hit` HIT sans exécuter la chaîne sur l'UI.
+    pub fn insert_warmed(&mut self, id: Uuid, warmed: crate::renderer::WarmedAppearance) {
+        self.cache.borrow_mut().insert_warmed(id, warmed);
+    }
+
     /// Miniature pour le panneau Calques (apparence dérivée).
     pub fn thumb(&self, id: Uuid) -> Option<RgbaBuf> {
         self.appearance(id).map(|a| a.thumb)

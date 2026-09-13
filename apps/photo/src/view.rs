@@ -135,6 +135,7 @@ pub fn view(app: &PhotoApp, window: iced::window::Id) -> Element<'_, Message> {
             &app.tools.new_doc_w,
             &app.tools.new_doc_h,
             app.tools.welcome_error.as_deref(),
+            app.rendering.pending_param.as_ref(),
         )
     ];
     let central_with_title = iced::widget::column![central];

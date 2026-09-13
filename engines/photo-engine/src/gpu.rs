@@ -134,7 +134,11 @@ impl GpuContext {
 }
 
 // ---------------------------------------------------------------------------
-// Détection pour UI
+// Détection pour UI — BLOQUANT au premier appel (init wgpu +
+// compilation shaders via `pollster::block_on`). Appeler UNIQUEMENT
+// dans `tokio::task::spawn_blocking` côté app, jamais directement
+// dans un `Task::perform` ni dans `update()`. Les appels suivants
+// (OnceLock initialisé) sont bon marché.
 // ---------------------------------------------------------------------------
 
 pub fn detect_gpu_info_sync() -> String {
@@ -172,6 +176,8 @@ pub fn detect_gpu_info_sync() -> String {
         s
     }
 }
+/// Variante async conservée pour compat — le corps reste bloquant :
+/// préférer `spawn_blocking(detect_gpu_info_sync)` dans tout `Task::perform`.
 pub async fn detect_gpu_info() -> String {
     detect_gpu_info_sync()
 }

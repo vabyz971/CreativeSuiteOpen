@@ -31,8 +31,8 @@ use iced::widget::pane_grid;
 use uuid::Uuid;
 
 pub use helpers::{
-    DecodedLayer, DestructiveOp, DestructiveResult, MaskTarget, OffsetAxis, PanelType,
-    PendingPaint, Tool,
+    AppearanceToggle, DecodedLayer, DestructiveOp, DestructiveResult, MaskTarget, OffsetAxis,
+    PaintedImage, PanelType, PendingPaint, PendingParam, Tool,
 };
 
 #[derive(Debug, Clone)]
@@ -165,6 +165,28 @@ pub enum Message {
         layer_id: Uuid,
         filter_id: Uuid,
     },
+    /// Apparence pré-chauffée hors thread UI après un toggle (filtre ou
+    /// masque) — le flag est rejoué sur le document vivant puis l'entrée
+    /// chaude est insérée : `PreviewCache::sync()` HIT sans freeze.
+    AppearanceWarmed {
+        task_id: u64,
+        /// Porteur du toggle (pixels, ajustement ou sous-calque de filtre).
+        layer_id: Uuid,
+        op: AppearanceToggle,
+        result: Result<photo_engine::WarmedAppearance, String>,
+    },
+    /// Réglage pré-chauffé hors thread UI (front montant/descendant) —
+    /// applique la valeur sur le vivant puis insère l'entrée chaude.
+    /// `epoch` invalide les vols périmés par un undo/redo entre-temps.
+    ParamWarmed {
+        task_id: u64,
+        epoch: u64,
+        layer_id: Uuid,
+        filter_id: Uuid,
+        key: String,
+        value: datatypes::ParamValue,
+        result: Result<photo_engine::WarmedAppearance, String>,
+    },
 
     // Image - utilise le picker natif via rfd
     OpenImage,
@@ -270,12 +292,16 @@ pub enum Message {
         /// true = gomme (destination-out), false = pinceau
         erase: bool,
     },
-    /// Résultat du calcul lourd — applique pixels + buffers au calque
+    /// Résultat du calcul lourd — applique l'image PARTAGÉE (même `Arc`
+    /// que le clone chauffé) + insère l'apparence pré-calculée : `sync()`
+    /// HIT au lieu de rejouer la chaîne sur l'UI.
     PaintApplied {
         task_id: u64,
         layer_id: Uuid,
         mask_id: Option<Uuid>,
-        buf: photo_engine::paint::StrokeCommit,
+        image: PaintedImage,
+        /// `None` = repli synchrone (comportement antérieur).
+        warmed: Option<photo_engine::WarmedAppearance>,
     },
     /// Le worker de peinture a échoué : retire l'aperçu figé sans panic
     PaintFailed {
@@ -322,6 +348,16 @@ pub enum Message {
     },
     /// Crée le document : fond blanc plein cadre + calque sélectionné
     CreateDocument,
+    /// Fond blanc alloué HORS thread UI — remplace le document courant.
+    /// `w`/`h` rappellent les dimensions demandées (le calque porte déjà
+    /// le buffer) ; même sémantique que le chemin synchrone précédent
+    /// (reset historique, recentrage canvas).
+    DocumentCreated {
+        task_id: u64,
+        w: u32,
+        h: u32,
+        result: Result<DecodedLayer, String>,
+    },
 
     // Drag & drop calques : pressé → deadband → drag → cible → relâchement.
     LayerDragPressed {

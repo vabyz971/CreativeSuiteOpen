@@ -24,6 +24,7 @@
 
 use crate::Message;
 use crate::layers::{BlendMode, FilterLayer, LayerNode};
+use crate::message::PendingParam;
 use datatypes::ParamValue;
 use iced::widget::{Space, column, container, row, scrollable, slider, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
@@ -35,6 +36,7 @@ pub fn render<'a>(
     doc: &'a Document,
     selected: Option<uuid::Uuid>,
     active_mask: Option<crate::message::MaskTarget>,
+    pending: Option<&'a PendingParam>,
 ) -> Element<'a, Message> {
     // Un masque actif prime : on affiche ses options, pas celles du calque.
     if let Some(t) = active_mask
@@ -49,7 +51,7 @@ pub fn render<'a>(
         && let Some(parent) = doc.find_filter_parent(fid)
         && let Some(f) = doc.find_filter_layer(fid)
     {
-        return filter_editor(doc, parent, f);
+        return filter_editor(doc, parent, f, pending);
     }
 
     let node = selected.and_then(|id| doc.find(id));
@@ -209,7 +211,9 @@ pub fn render<'a>(
         ]
         .spacing(6);
         for f in filters.iter().rev() {
-            section = section.push(filter_card(id, f.id, &f.type_id, f.enabled, &f.params));
+            section = section.push(filter_card(
+                id, f.id, &f.type_id, f.enabled, &f.params, pending,
+            ));
         }
         content = content.push(container(section.padding(12)));
     }
@@ -226,6 +230,7 @@ fn filter_editor<'a>(
     doc: &'a Document,
     parent_id: uuid::Uuid,
     f: &'a FilterLayer,
+    pending: Option<&'a PendingParam>,
 ) -> Element<'a, Message> {
     let fid = f.id;
     let parent_name = doc
@@ -347,7 +352,7 @@ fn filter_editor<'a>(
             column![
                 text("Effet").size(12).color(colors::ON_SURFACE),
                 Space::new().height(Length::Fixed(6.0)),
-                filter_card(parent_id, fid, &f.type_id, f.enabled, &f.params),
+                filter_card(parent_id, fid, &f.type_id, f.enabled, &f.params, pending),
             ]
             .spacing(6)
             .padding(12)
@@ -523,12 +528,15 @@ fn add_filter_pick(layer_id: uuid::Uuid) -> Element<'static, Message> {
 
 /// Carte d'un filtre : activation, réglages floats, suppression.
 /// `title` = type d'effet affiché ; `params` = réglages courants.
+/// `pending` = réglage slider en vol : le pouce affiche la valeur
+/// demandée (le vivant garde l'ancienne jusqu'au pré-chauffage).
 fn filter_card<'a>(
     layer_id: uuid::Uuid,
     filter_id: uuid::Uuid,
     title: &'a str,
     enabled: bool,
     params: &'a HashMap<String, ParamValue>,
+    pending: Option<&'a PendingParam>,
 ) -> Element<'a, Message> {
     let fid = filter_id;
     let material = ui_kit::icon_button::MATERIAL_ICONS;
@@ -578,7 +586,18 @@ fn filter_card<'a>(
             if let ParamValue::Float(v) = value {
                 let k = key.clone();
                 let (lo, hi) = float_param_range(key);
-                card = card.push(slider(lo..=hi, *v, move |nv| Message::SetFilterParam {
+                // Réglage en vol : le pouce suit la valeur demandée.
+                let shown = match pending {
+                    Some(p) if p.layer_id == layer_id && p.filter_id == fid && p.key == *key => {
+                        if let ParamValue::Float(nv) = &p.value {
+                            *nv
+                        } else {
+                            *v
+                        }
+                    }
+                    _ => *v,
+                };
+                card = card.push(slider(lo..=hi, shown, move |nv| Message::SetFilterParam {
                     layer_id,
                     filter_id: fid,
                     key: k.clone(),

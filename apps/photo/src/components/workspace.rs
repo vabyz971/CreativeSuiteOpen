@@ -75,6 +75,8 @@ pub fn render<'a>(
     new_doc_w: &'a str,
     new_doc_h: &'a str,
     welcome_error: Option<&'a str>,
+    // Réglage slider en vol (pouce du slider, voir filter_card)
+    pending_param: Option<&'a crate::message::PendingParam>,
 ) -> Element<'a, Message> {
     let total_panes = panes.len();
 
@@ -134,7 +136,7 @@ pub fn render<'a>(
             }
             PanelType::Properties => (
                 "Propriétés".to_string(),
-                properties::render(doc, selected_layer, active_mask),
+                properties::render(doc, selected_layer, active_mask, pending_param),
             ),
             PanelType::Layers => (
                 "Calques".to_string(),

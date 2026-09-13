@@ -69,9 +69,16 @@ fn handle_open_preferences(app: &mut PhotoApp) -> Task<Message> {
         exit_on_close_request: false,
         ..iced::window::Settings::default()
     });
-    // Hardware detection OFF the UI thread for the Hardware section
+    // Hardware detection OFF the UI thread for the Hardware section.
+    // `detect_sync` fait `Instance::new` + `pollster::block_on` : jamais
+    // direct sur l'executor Tokio (`Task::perform` seul affame les autres
+    // tâches), toujours en `spawn_blocking`.
     let detect = Task::perform(
-        async { preferences::HardwareReport::detect().await },
+        async move {
+            tokio::task::spawn_blocking(preferences::HardwareReport::detect_sync)
+                .await
+                .unwrap_or_default()
+        },
         Message::HardwareDetected,
     );
     Task::batch([open.map(Message::WindowOpened), detect])

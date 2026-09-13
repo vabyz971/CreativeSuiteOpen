@@ -24,7 +24,7 @@ use crate::components::layers::{
     DropPosition, LayerDragRelease, LayerDragState, LayerDropTarget, resolve_drop_target,
 };
 use crate::layers::{LayerNode, PixelLayer, Transform2D};
-use crate::message::{Message, OffsetAxis};
+use crate::message::{AppearanceToggle, Message, OffsetAxis, PendingParam};
 use crate::state::PhotoApp;
 use photo_engine::Command;
 
@@ -783,6 +783,14 @@ pub fn handle_delete(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         let pre = app.snapshot();
         if app.document.doc.remove_filter(parent, id).is_some() {
             app.document.selected_layer = Some(parent);
+            if app
+                .rendering
+                .pending_param
+                .as_ref()
+                .is_some_and(|p| p.layer_id == parent && p.filter_id == id)
+            {
+                app.rendering.pending_param = None;
+            }
             app.document.history.push_snapshot(pre);
             app.invalidate_fallback();
         }
@@ -795,6 +803,14 @@ pub fn handle_delete(app: &mut PhotoApp, id: Uuid) -> Task<Message> {
         let pre = app.snapshot();
         if app.document.doc.remove(t).is_some() {
             app.document.selected_layer = app.document.doc.iter_pixels().last().map(|l| l.id);
+            if app
+                .rendering
+                .pending_param
+                .as_ref()
+                .is_some_and(|p| p.layer_id == t)
+            {
+                app.rendering.pending_param = None;
+            }
             app.document.history.push_snapshot(pre);
             app.invalidate_fallback();
         }
@@ -922,6 +938,16 @@ pub fn handle_remove_live_filter(
         if app.document.selected_layer == Some(filter_id) {
             app.document.selected_layer = Some(layer_id);
         }
+        // Le filtre n'existe plus : aucun réglage en attente ne peut
+        // aboutir — le pouce retombe (la réception réconcilie aussi).
+        if app
+            .rendering
+            .pending_param
+            .as_ref()
+            .is_some_and(|p| p.layer_id == layer_id && p.filter_id == filter_id)
+        {
+            app.rendering.pending_param = None;
+        }
         app.document.history.push_snapshot(pre);
         app.invalidate_fallback();
     }
@@ -975,17 +1001,107 @@ fn current_filter_enabled(app: &PhotoApp, layer_id: Uuid, filter_id: Uuid) -> Op
     }
 }
 
-pub fn handle_set_filter_param(
+/// Pré-chauffe un réglage de filtre HORS thread UI (front montant) :
+/// le clone reçoit la valeur en attente, l'entrée chaude est insérée à
+/// la réception. Le vivant garde l'ancienne valeur entre-temps (zéro
+/// freeze des ticks), le pouce affiche `pending_param`.
+fn spawn_param_warm(app: &mut PhotoApp, pending: PendingParam) -> Task<Message> {
+    let Some(carrier) = warm_carrier(app, pending.layer_id) else {
+        return Task::none();
+    };
+    if !app.rendering.warm_inflight.insert(carrier) {
+        return Task::none();
+    }
+    let epoch = app.rendering.param_epoch;
+    let task_id = app.rendering.background_tasks.start("Réglage du filtre...");
+    let mut doc_copy = photo_engine::Document::new(app.document.doc.width, app.document.doc.height);
+    doc_copy.restore_snapshot(app.document.doc.snapshot());
+    doc_copy.warm_cache_from(&app.document.doc);
+    // Clones dédiés au worker : `pending` reste propriété de la closure
+    // de réception (pas de double move).
+    let worker_key = pending.key.clone();
+    let worker_value = pending.value.clone();
+    let worker_layer = pending.layer_id;
+    let worker_filter = pending.filter_id;
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                if !doc_copy.set_filter_param(worker_layer, worker_filter, worker_key, worker_value)
+                {
+                    return Err("Filtre introuvable".to_string());
+                }
+                doc_copy
+                    .appearance(carrier)
+                    .ok_or_else(|| "Aucune apparence à pré-chauffer".to_string())?;
+                doc_copy
+                    .export_warmed(carrier)
+                    .ok_or_else(|| "Cache d'apparence vide".to_string())
+            })
+            .await
+            .map_err(|e| format!("Tâche annulée : {e}"))?
+        },
+        move |result| Message::ParamWarmed {
+            task_id,
+            epoch,
+            layer_id: pending.layer_id,
+            filter_id: pending.filter_id,
+            key: pending.key,
+            value: pending.value,
+            result,
+        },
+    )
+}
+/// Enchaîne le front descendant : une valeur plus fraîche attend-elle ?
+fn chain_param(app: &mut PhotoApp, next: Option<PendingParam>) -> Task<Message> {
+    match next {
+        Some(p) => spawn_param_warm(app, p),
+        None => Task::none(),
+    }
+}
+
+/// Réception d'un réglage pré-chauffé : applique la valeur sur le vivant
+/// (logique historique inchangée : commande coalescée ou init directe),
+/// insère l'entrée chaude, puis enchaîne une valeur plus fraîche si le
+/// slider a bougé pendant le calcul. `epoch` périmé (undo/redo) : tout
+/// est jeté, le vivant garde l'état annulé.
+fn handle_param_warmed(
     app: &mut PhotoApp,
-    layer_id: Uuid,
-    filter_id: Uuid,
-    key: String,
-    value: datatypes::ParamValue,
+    task_id: u64,
+    epoch: u64,
+    target: PendingParam,
+    result: Result<photo_engine::WarmedAppearance, String>,
 ) -> Task<Message> {
-    // Micro-edit par excellence: light coalesced command.
-    // Pixel layer: the appearance recomputes itself via the version cache
-    // (zero global recomposite). Adjustment: the global blend changes ->
-    // recomposite.
+    let PendingParam {
+        layer_id,
+        filter_id,
+        key,
+        value,
+    } = target;
+    app.rendering.background_tasks.finish(task_id);
+    finish_warm(app, layer_id);
+    // Réconciliation du front descendant EN PREMIER (toujours, même en
+    // cas d'échec ou de porteur disparu) : sinon le pouce resterait
+    // coincé sur une valeur fantôme.
+    let target = PendingParam {
+        layer_id,
+        filter_id,
+        key: key.clone(),
+        value: value.clone(),
+    };
+    let next = match &app.rendering.pending_param {
+        Some(p) if p != &target => Some(p.clone()),
+        _ => {
+            app.rendering.pending_param = None;
+            None
+        }
+    };
+    if epoch != app.rendering.param_epoch {
+        return Task::none();
+    }
+    let Some(carrier) = warm_carrier(app, layer_id) else {
+        return chain_param(app, next);
+    };
+    // Application live : logique historique inchangée.
     let old_value = old_filter_param(app, layer_id, filter_id, &key);
     match old_value {
         Some(old) => {
@@ -1008,10 +1124,274 @@ pub fn handle_set_filter_param(
                 .set_filter_param(layer_id, filter_id, key, value);
         }
     }
+    // Entrée périmée (édition concurrente) : reste inutilisée — affichage
+    // juste, un recalcul ponctuel (comportement antérieur).
+    if let Ok(warmed) = result {
+        app.document.doc.insert_warmed(carrier, warmed);
+    }
     // Cooked in the fallback composite if it is active; on the fast path it
     // is a simple flag with no cost.
     app.invalidate_fallback();
+    chain_param(app, next)
+}
+
+pub fn handle_set_filter_param(
+    app: &mut PhotoApp,
+    layer_id: Uuid,
+    filter_id: Uuid,
+    key: String,
+    value: datatypes::ParamValue,
+) -> Task<Message> {
+    // Calque pixels : appliquer live MISSrait le cache et rejouerait la
+    // chaîne en pleine résolution à CHAQUE tick (freeze du slider sur
+    // grandes images). Le vivant garde l'ancienne valeur (sync HIT), le
+    // pouce affiche `pending_param`, le worker pré-chauffe la nouvelle.
+    let Some(carrier) = warm_carrier(app, layer_id) else {
+        let old_value = old_filter_param(app, layer_id, filter_id, &key);
+        match old_value {
+            Some(old) => {
+                let cmd = Command::SetFilterParam {
+                    layer_id,
+                    filter_id,
+                    param_name: key.clone(),
+                    old,
+                    new: value.clone(),
+                };
+                app.document
+                    .history
+                    .push_command(coalesce_key(filter_id, 5), cmd.clone());
+                let _ = app.document.doc.apply_command(cmd);
+            }
+            None => {
+                // Missing parameter (initialization): outside history
+                app.document
+                    .doc
+                    .set_filter_param(layer_id, filter_id, key, value);
+            }
+        }
+        app.invalidate_fallback();
+        return Task::none();
+    };
+    let pending = PendingParam {
+        layer_id,
+        filter_id,
+        key,
+        value,
+    };
+    app.rendering.pending_param = Some(pending.clone());
+    // Rafale : un vol est déjà en cours, le front descendant enchaînera.
+    if app.rendering.warm_inflight.contains(&carrier) {
+        return Task::none();
+    }
+    spawn_param_warm(app, pending)
+}
+
+/// Calque pixels dont l'apparence doit être pré-chauffée pour un toggle.
+/// Les masques peuvent vivre sur un sous-calque de filtre : le calcul
+/// vise alors le porteur pixels. `None` = ajustement/groupe/supprimé :
+/// pas d'entrée d'apparence, application live immédiate (zéro coût).
+pub(crate) fn warm_carrier(app: &PhotoApp, owner: Uuid) -> Option<Uuid> {
+    match app.document.doc.find(owner) {
+        Some(LayerNode::Pixel(_)) => Some(owner),
+        _ => app.document.doc.find_filter_parent(owner),
+    }
+}
+
+/// Applique le flag sur le document (clone worker OU vivant) — sans
+/// historique ni invalidation, gérés par l'appelant selon le contexte.
+/// Retourne `false` si la cible a disparu.
+/// Les deux côtés appliquent EXACTEMENT la même mutation (bit flip sans
+/// `touch()` pour les masques) afin de converger vers la même signature.
+fn apply_toggle_flag(doc: &mut photo_engine::Document, owner: Uuid, op: AppearanceToggle) -> bool {
+    match op {
+        AppearanceToggle::FilterEnabled { filter_id, enabled } => {
+            doc.set_filter_enabled(owner, filter_id, enabled)
+        }
+        // PAS de `touch()` ici : la version fait partie de
+        // `mask_signature`, worker et vivant doivent converger vers la
+        // MÊME version pour que l'entrée pré-chauffée HIT. La version
+        // inchangée devient détecteur d'édition concurrente : toute
+        // peinture/`touch()` intercalé fait diverger → MISS sain.
+        AppearanceToggle::MaskEnabled { mask_id, enabled } => {
+            let Some(m) = doc.mask_of_mut(owner, mask_id) else {
+                return false;
+            };
+            m.enabled = enabled;
+            true
+        }
+        AppearanceToggle::MaskInverted { mask_id, inverted } => {
+            let Some(m) = doc.mask_of_mut(owner, mask_id) else {
+                return false;
+            };
+            m.inverted = inverted;
+            true
+        }
+    }
+}
+
+/// Pré-chauffe l'apparence HORS thread UI après un toggle (filtre/shader
+/// ou masque) : le flag est appliqué sur un clone en `spawn_blocking`,
+/// l'entrée chaude est insérée à la réception — `PreviewCache::sync()`
+/// HIT au lieu d'exécuter `render_chain` + bake + preview/thumb en pleine
+/// résolution sur l'UI (freeze sur grandes images).
+/// L'appelant a vérifié `warm_carrier(...).is_some()` et calculé `op`
+/// (nouvel état déjà inversé). Le libellé alimente le spinner.
+pub(crate) fn warm_toggle_task(
+    app: &mut PhotoApp,
+    owner: Uuid,
+    op: AppearanceToggle,
+    label: impl Into<String>,
+) -> Task<Message> {
+    let Some(carrier) = warm_carrier(app, owner) else {
+        return Task::none();
+    };
+    if !app.rendering.warm_inflight.insert(carrier) {
+        return Task::none();
+    }
+    let task_id = app.rendering.background_tasks.start(label);
+    let mut doc_copy = photo_engine::Document::new(app.document.doc.width, app.document.doc.height);
+    doc_copy.restore_snapshot(app.document.doc.snapshot());
+    doc_copy.warm_cache_from(&app.document.doc);
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                if !apply_toggle_flag(&mut doc_copy, owner, op) {
+                    return Err("Calque introuvable".to_string());
+                }
+                doc_copy
+                    .appearance(carrier)
+                    .ok_or_else(|| "Aucune apparence à pré-chauffer".to_string())?;
+                doc_copy
+                    .export_warmed(carrier)
+                    .ok_or_else(|| "Cache d'apparence vide".to_string())
+            })
+            .await
+            .map_err(|e| format!("Tâche annulée : {e}"))?
+        },
+        move |result| Message::AppearanceWarmed {
+            task_id,
+            layer_id: owner,
+            op,
+            result,
+        },
+    )
+}
+
+/// État courant du flag visé par un toggle (`None` = cible disparue).
+fn toggle_current(app: &PhotoApp, owner: Uuid, op: AppearanceToggle) -> Option<bool> {
+    match op {
+        AppearanceToggle::FilterEnabled { filter_id, .. } => {
+            current_filter_enabled(app, owner, filter_id)
+        }
+        AppearanceToggle::MaskEnabled { mask_id, .. } => {
+            app.document.doc.mask_of(owner, mask_id).map(|m| m.enabled)
+        }
+        AppearanceToggle::MaskInverted { mask_id, .. } => {
+            app.document.doc.mask_of(owner, mask_id).map(|m| m.inverted)
+        }
+    }
+}
+
+/// Nouvel état visé par un toggle.
+fn toggle_desired(op: AppearanceToggle) -> bool {
+    match op {
+        AppearanceToggle::FilterEnabled { enabled, .. } => enabled,
+        AppearanceToggle::MaskEnabled { enabled, .. } => enabled,
+        AppearanceToggle::MaskInverted { inverted, .. } => inverted,
+    }
+}
+
+/// Libère la garde anti-empilement d'un porteur : entrée existante →
+/// retrait ciblé, porteur disparu → purge des orphelines (les UUID ne
+/// sont jamais réutilisés, simple hygiène du set).
+fn finish_warm(app: &mut PhotoApp, owner: Uuid) {
+    if let Some(carrier) = warm_carrier(app, owner) {
+        app.rendering.warm_inflight.remove(&carrier);
+    } else {
+        let doc = &app.document.doc;
+        app.rendering
+            .warm_inflight
+            .retain(|id| doc.find(*id).is_some());
+    }
+}
+
+/// Réception d'une apparence pré-chauffée : rejoue le flag sur le vivant
+/// (bon marché), insère l'entrée chaude, enregistre l'historique comme
+/// l'ancien chemin synchrone. Si l'état a divergé pendant le calcul
+/// (édition concurrente), l'entrée reste inutilisée — affichage juste,
+/// un recalcul ponctuel (comportement antérieur).
+fn handle_appearance_warmed(
+    app: &mut PhotoApp,
+    task_id: u64,
+    owner: Uuid,
+    op: AppearanceToggle,
+    result: Result<photo_engine::WarmedAppearance, String>,
+) -> Task<Message> {
+    app.rendering.background_tasks.finish(task_id);
+    finish_warm(app, owner);
+    let warmed = match result {
+        Ok(w) => w,
+        Err(e) => {
+            app.canvas.image_error = Some(e);
+            return Task::none();
+        }
+    };
+    let Some(carrier) = warm_carrier(app, owner) else {
+        return Task::none();
+    };
+    // Cible disparue ou déjà dans l'état visé : rien à rejouer.
+    if toggle_current(app, owner, op) != Some(!toggle_desired(op)) {
+        return Task::none();
+    }
+    if !apply_toggle_flag(&mut app.document.doc, owner, op) {
+        return Task::none();
+    }
+    match op {
+        AppearanceToggle::FilterEnabled { filter_id, .. } => {
+            if app.document.selected_layer == Some(filter_id)
+                && current_filter_enabled(app, owner, filter_id) == Some(false)
+            {
+                app.document.selected_layer = Some(owner);
+            }
+            app.document.history.push_snapshot(app.snapshot());
+        }
+        AppearanceToggle::MaskEnabled { .. } | AppearanceToggle::MaskInverted { .. } => {
+            // L'historique des masques passe par commandes immédiates :
+            // le flag vient de basculer !new → new, la commande miroir
+            // porte old=!new (réversible par undo/redo).
+            push_mask_toggle_history(app, owner, op);
+        }
+    }
+    app.document.doc.insert_warmed(carrier, warmed);
+    app.invalidate_fallback();
     Task::none()
+}
+
+/// Enregistre le toggle de masque dans l'historique immédiat (miroir de
+/// l'ancien chemin synchrone : la commande porte old→new).
+fn push_mask_toggle_history(app: &mut PhotoApp, owner: Uuid, op: AppearanceToggle) {
+    let cmd = match op {
+        AppearanceToggle::MaskEnabled {
+            mask_id,
+            enabled: new,
+        } => Command::SetMaskEnabled {
+            node_id: owner,
+            mask_id,
+            old: !new,
+            new,
+        },
+        AppearanceToggle::MaskInverted {
+            mask_id,
+            inverted: new,
+        } => Command::SetMaskInverted {
+            node_id: owner,
+            mask_id,
+            old: !new,
+            new,
+        },
+        AppearanceToggle::FilterEnabled { .. } => return,
+    };
+    app.document.history.push_command_immediate(cmd);
 }
 
 pub fn handle_toggle_filter_enabled(
@@ -1019,24 +1399,42 @@ pub fn handle_toggle_filter_enabled(
     layer_id: Uuid,
     filter_id: Uuid,
 ) -> Task<Message> {
-    let pre = app.snapshot();
-    if app.document.doc.set_filter_enabled(layer_id, filter_id, {
-        // invert the current state
-        current_filter_enabled(app, layer_id, filter_id)
-            .map(|e| !e)
-            .unwrap_or(false)
-    }) {
-        // Comme l'œil des calques : désactiver le filtre sélectionné
-        // resélectionne le porteur.
-        if app.document.selected_layer == Some(filter_id)
-            && current_filter_enabled(app, layer_id, filter_id) == Some(false)
+    // invert the current state
+    let new = current_filter_enabled(app, layer_id, filter_id)
+        .map(|e| !e)
+        .unwrap_or(false);
+    let op = AppearanceToggle::FilterEnabled {
+        filter_id,
+        enabled: new,
+    };
+    // Ajustement (pas d'apparence pixels) : application live immédiate,
+    // zéro coût — le seul composite (fallback) est déjà asynchrone.
+    if warm_carrier(app, layer_id).is_none() {
+        let pre = app.snapshot();
+        if app
+            .document
+            .doc
+            .set_filter_enabled(layer_id, filter_id, new)
         {
-            app.document.selected_layer = Some(layer_id);
+            if app.document.selected_layer == Some(filter_id)
+                && current_filter_enabled(app, layer_id, filter_id) == Some(false)
+            {
+                app.document.selected_layer = Some(layer_id);
+            }
+            app.document.history.push_snapshot(pre);
+            app.invalidate_fallback();
         }
-        app.document.history.push_snapshot(pre);
-        app.invalidate_fallback();
+        return Task::none();
     }
-    Task::none()
+    // Calque pixels : le flip de signature MISSrait le cache d'apparence
+    // et exécuterait render_chain + bake en pleine résolution sur l'UI —
+    // pré-chauffage hors thread UI à la place.
+    let label = if new {
+        "Activation du filtre..."
+    } else {
+        "Désactivation du filtre..."
+    };
+    warm_toggle_task(app, layer_id, op, label)
 }
 
 pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
@@ -1109,6 +1507,32 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
             layer_id,
             filter_id,
         } => Some(handle_toggle_filter_enabled(app, layer_id, filter_id)),
+        Message::AppearanceWarmed {
+            task_id,
+            layer_id,
+            op,
+            result,
+        } => Some(handle_appearance_warmed(app, task_id, layer_id, op, result)),
+        Message::ParamWarmed {
+            task_id,
+            epoch,
+            layer_id,
+            filter_id,
+            key,
+            value,
+            result,
+        } => Some(handle_param_warmed(
+            app,
+            task_id,
+            epoch,
+            PendingParam {
+                layer_id,
+                filter_id,
+                key,
+                value,
+            },
+            result,
+        )),
         Message::MoveMask {
             owner_id,
             mask_id,
@@ -1232,6 +1656,8 @@ pub fn handles(msg: &Message) -> bool {
             | Message::RemoveLiveFilter { .. }
             | Message::SetFilterParam { .. }
             | Message::ToggleFilterEnabled { .. }
+            | Message::AppearanceWarmed { .. }
+            | Message::ParamWarmed { .. }
             | Message::MoveMask { .. }
             | Message::OpenContextMenu { .. }
             | Message::CloseContextMenu

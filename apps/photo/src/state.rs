@@ -29,7 +29,6 @@ use iced::widget::{image as iced_image, pane_grid};
 use iced::{Color, Rectangle, Size, Task, Vector};
 use uuid::Uuid;
 
-use crate::components;
 use crate::message::{Message, PanelType, PendingPaint, Tool};
 
 // ---------------------------------------------------------------------------
@@ -205,6 +204,19 @@ pub struct RenderingState {
     pub spinner_angle: f32,
     pub task_menu_open: bool,
     pub background_tasks: BackgroundTasks,
+    /// Calques pixels dont l'apparence est en cours de pré-chauffage
+    /// (`AppearanceWarmed` en vol). Garde anti-empilement : un second
+    /// toggle sur le même porteur pendant le calcul est ignoré — le
+    /// rejouer appliquerait deux fois le même état et mentirait sur
+    /// l'état final visé par l'utilisateur.
+    pub warm_inflight: std::collections::HashSet<Uuid>,
+    /// Réglage slider en attente d'application (front descendant : le
+    /// vivant garde l'ancienne valeur pendant le pré-chauffage, le
+    /// pouce affiche celle-ci). `None` = rattrapé.
+    pub pending_param: Option<crate::message::PendingParam>,
+    /// Génération des réglages : bumpée par undo/redo, invalide les
+    /// `ParamWarmed` en vol calculés sur un état révolu.
+    pub param_epoch: u64,
 }
 
 impl Default for RenderingState {
@@ -221,10 +233,17 @@ impl Default for RenderingState {
             drag_layer_job: DragLayerJob::Idle,
             preview_cache: crate::ui_handles::PreviewCache::default(),
             gpu_info: None,
-            gpu_available: components::gpu::GpuContext::is_available(),
+            // Init GPU différée : `GpuContext::get()` fait
+            // `pollster::block_on(request_adapter + request_device +
+            // compilation shaders)` et gelait le thread UI au boot.
+            // La détection part via `Message::DetectGpu` (spawn_blocking).
+            gpu_available: false,
             spinner_angle: 0.0,
             task_menu_open: false,
             background_tasks: BackgroundTasks::default(),
+            warm_inflight: std::collections::HashSet::new(),
+            pending_param: None,
+            param_epoch: 0,
         }
     }
 }
@@ -330,7 +349,13 @@ impl PhotoApp {
         let mut app = Self::default();
         app.windows.main_window = Some(main_id);
         app.document.history.reset();
-        (app, open.map(|_| Message::MockAction))
+        // Détection GPU différée hors thread UI (spawn_blocking via
+        // `Message::DetectGpu`) — ne jamais appeler `GpuContext::get()` ici.
+        let detect = Task::done(Message::DetectGpu);
+        (
+            app,
+            Task::batch([open.map(|_| Message::MockAction), detect]),
+        )
     }
 
     /// Dimensions du document si un document existe (sinon None).

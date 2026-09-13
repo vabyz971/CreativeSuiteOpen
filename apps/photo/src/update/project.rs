@@ -468,36 +468,83 @@ fn handle_set_doc_preset(app: &mut PhotoApp, w: u32, h: u32) -> Task<Message> {
 }
 
 fn handle_create_document(app: &mut PhotoApp) -> Task<Message> {
+    // Garde anti-empilement : l'allocation peut atteindre 400 Mo
+    // (10000x10000) — jamais deux créations en vol, jamais en sync.
+    if !app.rendering.background_tasks.is_empty() {
+        return Task::none();
+    }
     let parsed = (
         app.tools.new_doc_w.trim().parse::<u32>(),
         app.tools.new_doc_h.trim().parse::<u32>(),
     );
     match parsed {
         (Ok(w), Ok(h)) if (1..=10000).contains(&w) && (1..=10000).contains(&h) => {
-            let white = ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
-                w,
-                h,
-                ::image::Rgba([255, 255, 255, 255]),
-            ));
-            let layer = PixelLayer::new("Arrière-plan", Arc::new(white));
-            let id = layer.id;
-            app.document
-                .doc
-                .restore(w, h, vec![LayerNode::Pixel(layer)]);
-            app.document.selected_layer = Some(id);
-            app.canvas.image_path = None;
-            app.canvas.image_error = None;
-            app.canvas.canvas_pan = Vector::new(0.0, 0.0);
-            app.canvas.zoom_level = 100;
             app.tools.welcome_error = None;
-            app.document.project_path = None;
-            app.document.history.reset();
-            app.invalidate_fallback();
+            let task_id = app
+                .rendering
+                .background_tasks
+                .start(format!("Création du document {w}x{h}..."));
+            // Allocation HORS thread UI : `ImageBuffer::from_pixel` sur de
+            // grandes dimensions gelait l'interface en sync (state-only).
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let white =
+                            ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
+                                w,
+                                h,
+                                ::image::Rgba([255, 255, 255, 255]),
+                            ));
+                        DecodedLayer(PixelLayer::new("Arrière-plan", Arc::new(white)))
+                    })
+                    .await
+                    .map_err(|e| format!("Tâche annulée : {e}"))
+                },
+                move |result| Message::DocumentCreated {
+                    task_id,
+                    w,
+                    h,
+                    result,
+                },
+            )
         }
         _ => {
             app.tools.welcome_error = Some("Dimensions invalides (1 à 10000 px)".into());
+            Task::none()
         }
     }
+}
+
+fn handle_document_created_ok(
+    app: &mut PhotoApp,
+    task_id: u64,
+    w: u32,
+    h: u32,
+    decoded: DecodedLayer,
+) -> Task<Message> {
+    app.rendering.background_tasks.finish(task_id);
+    let node = LayerNode::Pixel(decoded.0);
+    let id = node.id();
+    app.document.doc.restore(w, h, vec![node]);
+    app.document.selected_layer = Some(id);
+    app.canvas.image_path = None;
+    app.canvas.image_error = None;
+    app.canvas.canvas_pan = Vector::new(0.0, 0.0);
+    app.canvas.zoom_level = 100;
+    app.tools.welcome_error = None;
+    app.document.project_path = None;
+    app.document.history.reset();
+    app.tools.move_anchor = None;
+    app.tools.transform_anchor = None;
+    app.rendering.fallback_size = None;
+    app.rendering.fallback_handle = None;
+    app.invalidate_fallback();
+    Task::none()
+}
+
+fn handle_document_created_err(app: &mut PhotoApp, task_id: u64, e: String) -> Task<Message> {
+    app.rendering.background_tasks.finish(task_id);
+    app.tools.welcome_error = Some(e);
     Task::none()
 }
 
@@ -569,6 +616,15 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
         Message::NewDocHeight(v) => Some(handle_new_doc_height(app, v)),
         Message::SetDocPreset { w, h } => Some(handle_set_doc_preset(app, w, h)),
         Message::CreateDocument => Some(handle_create_document(app)),
+        Message::DocumentCreated {
+            task_id,
+            w,
+            h,
+            result,
+        } => match result {
+            Ok(decoded) => Some(handle_document_created_ok(app, task_id, w, h, decoded)),
+            Err(e) => Some(handle_document_created_err(app, task_id, e)),
+        },
         Message::ShowResizeDialog => Some(handle_show_resize_dialog(app)),
         Message::SetResizeWidth(s) => Some(handle_set_resize_width(app, s)),
         Message::SetResizeHeight(s) => Some(handle_set_resize_height(app, s)),
@@ -602,6 +658,7 @@ pub fn handles(msg: &Message) -> bool {
             | Message::NewDocHeight(_)
             | Message::SetDocPreset { .. }
             | Message::CreateDocument
+            | Message::DocumentCreated { .. }
             | Message::ShowResizeDialog
             | Message::SetResizeWidth(_)
             | Message::SetResizeHeight(_)

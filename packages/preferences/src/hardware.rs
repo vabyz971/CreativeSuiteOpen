@@ -52,8 +52,12 @@ pub struct HardwareReport {
 }
 
 impl HardwareReport {
-    /// Détection synchrone — à appeler depuis une tâche de fond
-    /// (`Task::perform`) pour ne jamais bloquer l'interface.
+    /// Détection synchrone — BLOQUANTE (`Instance::new` +
+    /// `pollster::block_on(enumerate_adapters)`).
+    /// À appeler UNIQUEMENT dans `tokio::task::spawn_blocking` (pool
+    /// bloquant dédié). Ne JAMAIS l'appeler directement dans un
+    /// `Task::perform` : ce serait sur l'executor Tokio partagé et
+    /// affamerait décodage / export / composite.
     #[must_use]
     pub fn detect_sync() -> Self {
         let cpu = Some(CpuInfo {
@@ -95,8 +99,10 @@ impl HardwareReport {
         Self { cpu, ram, gpus }
     }
 
-    /// Variante async (convention mission) — le corps est synchrone mais
-    /// l'appel s'intègre dans n'importe quel runtime.
+    /// Variante async (convention mission) — ATTENTION : le corps reste
+    /// bloquant (`pollster::block_on`). Préférer `spawn_blocking(detect_sync)`
+    /// dans tout `Task::perform` ; cette variante n'existe que pour les
+    /// contextes déjà hors executor (tests, CLI).
     pub async fn detect() -> Self {
         Self::detect_sync()
     }

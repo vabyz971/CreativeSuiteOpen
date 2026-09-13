@@ -16,6 +16,7 @@
 
 //! Paint / brush / mask message handlers — extracted from update/mod.rs.
 
+use crate::message::AppearanceToggle;
 use crate::message::Message;
 use crate::message::Tool;
 use crate::state::PhotoApp;
@@ -150,6 +151,10 @@ pub fn handle_brush_end(
             mode: stroke_mode,
         };
         let task_id = app.rendering.background_tasks.start("Trait de pinceau...");
+        let mut doc_copy =
+            photo_engine::Document::new(app.document.doc.width, app.document.doc.height);
+        doc_copy.restore_snapshot(app.document.doc.snapshot());
+        doc_copy.warm_cache_from(&app.document.doc);
         return Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
@@ -160,16 +165,64 @@ pub fn handle_brush_end(
                             t,
                         ),
                     };
-                    photo_engine::paint::commit_stroke(&dyn_img, &pts, &transform, &brush)
+                    let commit =
+                        photo_engine::paint::commit_stroke(&dyn_img, &pts, &transform, &brush);
+                    let raw = image::RgbaImage::from_raw(commit.width, commit.height, commit.rgba)
+                        .ok_or_else(|| "Buffer de trait incohérent".to_string())?;
+                    // Porteur pixels à pré-chauffer (masque de sous-calque
+                    // → parent). Le coût (chaîne + bake pleine résolution)
+                    // reste hors thread UI avec le commit.
+                    let carrier = doc_copy
+                        .find_filter_parent(commit_owner)
+                        .unwrap_or(commit_owner);
+                    if let Some(mask_id) = stroke_mask_id {
+                        let shared = Arc::new(raw);
+                        // `touch()` UNE fois ici : la réception adopte
+                        // (Arc, version) tels quels, jamais de second touch.
+                        let version = {
+                            let mask = doc_copy
+                                .mask_of_mut(commit_owner, mask_id)
+                                .ok_or_else(|| "Masque introuvable".to_string())?;
+                            mask.image = Arc::clone(&shared);
+                            mask.touch();
+                            mask.version
+                        };
+                        let warmed = match doc_copy.appearance(carrier) {
+                            Some(_) => doc_copy.export_warmed(carrier),
+                            None => None,
+                        };
+                        Ok((
+                            crate::message::PaintedImage::Mask {
+                                image: shared,
+                                version,
+                            },
+                            warmed,
+                        ))
+                    } else {
+                        let shared = Arc::new(image::DynamicImage::ImageRgba8(raw));
+                        if let Some(l) = doc_copy.pixel_layer_mut(commit_owner) {
+                            l.source_image = Arc::clone(&shared);
+                            l.touch();
+                        } else {
+                            return Err("Calque introuvable".to_string());
+                        }
+                        let warmed = match doc_copy.appearance(carrier) {
+                            Some(_) => doc_copy.export_warmed(carrier),
+                            None => None,
+                        };
+                        Ok((crate::message::PaintedImage::Layer(shared), warmed))
+                    }
                 })
                 .await
+                .map_err(|e| format!("Tâche annulée : {e}"))?
             },
             move |result| match result {
-                Ok(buf) => Message::PaintApplied {
+                Ok((image, warmed)) => Message::PaintApplied {
                     task_id,
                     layer_id: commit_owner,
                     mask_id: stroke_mask_id,
-                    buf,
+                    image,
+                    warmed,
                 },
                 Err(_) => Message::PaintFailed {
                     task_id,
@@ -212,19 +265,42 @@ pub fn handle_paint_applied(
     task_id: u64,
     layer_id: Uuid,
     mask_id: Option<Uuid>,
-    buf: photo_engine::paint::StrokeCommit,
+    image: crate::message::PaintedImage,
+    warmed: Option<photo_engine::WarmedAppearance>,
 ) -> Task<Message> {
     app.rendering.background_tasks.finish(task_id);
-    if let Some(img) = image::RgbaImage::from_raw(buf.width, buf.height, buf.rgba) {
-        if let Some(mask_id) = mask_id {
-            if let Some(mask) = app.document.doc.mask_of_mut(layer_id, mask_id) {
-                mask.image = Arc::new(img);
-                mask.touch();
+    match image {
+        crate::message::PaintedImage::Layer(shared) => {
+            if let Some(l) = app.document.doc.pixel_layer_mut(layer_id) {
+                // MÊME Arc que le clone chauffé : l'entrée pré-calculée
+                // reste valide par identité (`touch()` hors signature).
+                l.source_image = shared;
+                l.touch();
+                if let Some(w) = warmed {
+                    app.document.doc.insert_warmed(layer_id, w);
+                }
             }
-        } else {
-            app.document
+        }
+        crate::message::PaintedImage::Mask {
+            image: shared,
+            version,
+        } => {
+            let carrier = app
+                .document
                 .doc
-                .set_source_image(layer_id, image::DynamicImage::ImageRgba8(img));
+                .find_filter_parent(layer_id)
+                .unwrap_or(layer_id);
+            if let Some(mid) = mask_id
+                && let Some(mask) = app.document.doc.mask_of_mut(layer_id, mid)
+            {
+                // MÊME (Arc, version) que le clone : convergence exacte,
+                // jamais de second `touch()`.
+                mask.image = shared;
+                mask.version = version;
+                if let Some(w) = warmed {
+                    app.document.doc.insert_warmed(carrier, w);
+                }
+            }
         }
     }
     app.tools.pending_paint = None;
@@ -390,32 +466,67 @@ pub fn handle_toggle_mask_enabled(
     layer_id: Uuid,
     mask_id: Uuid,
 ) -> Task<Message> {
-    if let Some(m) = app.document.doc.mask_of(layer_id, mask_id) {
-        let cmd = photo_engine::Command::SetMaskEnabled {
-            node_id: layer_id,
-            mask_id,
-            old: m.enabled,
-            new: !m.enabled,
-        };
-        app.document.history.push_command_immediate(cmd.clone());
-        let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
+    let new = app
+        .document
+        .doc
+        .mask_of(layer_id, mask_id)
+        .map(|m| !m.enabled)
+        .unwrap_or(false);
+    let op = AppearanceToggle::MaskEnabled {
+        mask_id,
+        enabled: new,
+    };
+    // Groupe (pas d'apparence pixels) : application live immédiate, zéro
+    // coût — le seul composite éventuel (fallback) est déjà asynchrone.
+    if super::layers::warm_carrier(app, layer_id).is_none() {
+        if let Some(m) = app.document.doc.mask_of(layer_id, mask_id) {
+            let cmd = photo_engine::Command::SetMaskEnabled {
+                node_id: layer_id,
+                mask_id,
+                old: m.enabled,
+                new,
+            };
+            app.document.history.push_command_immediate(cmd.clone());
+            let _ = app.document.doc.apply_command(cmd);
+            app.invalidate_fallback();
+        }
+        return Task::none();
     }
-    Task::none()
+    // Le flip de signature MISSrait le cache et recombinerait la couverture
+    // en pleine résolution sur l'UI — pré-chauffage hors thread UI.
+    let label = if new {
+        "Activation du masque..."
+    } else {
+        "Désactivation du masque..."
+    };
+    super::layers::warm_toggle_task(app, layer_id, op, label)
 }
 pub fn handle_invert_mask(app: &mut PhotoApp, layer_id: Uuid, mask_id: Uuid) -> Task<Message> {
-    if let Some(m) = app.document.doc.mask_of(layer_id, mask_id) {
-        let cmd = photo_engine::Command::SetMaskInverted {
-            node_id: layer_id,
-            mask_id,
-            old: m.inverted,
-            new: !m.inverted,
-        };
-        app.document.history.push_command_immediate(cmd.clone());
-        let _ = app.document.doc.apply_command(cmd);
-        app.invalidate_fallback();
+    let new = app
+        .document
+        .doc
+        .mask_of(layer_id, mask_id)
+        .map(|m| !m.inverted)
+        .unwrap_or(false);
+    let op = AppearanceToggle::MaskInverted {
+        mask_id,
+        inverted: new,
+    };
+    if super::layers::warm_carrier(app, layer_id).is_none() {
+        if let Some(m) = app.document.doc.mask_of(layer_id, mask_id) {
+            let cmd = photo_engine::Command::SetMaskInverted {
+                node_id: layer_id,
+                mask_id,
+                old: m.inverted,
+                new,
+            };
+            app.document.history.push_command_immediate(cmd.clone());
+            let _ = app.document.doc.apply_command(cmd);
+            app.invalidate_fallback();
+        }
+        return Task::none();
     }
-    Task::none()
+    super::layers::warm_toggle_task(app, layer_id, op, "Inversion du masque...")
 }
 pub fn handle_toggle_mask_color(app: &mut PhotoApp) -> Task<Message> {
     app.tools.mask_brush_black = !app.tools.mask_brush_black;
@@ -435,8 +546,11 @@ pub fn handle(app: &mut PhotoApp, msg: Message) -> Option<Task<Message>> {
             task_id,
             layer_id,
             mask_id,
-            buf,
-        } => Some(handle_paint_applied(app, task_id, layer_id, mask_id, buf)),
+            image,
+            warmed,
+        } => Some(handle_paint_applied(
+            app, task_id, layer_id, mask_id, image, warmed,
+        )),
         Message::SetBrushColor(c) => Some(handle_set_brush_color(app, c)),
         Message::SetBrushSize(s) => Some(handle_set_brush_size(app, s)),
         Message::SetBrushOpacity(o) => Some(handle_set_brush_opacity(app, o)),

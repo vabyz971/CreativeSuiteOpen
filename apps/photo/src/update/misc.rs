@@ -617,6 +617,11 @@ fn handle_pick_sample_ready(
 }
 
 fn handle_undo_redo(app: &mut PhotoApp, is_undo: bool) -> Task<Message> {
+    // Invalide les réglages en vol : calculés sur un état révolu, leur
+    // application réécrirait par-dessus l'état annulé. Le pouce retombe
+    // sur la valeur vivante.
+    app.rendering.param_epoch = app.rendering.param_epoch.wrapping_add(1);
+    app.rendering.pending_param = None;
     // Hybrid history: the history applies the inverse itself (undo) or the
     // command (redo) to the document, then describes what to invalidate —
     // full recomposite or nothing (the UI texture cache sync already targets
@@ -770,8 +775,15 @@ fn handle_space_hold_up(app: &mut PhotoApp) -> Task<Message> {
 
 fn handle_detect_gpu(app: &mut PhotoApp) -> Task<Message> {
     let task_id = app.rendering.background_tasks.start("Détection du GPU...");
+    // `detect_gpu_info_sync` fait init wgpu + compilation shaders via
+    // `pollster::block_on` : jamais sur l'executor Tokio, toujours en
+    // `spawn_blocking` (pool bloquant dédié).
     Task::perform(
-        async move { crate::components::gpu::detect_gpu_info().await },
+        async move {
+            tokio::task::spawn_blocking(crate::components::gpu::detect_gpu_info_sync)
+                .await
+                .unwrap_or_else(|e| format!("Tâche annulée : {e}"))
+        },
         move |info| Message::GpuDetected { task_id, info },
     )
 }

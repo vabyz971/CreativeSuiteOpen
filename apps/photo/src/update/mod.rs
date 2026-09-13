@@ -92,6 +92,302 @@ mod tests {
         id
     }
 
+    /// Entrée pré-chauffée factice (signatures nulles : jamais HIT, mais
+    /// insertion et application sont testables telles quelles).
+    fn fake_warmed() -> photo_engine::WarmedAppearance {
+        let img = std::sync::Arc::new(image::DynamicImage::ImageRgba8(
+            image::ImageBuffer::from_pixel(2, 2, image::Rgba([1, 2, 3, 255])),
+        ));
+        photo_engine::WarmedAppearance {
+            filter_signature: 0,
+            source: std::sync::Arc::clone(&img),
+            unmasked: std::sync::Arc::clone(&img),
+            mask_signature: 0,
+            mask_cover: None,
+            appearance: photo_engine::Appearance {
+                image: img,
+                preview: photo_engine::RgbaBuf::from_vec(2, 2, vec![0u8; 16]),
+                thumb: photo_engine::RgbaBuf::from_vec(2, 2, vec![0u8; 16]),
+            },
+        }
+    }
+
+    /// Sème un filtre brightness_contrast avec un param `brightness` fixé.
+    fn seed_filter(app: &mut PhotoApp, pid: uuid::Uuid, brightness: f32) -> uuid::Uuid {
+        let fid = app
+            .document
+            .doc
+            .add_filter(
+                pid,
+                photo_engine::FilterLayer::neutral("brightness_contrast", Default::default()),
+            )
+            .expect("filtre");
+        app.document.doc.set_filter_param(
+            pid,
+            fid,
+            "brightness".to_string(),
+            datatypes::ParamValue::Float(brightness),
+        );
+        fid
+    }
+
+    fn param_value(app: &PhotoApp, pid: uuid::Uuid, fid: uuid::Uuid) -> Option<f32> {
+        app.document
+            .doc
+            .find(pid)
+            .and_then(|n| match n {
+                photo_engine::LayerNode::Pixel(l) => l
+                    .filter_layers
+                    .iter()
+                    .find(|f| f.id == fid)?
+                    .params
+                    .get("brightness")
+                    .cloned(),
+                _ => None,
+            })
+            .and_then(|v| v.as_float())
+    }
+
+    /// Slider différé : le tick ne touche pas le vivant (sync HIT), le
+    /// pouce lit `pending_param`, la réception applique + rattrape.
+    #[test]
+    fn slider_differe_puis_rattrape() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let pid = seed_layer(&mut app, 2, 2);
+        let fid = seed_filter(&mut app, pid, 10.0);
+
+        let _ = update(
+            &mut app,
+            Message::SetFilterParam {
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(20.0),
+            },
+        );
+        // Vivant intact (zéro freeze), demande mémorisée pour le pouce.
+        assert_eq!(param_value(&app, pid, fid), Some(10.0));
+        assert_eq!(
+            app.rendering.pending_param,
+            Some(crate::message::PendingParam {
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(20.0),
+            })
+        );
+
+        let _ = update(
+            &mut app,
+            Message::ParamWarmed {
+                task_id: 0,
+                epoch: 0,
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(20.0),
+                result: Ok(fake_warmed()),
+            },
+        );
+        assert_eq!(param_value(&app, pid, fid), Some(20.0));
+        assert_eq!(app.rendering.pending_param, None);
+        assert!(app.rendering.warm_inflight.is_empty());
+    }
+
+    /// Rafale : un second tick pendant le vol est mémorisé puis enchaîné
+    /// par le front descendant (coalescé en une seule entrée undo).
+    #[test]
+    fn slider_rafale_enchainee_coalescee() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let pid = seed_layer(&mut app, 2, 2);
+        let fid = seed_filter(&mut app, pid, 10.0);
+        let before = app.document.history.undo_len();
+
+        // Tick 1 : front montant (vol simulé : on ne complète pas).
+        let _ = update(
+            &mut app,
+            Message::SetFilterParam {
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(20.0),
+            },
+        );
+        assert!(app.rendering.warm_inflight.contains(&pid));
+        // Tick 2 pendant le vol : mémorisé, aucun nouveau vol.
+        let _ = update(
+            &mut app,
+            Message::SetFilterParam {
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(30.0),
+            },
+        );
+        assert_eq!(param_value(&app, pid, fid), Some(10.0));
+
+        // Réception du vol 1 : applique 20, enchaîne 30 (nouveau vol).
+        let _ = update(
+            &mut app,
+            Message::ParamWarmed {
+                task_id: 0,
+                epoch: 0,
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(20.0),
+                result: Ok(fake_warmed()),
+            },
+        );
+        assert_eq!(param_value(&app, pid, fid), Some(20.0));
+        assert!(app.rendering.warm_inflight.contains(&pid));
+
+        // Réception du vol 2 : applique 30, rattrapé.
+        let _ = update(
+            &mut app,
+            Message::ParamWarmed {
+                task_id: 1,
+                epoch: 0,
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(30.0),
+                result: Ok(fake_warmed()),
+            },
+        );
+        assert_eq!(param_value(&app, pid, fid), Some(30.0));
+        assert_eq!(app.rendering.pending_param, None);
+
+        // Un seul undo pour tout le geste (coalescence préservée).
+        let _ = update(&mut app, Message::Undo);
+        assert_eq!(param_value(&app, pid, fid), Some(10.0));
+        assert_eq!(app.document.history.undo_len(), before);
+    }
+
+    /// Undo pendant le vol : l'époque invalide la réception, le vivant
+    /// garde l'état annulé, le pouce retombe.
+    #[test]
+    fn slider_vol_perime_par_undo() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let pid = seed_layer(&mut app, 2, 2);
+        let fid = seed_filter(&mut app, pid, 10.0);
+        let before = app.document.history.undo_len();
+
+        // Vol 1 appliqué : vivant à 20, entrée d'historique coalescée.
+        let _ = update(
+            &mut app,
+            Message::SetFilterParam {
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(20.0),
+            },
+        );
+        let _ = update(
+            &mut app,
+            Message::ParamWarmed {
+                task_id: 0,
+                epoch: 0,
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(20.0),
+                result: Ok(fake_warmed()),
+            },
+        );
+        assert_eq!(param_value(&app, pid, fid), Some(20.0));
+
+        // Vol 2 en cours, puis undo : annule le vol 1, bump l'époque,
+        // vide l'attente.
+        let _ = update(
+            &mut app,
+            Message::SetFilterParam {
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(30.0),
+            },
+        );
+        let _ = update(&mut app, Message::Undo);
+        assert_eq!(param_value(&app, pid, fid), Some(10.0));
+        assert_eq!(app.rendering.pending_param, None);
+
+        // Réception périmée : jetée, le vivant garde l'état annulé.
+        let _ = update(
+            &mut app,
+            Message::ParamWarmed {
+                task_id: 1,
+                epoch: 0,
+                layer_id: pid,
+                filter_id: fid,
+                key: "brightness".to_string(),
+                value: datatypes::ParamValue::Float(30.0),
+                result: Ok(fake_warmed()),
+            },
+        );
+        assert_eq!(param_value(&app, pid, fid), Some(10.0));
+        assert!(app.rendering.warm_inflight.is_empty());
+        assert_eq!(app.document.history.undo_len(), before);
+    }
+
+    /// Toggle différé : le flag ne bouge qu'à la réception.
+    #[test]
+    fn toggle_filtre_differe() {
+        let mut app = PhotoApp::default();
+        app.document.doc = photo_engine::Document::new(4, 4);
+        let pid = seed_layer(&mut app, 2, 2);
+        let fid = seed_filter(&mut app, pid, 10.0);
+        let before = app.document.history.undo_len();
+
+        let _ = update(
+            &mut app,
+            Message::ToggleFilterEnabled {
+                layer_id: pid,
+                filter_id: fid,
+            },
+        );
+        // Vivant intact pendant le pré-chauffage.
+        assert_eq!(
+            app.document.doc.find(pid).and_then(|n| match n {
+                photo_engine::LayerNode::Pixel(l) => l
+                    .filter_layers
+                    .iter()
+                    .find(|f| f.id == fid)
+                    .map(|f| f.enabled),
+                _ => None,
+            }),
+            Some(true)
+        );
+        let _ = update(
+            &mut app,
+            Message::AppearanceWarmed {
+                task_id: 0,
+                layer_id: pid,
+                op: crate::message::AppearanceToggle::FilterEnabled {
+                    filter_id: fid,
+                    enabled: false,
+                },
+                result: Ok(fake_warmed()),
+            },
+        );
+        assert_eq!(
+            app.document.doc.find(pid).and_then(|n| match n {
+                photo_engine::LayerNode::Pixel(l) => l
+                    .filter_layers
+                    .iter()
+                    .find(|f| f.id == fid)
+                    .map(|f| f.enabled),
+                _ => None,
+            }),
+            Some(false)
+        );
+        assert_eq!(app.document.history.undo_len(), before + 1);
+        assert!(app.rendering.warm_inflight.is_empty());
+    }
+
     #[test]
     fn cycle_calque_undo_redo() {
         let mut app = PhotoApp::default();

@@ -73,6 +73,33 @@ pub struct DestructiveResult {
     pub offset_delta: (f32, f32),
 }
 
+/// Réglage de paramètre demandé au slider mais pas encore appliqué :
+/// le vivant garde l'ancienne valeur (donc `sync()` HIT, zéro freeze)
+/// pendant que le worker pré-chauffe la nouvelle. Le pouce du slider
+/// affiche cette valeur en attendant ; `param_epoch` invalide les vols
+/// périmés par un undo/redo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingParam {
+    pub layer_id: Uuid,
+    pub filter_id: Uuid,
+    pub key: String,
+    pub value: datatypes::ParamValue,
+}
+
+/// Toggle d'activation appliqué sur un clone en `spawn_blocking` puis
+/// rejoué sur le document vivant à la réception de `AppearanceWarmed`.
+/// `layer_id` = porteur du toggle (peut être un sous-calque de filtre
+/// pour les masques) ; le pré-chauffage vise le calque pixels porteur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppearanceToggle {
+    /// (Sous-)calque de filtre on/off — `layer_id` = parent pixels ou ajustement.
+    FilterEnabled { filter_id: Uuid, enabled: bool },
+    /// Masque on/off — `layer_id` = porteur du masque.
+    MaskEnabled { mask_id: Uuid, enabled: bool },
+    /// Inversion du masque — `layer_id` = porteur du masque.
+    MaskInverted { mask_id: Uuid, inverted: bool },
+}
+
 /// Calque pixels décodé (thread async) — Debug manuel car la texture n'est
 /// pas formattable.
 #[derive(Clone)]
@@ -86,7 +113,6 @@ impl std::fmt::Debug for DecodedLayer {
             .finish()
     }
 }
-
 /// Trait terminé dont les pixels sont en cours de fusion hors thread UI.
 /// La texture d'aperçu (rastérisée par le canvas) reste affichée telle
 /// quelle jusqu'à PaintApplied — continuité visuelle parfaite.
@@ -96,4 +122,37 @@ pub struct PendingPaint {
     /// Masque ciblé si le trait peignait un masque (None = pixels du calque).
     pub mask_id: Option<Uuid>,
     pub tex: ui_kit::image_canvas::StrokeTex,
+}
+
+/// Image peinte à appliquer sur le vivant : le MÊME `Arc` sert des deux
+/// côtés (clone worker → document vivant), ce qui préserve l'identité de
+/// pointeur exigée par le cache d'apparences — l'entrée pré-chauffée
+/// transportée avec reste valide.
+/// `Mask` porte la version touchée UNE seule fois côté worker : la
+/// réception l'adopte telle quelle (jamais de second `touch()`, qui
+/// ferait diverger la signature — voir `apply_toggle_flag`).
+#[derive(Clone)]
+pub enum PaintedImage {
+    Layer(std::sync::Arc<image::DynamicImage>),
+    Mask {
+        image: std::sync::Arc<image::RgbaImage>,
+        version: u64,
+    },
+}
+
+impl std::fmt::Debug for PaintedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use image::GenericImageView as _;
+        match self {
+            Self::Layer(img) => f
+                .debug_struct("PaintedImage::Layer")
+                .field("dims", &img.dimensions())
+                .finish(),
+            Self::Mask { image, version } => f
+                .debug_struct("PaintedImage::Mask")
+                .field("dims", &image.dimensions())
+                .field("version", version)
+                .finish(),
+        }
+    }
 }
