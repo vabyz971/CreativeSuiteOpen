@@ -22,7 +22,7 @@
 //!   sections Général / Rendu / Raccourcis ;
 //! - [`hardware`] : rapport CPU / RAM / GPU via wgpu (adaptateurs réels) ;
 //! - [`keybindings`] : actions typées, parsing « Ctrl+Shift+S », résolution
-//!   d'événements clavier iced vers actions.
+//!   d'événements clavier vers actions.
 
 pub mod hardware;
 pub mod keybindings;

@@ -1,7 +1,7 @@
 # Cygnus
 
 
-Cygnus is a creative suite (Photo, Video, Audio) developed in **Rust** using **Iced** and **wgpu**.
+Cygnus is a creative suite (Photo, Video, Audio) developed in **Rust** using **egui** (via eframe) and **wgpu**.
 
 ## Project status
 
@@ -27,9 +27,9 @@ Cygnus/
 ├── core/                     # Shared foundation reused across apps
 │   ├── datatypes/            # Shared types: nodes, sockets, parameters, Vec2
 ├── packages/                 # Reusable libraries (never depend on engines/apps)
-│   ├── ui-kit/               # Iced widgets: theme.rs (SOLE source of tokens), style.rs,
-│   │                         #   image_canvas.rs, layer_canvas.rs,
-│   │                         #   menu.rs / dropdown.rs, timeline.rs / piano_roll.rs
+│   ├── ui-kit/               # egui design system: theme/ (SOLE source of tokens),
+│   │                         #   widgets/ (buttons, icons via CygnusIcon, reorderable
+│   │                         #   list), panels/, viewport/ (pan/zoom), dialogs/
 │   ├── math-utils/           # Shared math: canonical affine `Transform2D`
 │   │                         #   (canonical `Vec2` = datatypes)
 │   ├── file-utils/           # I/O: drag & drop, file dialogs
@@ -42,9 +42,11 @@ Cygnus/
 ### Architecture philosophy
 - **Strict modularity**: business logic lives in `engines/*` and `core/*`, never in the apps. An app = interface + orchestration.
 - **Pure engines**: `photo-engine` (layer tree, compositing, history) has no UI dependency and can later serve the video module (titles, image compositing).
+- **Shared style, per-app layouts**: all widgets come from `packages/ui-kit` (theme, `CygnusIcon`, generic panels/viewport/dialogs); each app owns its layout and its domain widgets in `apps/*/src/ui/`. ui-kit never references engine or app types.
+- **Non-blocking UI**: the egui loop never blocks — heavy work (decode, export, compositing) runs on background threads and reports back over `mpsc` channels polled each frame.
 - **Layered dependencies**: `apps/*` may depend on `engines/*`, `core/*`, and `packages/*`; `engines/*` may depend on `core/*` and non-UI `packages/*`. Packages never depend on engines or apps.
 - **State-only rendering**: settings (opacity, transform, blend) never regenerate pixels — they apply at draw time. This invariant is what makes the UI feel instant.
-- **Rust + Iced + wgpu**: one codebase, native GPU rendering on all three platforms.
+- **Rust + egui + wgpu**: one codebase, native GPU rendering on all three platforms.
 
 ---
 
@@ -121,4 +123,4 @@ GNU General Public License for more details.
 
 ---
 
-*Built with Rust, Iced and wgpu — for creators on Linux.*
+*Built with Rust, egui and wgpu — for creators on Linux.*

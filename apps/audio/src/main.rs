@@ -14,54 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use iced::{Element, Length, Task};
+//! Base minimale de l'app Audio (prompt v2) : boot eframe + thème.
+//!
+//! `audio-engine` étant en fondation, pas d'interface complexe pour
+//! le moment : un placeholder central. Le transport, les pistes, le
+//! piano roll et le mixer seront construits ici quand le moteur
+//! arrivera.
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-enum Message {
-    Mock,
-}
+mod app;
 
-#[allow(dead_code)]
-struct AudioApp {
-    zoom: f32,
-}
-
-impl Default for AudioApp {
-    fn default() -> Self {
-        Self { zoom: 1.0 }
-    }
-}
-
-fn update(_app: &mut AudioApp, msg: Message) -> Task<Message> {
-    match msg {
-        Message::Mock => {}
-    }
-    Task::none()
-}
-
-fn view(_app: &AudioApp) -> Element<'_, Message> {
-    iced::widget::container("Working progess")
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-
-pub fn main() -> iced::Result {
-    iced::application(AudioApp::default, update, view)
-        .title("Cygnus — Audio")
-        .font(include_bytes!(
-            "../../../assets/fonts/MaterialIcons-Regular.ttf"
-        ))
-        .font(include_bytes!(
-            "../../../assets/fonts/HankenGrotesk-Regular.ttf"
-        ))
-        .font(include_bytes!(
-            "../../../assets/fonts/HankenGrotesk-SemiBold.ttf"
-        ))
-        .font(include_bytes!(
-            "../../../assets/fonts/HankenGrotesk-Bold.ttf"
-        ))
-        .default_font(ui_kit::theme::fonts::SANS)
-        .run()
+fn main() {
+    eframe::run_native(
+        "Cygnus Audio",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
+            ..Default::default()
+        },
+        Box::new(|cc| {
+            ui_kit::theme::setup_fonts(&cc.egui_ctx);
+            ui_kit::theme::apply_cygnus_theme(&cc.egui_ctx);
+            Ok(Box::new(app::AudioApp::new()))
+        }),
+    )
+    .expect("Failed to start eframe");
 }

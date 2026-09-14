@@ -9,8 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-iced.workspace = true
-iced.features = ["debug"]
+eframe.workspace = true
+egui.workspace = true
 ui-kit = { path = "../../packages/ui-kit" }
-datatypes = { path = "../../core/datatypes" }
-video-engine = { path = "../../engines/video-engine" }

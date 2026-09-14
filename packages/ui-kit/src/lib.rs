@@ -14,38 +14,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Crate `ui` — cross-cutting widget library for the suite.
+//! Crate `ui_kit` — design system egui de la suite Cygnus.
 //!
-//! Layered architecture (bottom to top):
+//! Architecture en couches (bas vers haut) :
 //!
-//! 1. **`theme`** — SINGLE source of colors, sizes, radii, shadows
-//!    (theme tokens). No other module hard-codes a color.
-//! 2. **`style`** — canonical styles per visual family (buttons, cards).
-//!    Components reference these functions instead of writing closures.
-//! 3. **Cross-cutting primitives** — reusable by ALL apps without
-//!    business logic: `icon_button`, `spinner`, `dropdown`, `settings`,
-//!    `shortcuts`.
-//! 4. **Structural layouts** — common interface compositions:
-//!    `shell`, `menu`, `base_panel`.
-//! 5. **Domain canvases** — specialized displays potentially shared
-//!    between apps: `image_canvas`, `layer_canvas`, `timeline`,
-//!    `piano_roll`.
+//! 1. **`theme`** — SEULE source des couleurs, espacements, rayons,
+//!    typo. Aucun autre module ne code de valeur en dur.
+//! 2. **`widgets`** — boutons, sliders, inputs, dropdown, toggles,
+//!    tooltips, icônes (`CygnusIcon`, seul contact avec
+//!    `egui_material_icons`) et liste réordonnable générique.
+//! 3. **`panels`** — conteneurs (panneau titré, split
+//!    redimensionnable, onglets, repliable, toolbar). La disposition
+//!    reste propre à chaque app (aucun layout partagé).
+//! 4. **`viewport`** — état zoom/pan générique + affichage texture.
+//! 5. **`dialogs`** — modales, sélecteurs de fichiers, progression.
+//! 6. **`utils`** — état de drag & drop générique (index).
 //!
-//! App-SPECIFIC elements do NOT live here: they stay in
-//! `apps/<app>/src/components/`. A component is promoted to `ui/`
-//! only when a second app needs it.
+//! INTERDIT ici : toute référence aux types métier des apps et aux
+//! engines. Les widgets métier vivent dans `apps/*/src/ui/`.
 
-pub mod base_panel;
-pub mod dropdown;
-pub mod icon_button;
-pub mod image_canvas;
-pub mod layer_canvas;
-pub mod menu;
-pub mod piano_roll;
-pub mod settings;
-pub mod shell;
-pub mod shortcuts;
-pub mod spinner;
-pub mod style;
+pub mod dialogs;
+pub mod panels;
 pub mod theme;
-pub mod timeline;
+pub mod utils;
+pub mod viewport;
+pub mod widgets;

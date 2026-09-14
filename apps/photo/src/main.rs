@@ -14,76 +14,29 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Point d'entrée de l'app Photo : câblage iced (daemon multi-fenêtres).
+//! Point d'entrée de l'app Photo : boot eframe + thème Cygnus.
 //!
-//! Découpage :
-//! - `message`  : enum Message + types partagés (outils, panneaux)
-//! - `state`    : PhotoApp (état) + helpers document/canvas
-//! - `update`   : boucle de mise à jour (un handler par message)
-//! - `view`     : rendu + abonnements
-//! - `menus`    : menus applicatifs du shell
-//! - `ui_handles`: frontière moteur pur → handles iced (cache)
+//! Découpage (prompt v2) :
+//! - `app`     : PhotoApp (état + channels + `impl eframe::App`)
+//! - `layout`  : disposition propre à photo
+//! - `ui/`     : widgets métier (layers, canvas, toolbar, properties)
 
-mod menus;
-mod message;
-mod preferences_window;
-mod state;
-mod ui_handles;
-mod update;
-mod view;
+mod app;
+mod layout;
+mod ui;
 
-pub mod components;
-pub mod layers;
-
-pub use message::{DecodedLayer, Message, OffsetAxis, PanelType, PendingPaint, StudioMode, Tool};
-pub use state::PhotoApp;
-
-use update::update;
-use view::{subscription, view};
-
-pub fn main() -> iced::Result {
-    // Force rayon à utiliser tous les cœurs
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(cores)
-        .thread_name(|i| format!("rayon-photo-{}", i))
-        .build_global();
-    // Warmup GPU en arrière-plan pour que le canvas principal intègre wgpu dès le démarrage
-    std::thread::spawn(|| {
-        let _ = crate::components::gpu::GpuContext::get();
-    });
-    // Daemon : multi-fenêtres (principale + Préférences), cf. examples/multi_window
-    iced::daemon(PhotoApp::new, update, view)
-        .title(|app: &PhotoApp, window: iced::window::Id| {
-            if app.is_preferences_window(window) {
-                return "Préférences — Cygnus Photo".to_string();
-            }
-            match &app.document.project_path {
-                Some(path) => {
-                    let name = path
-                        .file_stem()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("projet");
-                    format!("Cygnus Photo — {name}")
-                }
-                None => "Cygnus Photo".to_string(),
-            }
-        })
-        .subscription(subscription)
-        .font(include_bytes!(
-            "../../../assets/fonts/MaterialIcons-Regular.ttf"
-        ))
-        .font(include_bytes!(
-            "../../../assets/fonts/HankenGrotesk-Regular.ttf"
-        ))
-        .font(include_bytes!(
-            "../../../assets/fonts/HankenGrotesk-SemiBold.ttf"
-        ))
-        .font(include_bytes!(
-            "../../../assets/fonts/HankenGrotesk-Bold.ttf"
-        ))
-        .default_font(ui_kit::theme::fonts::SANS)
-        .run()
+fn main() {
+    eframe::run_native(
+        "Cygnus Photo",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
+            ..Default::default()
+        },
+        Box::new(|cc| {
+            ui_kit::theme::setup_fonts(&cc.egui_ctx);
+            ui_kit::theme::apply_cygnus_theme(&cc.egui_ctx);
+            Ok(Box::new(app::PhotoApp::new()))
+        }),
+    )
+    .expect("Failed to start eframe");
 }

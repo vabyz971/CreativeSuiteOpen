@@ -16,12 +16,12 @@
 
 //! Résolveur de raccourcis clavier : actions typées de l'app photo,
 //! parsing des combinaisons (« Ctrl+Shift+S ») et conversion d'un
-//! événement clavier iced en action.
+//! événement clavier en action.
+//!
+//! Types clavier PROPRES (aucune dépendance UI) : l'app convertit
+//! `egui::Key`/`egui::Modifiers` vers [`AppKey`]/[`AppModifiers`].
 
 use std::collections::HashMap;
-
-use iced::keyboard::key::Named;
-use iced::keyboard::{Key, Modifiers};
 
 /// Toutes les actions raccourcissables de l'app photo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -202,6 +202,106 @@ impl std::fmt::Display for KeyCombo {
     }
 }
 
+/// Touche logique indépendante du framework UI.
+///
+/// L'app convertit les événements clavier (ex. `egui::Key`) vers ce
+/// type avant d'appeler [`KeybindingResolver::resolve`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AppKey {
+    /// Caractère imprimable (« z », « S », « + »…).
+    Character(String),
+    /// Touche nommée (fonction, édition, flèches, modificateurs…).
+    Named(NamedKey),
+}
+
+/// Touches nommées prises en charge par le résolveur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NamedKey {
+    /// Touches de fonction.
+    F1,
+    /// Touches de fonction.
+    F2,
+    /// Touches de fonction.
+    F3,
+    /// Touches de fonction.
+    F4,
+    /// Touches de fonction.
+    F5,
+    /// Touches de fonction.
+    F6,
+    /// Touches de fonction.
+    F7,
+    /// Touches de fonction.
+    F8,
+    /// Touches de fonction.
+    F9,
+    /// Touches de fonction.
+    F10,
+    /// Touches de fonction.
+    F11,
+    /// Touches de fonction.
+    F12,
+    /// Espace.
+    Space,
+    /// Entrée.
+    Enter,
+    /// Échap.
+    Escape,
+    /// Suppr.
+    Delete,
+    /// Retour arrière.
+    Backspace,
+    /// Tabulation.
+    Tab,
+    /// Flèche haut.
+    ArrowUp,
+    /// Flèche bas.
+    ArrowDown,
+    /// Flèche gauche.
+    ArrowLeft,
+    /// Flèche droite.
+    ArrowRight,
+    /// Modificateurs seuls (jamais résolus en action).
+    Control,
+    /// Modificateur seul.
+    Shift,
+    /// Modificateur seul.
+    Alt,
+    /// Modificateur seul (Cmd/Super).
+    Meta,
+}
+
+/// Modificateurs indépendants du framework UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct AppModifiers {
+    /// Ctrl (ou Cmd, selon la plateforme — l'app choisit).
+    pub ctrl: bool,
+    /// Maj.
+    pub shift: bool,
+    /// Alt/Option.
+    pub alt: bool,
+    /// Cmd/Super explicite (replié sur ctrl par le résolveur).
+    pub command: bool,
+}
+
+impl AppModifiers {
+    /// Aucun modificateur.
+    pub const EMPTY: Self = Self {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        command: false,
+    };
+
+    /// Ctrl seul.
+    pub const CTRL: Self = Self {
+        ctrl: true,
+        shift: false,
+        alt: false,
+        command: false,
+    };
+}
+
 /// Résolveur : table combo → action, construite depuis les préférences.
 #[derive(Debug, Default)]
 pub struct KeybindingResolver {
@@ -225,12 +325,12 @@ impl KeybindingResolver {
 
     /// Action correspondant à cet événement clavier, s'il y en a une.
     #[must_use]
-    pub fn resolve(&self, key: &Key, modifiers: Modifiers) -> Option<PhotoAction> {
+    pub fn resolve(&self, key: &AppKey, modifiers: AppModifiers) -> Option<PhotoAction> {
         let combo = KeyCombo {
             key: key_to_string(key)?,
-            ctrl: modifiers.control() || modifiers.command(),
-            shift: modifiers.shift(),
-            alt: modifiers.alt(),
+            ctrl: modifiers.ctrl || modifiers.command,
+            shift: modifiers.shift,
+            alt: modifiers.alt,
         };
         self.lookup.get(&combo).copied()
     }
@@ -277,42 +377,42 @@ pub fn parse_combo(s: &str) -> Option<KeyCombo> {
     })
 }
 
-/// Convertit une touche iced en sa représentation texte normalisée
+/// Convertit une touche logique en sa représentation texte normalisée
 /// (identique à celle utilisée par [`parse_combo`]).
+/// Les modificateurs seuls retournent `None` (jamais d'action).
 #[must_use]
-pub fn key_to_string(key: &Key) -> Option<String> {
+pub fn key_to_string(key: &AppKey) -> Option<String> {
     match key {
-        Key::Character(c) => Some(c.to_uppercase()),
-        Key::Named(named) => named_to_string(*named),
-        Key::Unidentified => None,
+        AppKey::Character(c) => Some(c.to_uppercase()),
+        AppKey::Named(named) => named_to_string(*named),
     }
 }
 
-fn named_to_string(named: Named) -> Option<String> {
+fn named_to_string(named: NamedKey) -> Option<String> {
     let s = match named {
-        Named::F1 => "F1",
-        Named::F2 => "F2",
-        Named::F3 => "F3",
-        Named::F4 => "F4",
-        Named::F5 => "F5",
-        Named::F6 => "F6",
-        Named::F7 => "F7",
-        Named::F8 => "F8",
-        Named::F9 => "F9",
-        Named::F10 => "F10",
-        Named::F11 => "F11",
-        Named::F12 => "F12",
-        Named::Space => "Space",
-        Named::Enter => "Enter",
-        Named::Escape => "Escape",
-        Named::Delete => "Delete",
-        Named::Backspace => "Backspace",
-        Named::Tab => "Tab",
-        Named::ArrowUp => "Up",
-        Named::ArrowDown => "Down",
-        Named::ArrowLeft => "Left",
-        Named::ArrowRight => "Right",
-        _ => return None,
+        NamedKey::F1 => "F1",
+        NamedKey::F2 => "F2",
+        NamedKey::F3 => "F3",
+        NamedKey::F4 => "F4",
+        NamedKey::F5 => "F5",
+        NamedKey::F6 => "F6",
+        NamedKey::F7 => "F7",
+        NamedKey::F8 => "F8",
+        NamedKey::F9 => "F9",
+        NamedKey::F10 => "F10",
+        NamedKey::F11 => "F11",
+        NamedKey::F12 => "F12",
+        NamedKey::Space => "Space",
+        NamedKey::Enter => "Enter",
+        NamedKey::Escape => "Escape",
+        NamedKey::Delete => "Delete",
+        NamedKey::Backspace => "Backspace",
+        NamedKey::Tab => "Tab",
+        NamedKey::ArrowUp => "Up",
+        NamedKey::ArrowDown => "Down",
+        NamedKey::ArrowLeft => "Left",
+        NamedKey::ArrowRight => "Right",
+        NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::Meta => return None,
     };
     Some(s.to_string())
 }
@@ -364,23 +464,28 @@ mod tests {
         let resolver = KeybindingResolver::from_bindings(&defaults.bindings);
 
         // Ctrl+Z → Undo
-        let z = Key::Character("z".into());
-        let mods = Modifiers::CTRL;
-        assert_eq!(resolver.resolve(&z, mods), Some(PhotoAction::Undo));
+        let z = AppKey::Character("z".into());
+        assert_eq!(
+            resolver.resolve(&z, AppModifiers::CTRL),
+            Some(PhotoAction::Undo)
+        );
 
         // 'b' sans modificateur → ToolBrush
-        let b = Key::Character("b".into());
+        let b = AppKey::Character("b".into());
         assert_eq!(
-            resolver.resolve(&b, Modifiers::empty()),
+            resolver.resolve(&b, AppModifiers::EMPTY),
             Some(PhotoAction::ToolBrush)
         );
 
         // Ctrl seul ne déclenche rien
-        assert_eq!(resolver.resolve(&Key::Named(Named::Control), mods), None);
+        assert_eq!(
+            resolver.resolve(&AppKey::Named(NamedKey::Control), AppModifiers::CTRL),
+            None
+        );
 
         // F7 → panneau calques
         assert_eq!(
-            resolver.resolve(&Key::Named(Named::F7), Modifiers::empty()),
+            resolver.resolve(&AppKey::Named(NamedKey::F7), AppModifiers::EMPTY),
             Some(PhotoAction::ToggleLayersPanel)
         );
     }
@@ -390,13 +495,13 @@ mod tests {
         let defaults = crate::model::KeybindingPreferences::with_defaults();
         let resolver = KeybindingResolver::from_bindings(&defaults.bindings);
         // 's' SANS Ctrl ne doit PAS déclencher Enregistrer
-        let s = Key::Character("s".into());
+        let s = AppKey::Character("s".into());
         assert_ne!(
-            resolver.resolve(&s, Modifiers::empty()),
+            resolver.resolve(&s, AppModifiers::EMPTY),
             Some(PhotoAction::Save)
         );
         assert_eq!(
-            resolver.resolve(&s, Modifiers::CTRL),
+            resolver.resolve(&s, AppModifiers::CTRL),
             Some(PhotoAction::Save)
         );
     }

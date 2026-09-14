@@ -1,6 +1,6 @@
 [package]
 name = "ui-kit"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["vabyz971 <vabyz971@gmail.com>"]
 edition.workspace = true
 license.workspace = true
@@ -13,18 +13,6 @@ name = "ui_kit"
 path = "src/lib.rs"
 
 [dependencies]
-iced = { workspace = true, features = ["svg", "canvas", "image"] }
-iced_aw.workspace = true
-iced_core.workspace = true
-iced_futures.workspace = true
-bytemuck = { workspace = true }
-pollster = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-datatypes = { path = "../../core/datatypes" }
-math-utils = { path = "../math-utils" }
-uuid.workspace = true
-
-# Même version que le wgpu d'iced : valide le WGSL réellement compilé.
-[dev-dependencies]
-naga = { version = "=27.0.3", features = ["wgsl-in"] }
+egui.workspace = true
+egui_material_icons.workspace = true
+rfd.workspace = true

@@ -21,10 +21,12 @@ assets/     Ressources partagées (polices)
 
 ### packages/
 Bibliothèques partagées réutilisables entre toutes les applications.
-- `ui-kit` (crate `ui_kit`) : widgets iced en couches — `theme` (seule source des
-  couleurs/tailles, tokens dans `theme.rs`), `style` (styles canoniques), primitives
-  transverses, layouts, canvas domaine (`image_canvas`, `timeline`,
-  `piano_roll`).
+- `ui-kit` (crate `ui_kit`) : design system egui en couches — `theme`
+  (seule source des couleurs/tailles, tokens dans `theme/`), `widgets`
+  génériques (dont `CygnusIcon`, `ReorderableList`), `panels`,
+  `viewport` pan/zoom générique, `dialogs`. Strictement
+  domain-agnostic : aucun type métier (vérifié par
+  `scripts/check_uikit_domain_agnostic.sh`).
 - `math-utils` : transformation affine 2D canonique (`Transform2D`) ;
   le `Vec2` canonique reste `datatypes::Vec2`, réexporté.
 - `file-utils` : erreurs fichiers, types drag & drop et dialogues.
@@ -33,9 +35,10 @@ Ces packages ne doivent JAMAIS dépendre des engines ni des apps.
 
 ### engines/
 Moteurs métier spécifiques à chaque domaine, strictement purs :
-aucune connaissance d'iced ou de ses types. Les buffers portés par le modèle
-document restent purs (`RgbaBuf`, `Arc<[u8]>`) ; toute conversion vers une
-texture UI se fait côté app.
+aucune connaissance d'egui ou de ses types. Les buffers portés par le modèle
+document restent purs (`RgbaBuf`, `Arc<[u8]>`) ; les apps envoient des
+commandes via `mpsc` à un worker propriétaire du `Document` et reçoivent
+snapshots + aperçu composite (conversion texture côté app).
 - `photo-engine` : document, compositing CPU/GPU, historique, projet `.cygp`.
 - `video-engine`, `audio-engine` : fondations.
 
@@ -45,9 +48,10 @@ Ils peuvent dépendre de `core/*` et de `packages/*` (hors UI).
 Socle transverse : `datatypes` (nœuds, sockets, `Vec2`).
 
 ### apps/
-Applications finales qui combinent packages, core et engines. Découpage par rôle :
-`message.rs`, `state.rs`, `update.rs`, `view.rs`, `menus.rs`, plus les modules
-d'adaptation moteur→UI (`ui_handles.rs`). Chaque app est un binaire indépendant.
+Applications finales qui combinent packages, core et engines. Découpage par rôle
+(`main.rs` boot eframe, `app.rs` état + channels, `layout.rs` disposition
+propre, `ui/` widgets métier). Chaque app est un binaire indépendant ;
+photo est complète, video/audio sont des bases en attendant leurs moteurs.
 
 ## Règles de dépendances
 
@@ -63,12 +67,12 @@ Vérification : `cargo tree -p <crate> --depth 1`.
 
 - **State-only** : un réglage (opacité, position…) ne régénère jamais les pixels ;
   il s'applique au draw GPU.
-- **Rendu hybride** : chemin rapide = une texture GPU par calque dessinée
-  indépendamment ; fallback CPU (rayon) pour les fusions nécessitant un vrai
-  blending inter-calques.
-- **Frontière moteur→UI** : `PreviewCache` dérive les handles iced des `RgbaBuf`
-  par identité d'Arc (zéro copie), synchronisé au début de chaque message dans
-  `update()` — point unique de conversion.
+- **Rendu** : aperçu composite CPU calculé côté worker (thread background,
+  taille plafonnée) et téléversé en texture egui côté app ; chemin natif
+  wgpu zéro-copie (`register_native_texture`) prévu.
+- **Frontière moteur→UI** : le worker répond `LayersChanged { layers,
+  preview, can_undo, can_redo }`, pollé en non bloquant (`try_recv`) à
+  chaque frame — point unique de conversion.
 
 ## Compilation
 

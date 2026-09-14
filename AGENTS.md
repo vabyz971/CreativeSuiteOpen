@@ -3,7 +3,7 @@ covers: []
 ---
 # AGENTS.md
 
-Suite créative Rust : workspace Cargo, apps **Iced 0.14 + wgpu**, licence GPL-3.0. Docs : `README.md` (architecture, roadmap), `ARCHITECTURE.md` (règles de dépendances).
+Suite créative Rust : workspace Cargo, apps **egui 0.36 (eframe) + wgpu 30**, licence GPL-3.0. Docs : `README.md` (architecture, roadmap), `ARCHITECTURE.md` (règles de dépendances).
 
 ## Environnement
 - Édition Rust 2024 → toolchain **1.85+** obligatoire.
@@ -23,7 +23,7 @@ Le nom de crate diffère parfois du dossier — utiliser `-p` avec le nom de cra
 | `core/datatypes` | `datatypes` (nœuds, sockets, Vec2 partagés) |
 | `engines/photo-engine` | `photo-engine` (document, compositing CPU/GPU, historique, projet) |
 | `engines/audio-engine` / `engines/video-engine` | `audio-engine` / `video-engine` (fondations, purs) |
-| `packages/ui-kit` | `ui-kit` (lib `ui_kit`, widgets iced réutilisables) |
+| `packages/ui-kit` | `ui-kit` (lib `ui_kit`, design system egui : theme, widgets, panels, viewport, dialogs) |
 | `packages/math-utils` | `math-utils` (transformation affine `Transform2D` ; Vec2 canonique = datatypes) |
 | `packages/file-utils` | `file-utils` (erreurs fichiers, drag & drop, dialogues) |
 | `packages/preferences` | `preferences` (préférences persistantes, matériel, raccourcis) |
@@ -32,10 +32,10 @@ Dépendances autorisées : `packages/*` ← `core/*` ← `engines/*` ← `apps/*
 
 ## Règles d'architecture (strictes)
 - Logique métier → `engines/*` et `core/*` ; widgets → `packages/ui-kit` ; apps = interface + orchestration uniquement. Pas de logique de rendu dans les apps.
-- **Les moteurs sont PURS : aucune dépendance UI.** `photo-engine` ne connaît ni iced ni ses types ; le modèle document (`Layer`) porte des buffers purs (`RgbaBuf`, `Arc<[u8]>`). Toute conversion vers une texture UI se fait côté app via l'adaptateur `apps/photo/src/ui_handles.rs`.
-- Frontière moteur→UI : `PreviewCache` dérive les handles iced des `RgbaBuf` par identité d'Arc (zéro copie via `Bytes::from_owner`). Synchronisé à CHAQUE message au début de `update()` — point unique, ne pas créer de handles ailleurs sous peine de casser le cache de textures GPU de iced.
+- **Les moteurs sont PURS : aucune dépendance UI.** `photo-engine` ne connaît ni egui ni ses types ; le modèle document porte des buffers purs (`RgbaBuf`, `Arc<[u8]>`). L'app envoie des commandes via `mpsc` à un worker qui possède le `Document`, et reçoit snapshots + aperçu composite ; la texture est téléversée côté app (`ViewportTextureCache`). Boucle egui non bloquante (`try_recv` par frame).
+- Frontière moteur→UI : le worker répond `LayersChanged { layers, preview, can_undo, can_redo }` ; l'app convertit l'aperçu en `egui::ColorImage` et nourrit son `TextureHandle` (zéro régénération au zoom/pan — state-only).
 - Modèle de rendu **« state-only »** : un réglage (opacité, position…) ne régénère jamais les pixels/textures ; il s'applique au draw GPU. Préserver ce modèle à tout prix.
-- Rendu hybride : chemin rapide = 1 texture GPU par calque dessinée indépendamment ; fallback CPU rayon uniquement pour les modes de fusion nécessitant un vrai blending inter-calques.
+- Rendu : aperçu composite CPU côté worker (plafonné, thread background) ; chemin natif wgpu zéro-copie (`register_native_texture`) prévu côté app.
 
 ## Historique & persistance
 - Undo/redo : snapshots complets du document (`engines/photo-engine/src/history.rs`) quasi gratuits grâce aux `Arc<DynamicImage>` partagés. Les gestes continus (sliders, renommage, drag) passent par `push_coalesced` — toujours pousser le snapshot PRÉ-mutation, jamais après.
@@ -43,20 +43,20 @@ Dépendances autorisées : `packages/*` ← `core/*` ← `engines/*` ← `apps/*
 
 ## Structure de l'app photo
 Découpée par rôle (même schéma pour les futures apps) :
-`message/` (enum Message + types partagés) · `state.rs` (PhotoApp + helpers) · `update/` (un handler par message) · `view.rs` (rendu + abonnements) · `menus.rs` · `ui_handles.rs`. Ne pas regrossir vers un main.rs monolithique.
+`main.rs` (boot eframe) · `app.rs` (PhotoApp + channels + `impl eframe::App`) · `layout.rs` (disposition propre à l'app) · `ui/` (widgets métier : `layers/`, `canvas.rs`, `toolbar.rs`, `properties.rs`, `engine_bridge.rs`). Ne pas regrossir vers un main.rs monolithique.
 
 ## Architecture de `packages/ui-kit` (en couches, voir lib.rs)
-1. **`theme`** = SEULE source des couleurs/tailles/rayons/ombres (tokens `colors`, `type_scale`, `metrics`, `spacing`, `shadows`).
-2. **`style`** = styles canoniques par famille visuelle (`ghost`, `ghost_selected`, `menu_item`, `primary`, `chip`, `action_chip*`, `floating_card`, `inset_card`). Un composant n'écrit JAMAIS sa closure de style : il référence `ui_kit::style::*`.
-3. **Primitives transverses** (`icon_button`, `spinner`, `dropdown`, `settings`, `shortcuts`) → 4. **Layouts** (`shell`, `menu`, `base_panel`) → 5. **Canvas domaine** (`image_canvas`, `layer_canvas`, `timeline`, `piano_roll`).
-- Les éléments spécifiques à une app restent dans `apps/<app>/src/components/`. Promotion vers `packages/ui-kit` seulement quand une 2e app en a besoin.
-- **Interdit de coder une couleur en dur hors `theme.rs`** — y compris dans les canvas (la sélection utilise `SELECTION_*`, les nœuds `NODE_*`). Tailles de texte : passer par `type_scale`.
+1. **`theme`** = SEULE source des couleurs/tailles/rayons (tokens `colors`, `spacing`, `radius`, `typography`).
+2. **`widgets`** = composants génériques (`CygnusButton`, `CygnusSlider`, `CygnusDropdown`, inputs, `CygnusToggle`, `icon_button`/`CygnusIcon` — seul contact avec `egui_material_icons` — `ReorderableList`). Un composant n'écrit JAMAIS de couleur/taille en dur : il référence les tokens.
+3. **Conteneurs** (`panels` : panneau titré, split, onglets, repliable, toolbar) → 4. **Viewport générique** (affichage texture + zoom/pan) → 5. **`dialogs`** (modale, file picker, progression) → 6. **`utils`** (état drag générique).
+- Les éléments spécifiques à une app restent dans `apps/<app>/src/ui/`. Promotion vers `packages/ui-kit` seulement quand une 2e app en a besoin (et jamais de types métier : ui-kit reste domain-agnostic, vérifié par `scripts/check_uikit_domain_agnostic.sh`).
+- **Interdit de coder une couleur en dur hors `theme/`** — y compris dans les canvas (la sélection utilise `item_selected`, les indicateurs `drop_indicator`). Tailles de texte : passer par `typography`.
 
 ## Conventions
 - `unwrap()`/`expect()` interdits hors tests ; pas d'emoji dans le code ni les commits.
 - Commits courts et préfixés par l'app : `photo: fix blend-mode offset jump`.
 - Chaque fichier `.rs` commence par l'en-tête GPL v3 (copier celui de `apps/photo/src/main.rs`).
-- Thème : palette/tokens implémentés dans `packages/ui-kit/src/theme.rs` ; police Hanken Grotesk et icônes Material chargées depuis `assets/fonts/`.
+- Thème : palette/tokens implémentés dans `packages/ui-kit/src/theme/` ; police Hanken Grotesk et icônes Material chargées depuis `assets/fonts/`.
 
 <!-- graft:start -->
 ## Graft — repo context graph

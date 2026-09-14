@@ -19,4 +19,3 @@ log = { workspace = true }
 dirs = { workspace = true }
 pollster = { workspace = true }
 wgpu = { workspace = true }
-iced = { workspace = true }
